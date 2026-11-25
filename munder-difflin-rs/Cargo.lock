@@ -667,10 +667,12 @@ name = "md-hive"
 version = "0.5.10-rs.0"
 dependencies = [
  "chrono",
+ "dirs",
  "md-core",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
@@ -712,10 +714,6 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
 ]
-
-[[package]]
-name = "md-telemetry"
-version = "0.5.10-rs.0"
 
 [[package]]
 name = "memchr"

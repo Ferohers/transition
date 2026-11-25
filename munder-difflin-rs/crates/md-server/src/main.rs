@@ -1,5 +1,7 @@
 mod routes_fs_git;
 mod routes_hive;
+mod routes_silenced;
+mod routes_usage_memory_kg;
 mod state;
 
 use axum::{
@@ -669,6 +671,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/codex/withdraw-folder", post(codex_withdraw_folder))
         .merge(routes_hive::hive_router())
         .merge(routes_fs_git::fs_git_router())
+        .merge(routes_silenced::silenced_router())
+        .merge(routes_usage_memory_kg::usage_memory_kg_router())
         .with_state(state)
         .layer(TraceLayer::new_for_http())
 }
@@ -946,6 +950,7 @@ mod tests {
         assert_eq!(ide_page_res.status(), StatusCode::OK);
 
         let ide_state_res = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri("/api/v1/ide/state")
@@ -955,6 +960,132 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ide_state_res.status(), StatusCode::OK);
+
+        for uri in [
+            "/api/v1/cloud/list",
+            "/api/v1/connections/list",
+            "/api/v1/update/status",
+            "/api/v1/license/status",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "failed silenced GET {uri}");
+        }
+
+        let analytics_res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/analytics/funnel")
+                    .header("content-type", "application/json")
+                    .body(Body::from("{}"))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(analytics_res.status(), StatusCode::OK);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn usage_memory_and_kg_routes_work() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-phase5-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home = dir.join("hive-home");
+        std::fs::create_dir_all(&home).unwrap();
+        let app = build_router(test_state(&dir));
+
+        let cfg_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "harnessHome": home.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cfg_res.status(), StatusCode::OK);
+
+        let limit_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/config/token-limit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agentId":"michael","limit":500000}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(limit_res.status(), StatusCode::OK);
+
+        let mem_put = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/memory/michael")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"content":"Always verify with cargo test."}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mem_put.status(), StatusCode::OK);
+
+        let mem_search = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/memory/search?q=cargo")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mem_search.status(), StatusCode::OK);
+
+        let kg_ingest = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/kg/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"title":"Guide","text":"Floor sizing preserves viewport aspect."}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(kg_ingest.status(), StatusCode::OK);
+
+        let kg_search = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/kg/search?q=viewport")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(kg_search.status(), StatusCode::OK);
 
         std::fs::remove_dir_all(&dir).ok();
     }

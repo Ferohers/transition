@@ -168,14 +168,26 @@ pub fn safe_resolve(root: &str, rel: &str) -> Option<PathBuf> {
     Some(abs)
 }
 
-fn open_nofollow_read(abs: &Path) -> Result<File, String> {
+pub fn is_safe_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+pub fn open_nofollow_read(abs: &Path) -> Result<File, String> {
     let mut opts = OpenOptions::new();
     opts.read(true);
     #[cfg(unix)]
     {
         opts.custom_flags(libc_o_nofollow_nonblock());
     }
-    opts.open(abs).map_err(|e| e.to_string())
+    let file = opts.open(abs).map_err(|e| e.to_string())?;
+    if !file.metadata().map(|m| m.is_file()).unwrap_or(false) {
+        return Err("target is not a regular file".to_string());
+    }
+    Ok(file)
 }
 
 #[cfg(unix)]

@@ -74,8 +74,49 @@ impl PersistStore {
         }
 
         let store = Self { conn };
+        store.scrub_external_services()?;
         store.trim_history()?;
         Ok(store)
+    }
+
+    /// Remove any legacy `harnessmd.com` / PostHog / cloud-relay state if an
+    /// existing `harness.db` from desktop Munder Difflin is opened locally.
+    fn scrub_external_services(&self) -> Result<(), DbError> {
+        self.conn.execute(
+            "DELETE FROM kv
+             WHERE key LIKE 'cloud.%'
+                OR key LIKE 'relay.%'
+                OR key LIKE 'teams.%'
+                OR key LIKE 'license.%'
+                OR key LIKE 'licence.%'
+                OR key LIKE 'connections.%'
+                OR key LIKE 'analytics.%'
+                OR key LIKE 'telemetry.%'
+                OR key LIKE 'update.%'
+                OR lower(value) LIKE '%harnessmd.com%'
+                OR lower(value) LIKE '%us.i.posthog.com%'",
+            [],
+        )?;
+        Ok(())
+    }
+
+    fn is_disallowed_kv(key: &str, encoded: &str) -> bool {
+        let key_lc = key.to_ascii_lowercase();
+        let val_lc = encoded.to_ascii_lowercase();
+        const PREFIXES: &[&str] = &[
+            "cloud.",
+            "relay.",
+            "teams.",
+            "license.",
+            "licence.",
+            "connections.",
+            "analytics.",
+            "telemetry.",
+            "update.",
+        ];
+        PREFIXES.iter().any(|p| key_lc.starts_with(p))
+            || val_lc.contains("harnessmd.com")
+            || val_lc.contains("us.i.posthog.com")
     }
 
     pub fn get_kv(&self, key: &str) -> Result<Option<serde_json::Value>, DbError> {
@@ -87,8 +128,11 @@ impl PersistStore {
     }
 
     pub fn set_kv(&self, key: &str, value: &serde_json::Value) -> Result<(), DbError> {
-        let now = chrono_now_ms();
         let encoded = serde_json::to_string(value)?;
+        if Self::is_disallowed_kv(key, &encoded) {
+            return Ok(());
+        }
+        let now = chrono_now_ms();
         self.conn.execute(
             "INSERT INTO kv (key, value, updated_at) VALUES (?, ?, ?)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
@@ -202,5 +246,15 @@ mod tests {
         assert_eq!(list[0].text, "build roadmap");
         let found = store.search_history("roadmap", 10).unwrap();
         assert_eq!(found.len(), 1);
+
+        // External harnessmd.com / cloud keys are silenced from DB persistence.
+        store
+            .set_kv("cloud.selectedOffice", &serde_json::json!("https://relay.harnessmd.com"))
+            .unwrap();
+        assert_eq!(store.get_kv("cloud.selectedOffice").unwrap(), None);
+        store
+            .set_kv("custom.endpoint", &serde_json::json!("https://app.harnessmd.com/api"))
+            .unwrap();
+        assert_eq!(store.get_kv("custom.endpoint").unwrap(), None);
     }
 }

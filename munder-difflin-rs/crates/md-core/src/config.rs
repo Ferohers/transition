@@ -67,9 +67,44 @@ fn default_true() -> bool {
     true
 }
 
+const DISALLOWED_CONFIG_KEYS: &[&str] = &[
+    "agentConnections",
+    "connections",
+    "cloud",
+    "cloudOffices",
+    "relayUrl",
+    "teams",
+    "license",
+    "licence",
+    "slackEnabled",
+    "slackSigningSecret",
+    "slackBotToken",
+    "slackChannel",
+    "slackMode",
+    "tour",
+];
+
+fn sanitize_config(cfg: &mut HarnessConfig) {
+    cfg.extra.retain(|k, v| {
+        if DISALLOWED_CONFIG_KEYS.contains(&k.as_str()) {
+            return false;
+        }
+        if let Some(s) = v.as_str()
+            && s.to_ascii_lowercase().contains("harnessmd.com")
+        {
+            return false;
+        }
+        true
+    });
+    cfg.extra
+        .insert("autoUpdate".to_string(), Value::Bool(false));
+    cfg.extra
+        .insert("telemetryEnabled".to_string(), Value::Bool(false));
+}
+
 impl Default for HarnessConfig {
     fn default() -> Self {
-        Self {
+        let mut cfg = Self {
             harness_home: None,
             recent_hives: Vec::new(),
             registered_repos: Vec::new(),
@@ -80,7 +115,9 @@ impl Default for HarnessConfig {
             notifications: false,
             office_theme: None,
             extra: Map::new(),
-        }
+        };
+        sanitize_config(&mut cfg);
+        cfg
     }
 }
 
@@ -110,6 +147,7 @@ impl ConfigStore {
                     if let Some(ref home) = cfg.harness_home {
                         cfg.harness_home = Some(expand_tilde(home).to_string_lossy().into_owned());
                     }
+                    sanitize_config(&mut cfg);
                     self.last_good = Some(cfg.clone());
                     cfg
                 } else {
@@ -138,8 +176,8 @@ impl ConfigStore {
         let mut merged = serde_json::to_value(current)?;
         if let (Some(base_obj), Some(patch_obj)) = (merged.as_object_mut(), patch.as_object()) {
             for (k, v) in patch_obj {
-                // Keep sensitive/desktop-only keys sanitized cleanly
-                if k == "agentConnections" || k == "tour" {
+                // Keep sensitive/desktop-only and harnessmd.com service keys stripped cleanly
+                if DISALLOWED_CONFIG_KEYS.contains(&k.as_str()) {
                     continue;
                 }
                 if k == "harnessHome"
@@ -153,7 +191,8 @@ impl ConfigStore {
             }
         }
 
-        let next: HarnessConfig = serde_json::from_value(merged)?;
+        let mut next: HarnessConfig = serde_json::from_value(merged)?;
+        sanitize_config(&mut next);
         if let Some(parent) = self.config_path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -201,11 +240,19 @@ mod tests {
         let updated = store
             .update(serde_json::json!({
                 "harnessHome": "~/my-hive",
-                "onboardingComplete": true
+                "onboardingComplete": true,
+                "cloudOffices": [{"id": "x"}],
+                "autoUpdate": true,
+                "telemetryEnabled": true,
+                "customRelay": "https://relay.harnessmd.com"
             }))
             .unwrap();
         assert!(updated.onboarding_complete);
         assert!(!updated.harness_home.as_deref().unwrap().starts_with("~/"));
+        assert!(!updated.extra.contains_key("cloudOffices"));
+        assert!(!updated.extra.contains_key("customRelay"));
+        assert_eq!(updated.extra.get("autoUpdate"), Some(&Value::Bool(false)));
+        assert_eq!(updated.extra.get("telemetryEnabled"), Some(&Value::Bool(false)));
 
         // Corrupt the file on disk: reads fall back to last_good and writes pause.
         fs::write(store.config_path(), "{not json").unwrap();

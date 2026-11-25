@@ -6,7 +6,6 @@ members = [
     "crates/md-pty",
     "crates/md-hive",
     "crates/md-git",
-    "crates/md-telemetry",
     "crates/md-integrations",
     "crates/md-server",
 ]

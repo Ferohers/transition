@@ -1,0 +1,12 @@
+[package]
+name = "md-hive"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+md-core = { path = "../md-core" }

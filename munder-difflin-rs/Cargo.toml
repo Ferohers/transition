@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/md-core",
+    "crates/md-db",
+    "crates/md-pty",
+    "crates/md-hive",
+    "crates/md-git",
+    "crates/md-telemetry",
+    "crates/md-integrations",
+    "crates/md-server",
+]
+
+[workspace.package]
+version = "0.5.10-rs.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+axum = { version = "0.8", features = ["ws", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "fs"] }
+tower = "0.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+anyhow = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
+portable-pty = "0.9"
+uuid = { version = "1", features = ["v4", "serde"] }
+trash = "5"
+regex = "1"
+base64 = "0.22"

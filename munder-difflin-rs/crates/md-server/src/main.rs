@@ -1,7 +1,10 @@
+mod routes_catalog;
 mod routes_fs_git;
 mod routes_hive;
+mod routes_integrations;
 mod routes_silenced;
 mod routes_usage_memory_kg;
+mod security;
 mod state;
 
 use axum::{
@@ -40,6 +43,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tower_http::services::ServeDir;
 
 fn spawn_pty_event_forwarder(pty: &PtyManager, events_tx: broadcast::Sender<ServerEvent>) {
     let mut rx = pty.subscribe();
@@ -553,98 +557,79 @@ async fn handle_ws_pty(mut socket: WebSocket, state: AppState, id: String) {
     }
 }
 
-async fn index_html() -> Html<&'static str> {
-    Html(
-        r#"<!doctype html>
-<html lang="en" data-cth-theme="dark" data-cth-skin="professional">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Munder Difflin (Rust Web)</title>
-  <style>
-    :root {
-      --cth-cream-50: #17171B;
-      --cth-paper-100: #1A1A1F;
-      --cth-ink-900: #DEDBD6;
-      --cth-ink-500: #96919F;
-      --cth-ink-300: #787684;
-      --cth-accent: #CFAA57;
+fn web_root() -> PathBuf {
+    if let Ok(explicit) = std::env::var("MD_WEB_DIR") {
+        let p = PathBuf::from(explicit.trim());
+        if p.is_dir() {
+            return p;
+        }
     }
-    * { box-sizing: border-box; }
-    html, body { margin: 0; height: 100%; background: var(--cth-cream-50); color: var(--cth-ink-900); font-family: Inter, system-ui, sans-serif; font-size: 13px; }
-    .shell { display: flex; height: 100dvh; }
-    .rail { width: 240px; border-right: 1px solid var(--cth-ink-300); background: var(--cth-paper-100); padding: 12px; display: flex; flex-direction: column; gap: 6px; }
-    .rail h1 { font-size: 12.5px; margin: 0; letter-spacing: 0.04em; text-transform: uppercase; }
-    .meta { font-size: 10.5px; color: var(--cth-ink-500); }
-    .stage { flex: 1; display: grid; place-items: center; padding: 0; overflow: hidden; container-type: size; }
-    .floor { border: 1px solid var(--cth-ink-300); background: #222229; display: grid; place-items: center; font-size: 12px; color: var(--cth-ink-500); content-visibility: auto; contain-intrinsic-size: auto 512px auto 324px; }
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <aside class="rail">
-      <h1>Munder Difflin RS</h1>
-      <div class="meta">Pro View Compact Density (10.5–13px)</div>
-      <div class="meta" id="cfg-status">Loading config…</div>
-      <div class="meta" id="ws-status">WS: connecting…</div>
-    </aside>
-    <main class="stage" id="stage">
-      <div class="floor" id="floor">Enlarged Office Stage (homeBoxOf)</div>
-    </main>
-  </div>
-  <script>
-    const stage = document.getElementById('stage');
-    const floor = document.getElementById('floor');
-    const wsStatus = document.getElementById('ws-status');
-
-    async function layoutFloor() {
-      if (document.hidden) return;
-      const res = await fetch(`/api/v1/floor/box?home_w=${stage.clientWidth}&stage_h=${stage.clientHeight}`);
-      const box = await res.json();
-      floor.style.width = `${box.w}px`;
-      floor.style.height = `${box.h}px`;
-      floor.textContent = `Office Stage: ${box.w} × ${box.h}px (aspect-fit viewport)`;
+    for candidate in [
+        "/Users/altan/Documents/transition/munder-difflin-rs/web",
+        "./web",
+    ] {
+        let p = PathBuf::from(candidate);
+        if p.is_dir() {
+            return p;
+        }
     }
+    PathBuf::from("./web")
+}
 
-    async function boot() {
-      const [_, cfgRes] = await Promise.all([layoutFloor(), fetch('/api/v1/config')]);
-      const cfg = await cfgRes.json();
-      document.getElementById('cfg-status').textContent = `Skin: ${cfg.skin} · Theme: ${cfg.theme}`;
+async fn index_html() -> Html<String> {
+    let p = web_root().join("index.html");
+    match tokio::fs::read_to_string(&p).await {
+        Ok(html) => Html(html),
+        Err(_) => Html(include_str!("../static/index.html").to_string()),
     }
+}
 
-    function connectWs() {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${proto}//${location.host}/ws/events`);
-      ws.onopen = () => { wsStatus.textContent = 'WS: live'; };
-      ws.onclose = () => { wsStatus.textContent = 'WS: reconnecting…'; setTimeout(connectWs, 1500); };
-      ws.onmessage = (ev) => {
-        try {
-          const msg = JSON.parse(ev.data);
-          if (msg.channel === 'config:changed') {
-            document.getElementById('cfg-status').textContent = `Skin: ${msg.payload.skin} · Theme: ${msg.payload.theme}`;
-          }
-        } catch {}
-      };
+async fn ide_html() -> Html<String> {
+    let p = web_root().join("ide.html");
+    match tokio::fs::read_to_string(&p).await {
+        Ok(html) => Html(html),
+        Err(_) => Html("<!doctype html><body>IDE bundle missing</body>".to_string()),
     }
+}
 
-    let floorSkipped = false;
-    floor.addEventListener('contentvisibilityautostatechange', (ev) => {
-      floorSkipped = ev.skipped;
-      if (!ev.skipped) void layoutFloor();
-    });
-    new ResizeObserver(() => { if (!floorSkipped) void layoutFloor(); }).observe(stage);
-    document.addEventListener('visibilitychange', () => { if (!document.hidden && !floorSkipped) void layoutFloor(); });
-    void boot();
-    connectWs();
-  </script>
-</body>
-</html>"#,
+async fn cth_web_js() -> impl IntoResponse {
+    let p = web_root().join("cth-web.js");
+    let body = tokio::fs::read_to_string(&p).await.unwrap_or_default();
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        body,
+    )
+}
+
+async fn assets_styles() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")],
+        include_str!("../static/styles.css"),
+    )
+}
+
+async fn assets_app_js() -> impl IntoResponse {
+    (
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "application/javascript; charset=utf-8",
+        )],
+        include_str!("../static/app.js"),
     )
 }
 
 pub fn build_router(state: AppState) -> Router {
+    let assets_dir = web_root().join("assets");
     Router::new()
         .route("/", get(index_html))
+        .route("/ide.html", get(ide_html))
+        .route("/cth-web.js", get(cth_web_js))
+        .route("/static/styles.css", get(assets_styles))
+        .route("/static/app.js", get(assets_app_js))
+        .nest_service("/assets", ServeDir::new(assets_dir))
         .route("/health", get(health))
         .route("/ws/events", get(ws_events))
         .route("/ws/pty/{id}", get(ws_pty))
@@ -673,7 +658,10 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes_fs_git::fs_git_router())
         .merge(routes_silenced::silenced_router())
         .merge(routes_usage_memory_kg::usage_memory_kg_router())
+        .merge(routes_integrations::integrations_router())
+        .merge(routes_catalog::catalog_router())
         .with_state(state)
+        .layer(axum::middleware::from_fn(security::loopback_origin_guard))
         .layer(TraceLayer::new_for_http())
 }
 
@@ -700,6 +688,10 @@ async fn main() -> anyhow::Result<()> {
     let (events_tx, _) = broadcast::channel(256);
     spawn_pty_event_forwarder(&pty, events_tx.clone());
 
+    let secrets = md_integrations::secrets::SecretStore::open(&data_dir)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let webhooks = md_integrations::webhooks::WebhookRegistry::open(Some(&data_dir));
+
     let state = AppState {
         config: Arc::new(Mutex::new(config)),
         db: Arc::new(Mutex::new(db)),
@@ -715,6 +707,10 @@ async fn main() -> anyhow::Result<()> {
             unsaved_count: 0,
             open_files: Vec::new(),
         })),
+        secrets: Arc::new(Mutex::new(secrets)),
+        broker: Arc::new(Mutex::new(md_integrations::secrets::IntegrationBroker::new())),
+        webhooks: Arc::new(Mutex::new(webhooks)),
+        file_share: Arc::new(Mutex::new(md_integrations::file_share::FileShareRegistry::new())),
         events_tx,
     };
 
@@ -758,6 +754,10 @@ mod tests {
                 unsaved_count: 0,
                 open_files: Vec::new(),
             })),
+            secrets: Arc::new(Mutex::new(md_integrations::secrets::SecretStore::open_in_memory())),
+            broker: Arc::new(Mutex::new(md_integrations::secrets::IntegrationBroker::new())),
+            webhooks: Arc::new(Mutex::new(md_integrations::webhooks::WebhookRegistry::open(None))),
+            file_share: Arc::new(Mutex::new(md_integrations::file_share::FileShareRegistry::new())),
             events_tx,
         }
     }
@@ -1086,6 +1086,176 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(kg_search.status(), StatusCode::OK);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn integrations_webhooks_share_and_realtime_work() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-phase6-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("report.txt"), "hello-share").unwrap();
+        let app = build_router(test_state(&dir));
+
+        let set_secret = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/secrets")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"keyRef":"apikey:openai","kind":"provider","value":"sk-secret-12345"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(set_secret.status(), StatusCode::OK);
+
+        let rt_key = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/realtime/has-key")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rt_key.status(), StatusCode::OK);
+
+        let wh_upsert = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/webhooks/endpoints")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"id":"gh","name":"GitHub","secret":"wh-sec","mode":"awaiting-approval"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wh_upsert.status(), StatusCode::OK);
+
+        let wh_post = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/gh")
+                    .header("content-type", "application/json")
+                    .header("x-md-webhook-secret", "wh-sec")
+                    .body(Body::from(r#"{"message":"build passed"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wh_post.status(), StatusCode::ACCEPTED);
+
+        let share_res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/share")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "root": dir.to_string_lossy(),
+                            "rel": "report.txt"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(share_res.status(), StatusCode::OK);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn frontend_and_catalog_routes_work() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-phase7-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let app = build_router(test_state(&dir));
+
+        for uri in [
+            "/",
+            "/cth-web.js",
+            "/ide.html",
+            "/static/styles.css",
+            "/static/app.js",
+            "/api/v1/templates",
+            "/api/v1/presets",
+            "/api/v1/skills",
+            "/api/v1/themes/workbench",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "failed GET {uri}");
+        }
+
+        let export_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/agents/export")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"michael","name":"Michael"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(export_res.status(), StatusCode::OK);
+
+        // Cross-origin & DNS-rebinding requests are rejected with 403.
+        let evil_origin = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hive/tasks")
+                    .header("origin", "https://evil.example")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"id":"MD-99","title":"Blocked"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(evil_origin.status(), StatusCode::FORBIDDEN);
+
+        let evil_host = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .header("host", "evil.example:3110")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(evil_host.status(), StatusCode::FORBIDDEN);
 
         std::fs::remove_dir_all(&dir).ok();
     }

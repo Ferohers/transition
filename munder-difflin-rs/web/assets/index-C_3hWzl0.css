@@ -1,0 +1,1054 @@
+/**
+ * Copyright (c) 2014 The xterm.js authors. All rights reserved.
+ * Copyright (c) 2012-2013, Christopher Jeffrey (MIT License)
+ * https://github.com/chjj/term.js
+ * @license MIT
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ *
+ * Originally forked from (with the author's permission):
+ *   Fabrice Bellard's javascript vt100 for jslinux:
+ *   http://bellard.org/jslinux/
+ *   Copyright (c) 2011 Fabrice Bellard
+ *   The original design remains. The terminal itself
+ *   has been extended to include xterm CSI codes, among
+ *   other features.
+ */
+
+/**
+ *  Default styles for xterm.js
+ */
+
+.xterm {
+    cursor: text;
+    position: relative;
+    user-select: none;
+    -ms-user-select: none;
+    -webkit-user-select: none;
+}
+
+.xterm.focus,
+.xterm:focus {
+    outline: none;
+}
+
+.xterm .xterm-helpers {
+    position: absolute;
+    top: 0;
+    /**
+     * The z-index of the helpers must be higher than the canvases in order for
+     * IMEs to appear on top.
+     */
+    z-index: 5;
+}
+
+.xterm .xterm-helper-textarea {
+    padding: 0;
+    border: 0;
+    margin: 0;
+    /* Move textarea out of the screen to the far left, so that the cursor is not visible */
+    position: absolute;
+    opacity: 0;
+    left: -9999em;
+    top: 0;
+    width: 0;
+    height: 0;
+    z-index: -5;
+    /** Prevent wrapping so the IME appears against the textarea at the correct position */
+    white-space: nowrap;
+    overflow: hidden;
+    resize: none;
+}
+
+.xterm .composition-view {
+    /* TODO: Composition position got messed up somewhere */
+    background: #000;
+    color: #FFF;
+    display: none;
+    position: absolute;
+    white-space: nowrap;
+    z-index: 1;
+}
+
+.xterm .composition-view.active {
+    display: block;
+}
+
+.xterm .xterm-viewport {
+    /* On OS X this is required in order for the scroll bar to appear fully opaque */
+    background-color: #000;
+    overflow-y: scroll;
+    cursor: default;
+    position: absolute;
+    right: 0;
+    left: 0;
+    top: 0;
+    bottom: 0;
+}
+
+.xterm .xterm-screen {
+    position: relative;
+}
+
+.xterm .xterm-screen canvas {
+    position: absolute;
+    left: 0;
+    top: 0;
+}
+
+.xterm .xterm-scroll-area {
+    visibility: hidden;
+}
+
+.xterm-char-measure-element {
+    display: inline-block;
+    visibility: hidden;
+    position: absolute;
+    top: 0;
+    left: -9999em;
+    line-height: normal;
+}
+
+.xterm.enable-mouse-events {
+    /* When mouse events are enabled (eg. tmux), revert to the standard pointer cursor */
+    cursor: default;
+}
+
+.xterm.xterm-cursor-pointer,
+.xterm .xterm-cursor-pointer {
+    cursor: pointer;
+}
+
+.xterm.column-select.focus {
+    /* Column selection mode */
+    cursor: crosshair;
+}
+
+.xterm .xterm-accessibility:not(.debug),
+.xterm .xterm-message {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    right: 0;
+    z-index: 10;
+    color: transparent;
+    pointer-events: none;
+}
+
+.xterm .xterm-accessibility-tree:not(.debug) *::selection {
+  color: transparent;
+}
+
+.xterm .xterm-accessibility-tree {
+  user-select: text;
+  white-space: pre;
+}
+
+.xterm .live-region {
+    position: absolute;
+    left: -9999px;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+}
+
+.xterm-dim {
+    /* Dim should not apply to background, so the opacity of the foreground color is applied
+     * explicitly in the generated class and reset to 1 here */
+    opacity: 1 !important;
+}
+
+.xterm-underline-1 { text-decoration: underline; }
+.xterm-underline-2 { text-decoration: double underline; }
+.xterm-underline-3 { text-decoration: wavy underline; }
+.xterm-underline-4 { text-decoration: dotted underline; }
+.xterm-underline-5 { text-decoration: dashed underline; }
+
+.xterm-overline {
+    text-decoration: overline;
+}
+
+.xterm-overline.xterm-underline-1 { text-decoration: overline underline; }
+.xterm-overline.xterm-underline-2 { text-decoration: overline double underline; }
+.xterm-overline.xterm-underline-3 { text-decoration: overline wavy underline; }
+.xterm-overline.xterm-underline-4 { text-decoration: overline dotted underline; }
+.xterm-overline.xterm-underline-5 { text-decoration: overline dashed underline; }
+
+.xterm-strikethrough {
+    text-decoration: line-through;
+}
+
+.xterm-screen .xterm-decoration-container .xterm-decoration {
+	z-index: 6;
+	position: absolute;
+}
+
+.xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer {
+	z-index: 7;
+}
+
+.xterm-decoration-overview-ruler {
+    z-index: 8;
+    position: absolute;
+    top: 0;
+    right: 0;
+    pointer-events: none;
+}
+
+.xterm-decoration-top {
+    z-index: 2;
+    position: relative;
+}
+/* The Halloween corner of a queue input area (SeasonCorner.tsx).
+   It lies over the input area's root and changes no layout. Nothing in it
+   takes the pointer but the pumpkin's drawn shape. Every animation moves only
+   transform or opacity. The one loop that can run for long is the dozing
+   glow, and it stops with the window (data-cth-window) and with reduced
+   motion. */
+
+.cth-sc {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+}
+/* Arabic: the corner sits at the end of the line, the art mirrored. */
+:root[dir='rtl'] .cth-sc { transform: scaleX(-1); }
+
+/* ── cobweb and spider: the top corner, drawn over the text ────────────── */
+/* Round 7, R7-2b (founder: "the cobweb should be small before and more web
+   grows out as we hover and spider drops"): at rest the web is the small
+   light one, 56 px (WEB_PX), the piece's own ink-500 strands at 0.55. A
+   pointer on it grows it 1.5 times out of the corner (WEB_GROWN_PX, a
+   transform: the box never changes) and its strands gain contrast: ink-700,
+   a darker ink than rest in the light themes, a lighter one in the dark
+   themes. The growth and the opacity move; the ink swaps. It goes back with
+   the spider's climb (data-web, SeasonCorner.tsx). */
+.cth-sc-web {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 56px;
+  height: 56px;
+  overflow: hidden;
+  opacity: 0.55;
+  transform-origin: 100% 0;
+  /* This transition plays on the way back (R7-4, founder: "the spider web
+     should go back a bit quickly"): shorter than the way out, which the
+     grown rule carries. */
+  transition: opacity 0.25s ease-in, transform 0.25s ease-in;
+}
+.cth-sc-web > svg { display: block; }
+/* The web steps back while the draft has text under it, or messages are queued. */
+.cth-sc[data-web='faded'] .cth-sc-web { opacity: 0.25; }
+.cth-sc[data-web='grown'] .cth-sc-web { transform: scale(1.5); opacity: 0.85; transition: opacity 0.4s ease, transform 0.4s ease-out; }
+.cth-sc[data-web='grown'] .cth-pc-web g { stroke: var(--cth-ink-700); }
+
+/* The spider's own box: the grown web's size, never scaled, clipped so an
+   up spider is out of sight. */
+.cth-sc-drop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 84px;
+  height: 84px;
+  overflow: hidden;
+}
+
+/* The spider is up in the corner until the pointer is on the web
+   (data-spider='down', SeasonCorner.tsx). Up is the base state, so the
+   first paint never shows it rising. Up: fast, the way a startled spider
+   goes. */
+.cth-sc-spider {
+  position: absolute;
+  top: 0;
+  right: 26px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform: translateY(-44px);
+  transition: transform 0.18s ease-in;
+}
+.cth-sc-thread { width: 1px; height: 26px; background: var(--cth-ink-500); }
+.cth-sc-spiderbody svg { display: block; }
+/* Down: slow, with one small bounce at the end of the thread. */
+.cth-sc[data-spider='down'] .cth-sc-spider {
+  transform: translateY(0);
+  transition: transform 1.1s cubic-bezier(0.3, 1.45, 0.5, 1);
+}
+.cth-sc[data-hover='on'] .cth-sc-spiderbody { animation: cth-sc-wiggle 0.5s ease-in-out 2; }
+@keyframes cth-sc-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  25%      { transform: rotate(-16deg); }
+  75%      { transform: rotate(16deg); }
+}
+
+/* ── pumpkin: resting on the top edge, above the web ───────────────────── */
+/* Its base sits on the root's 1 px top border and no body is in the box
+   (founder, 30 Sep 2026). The body is drawn to 40 of 42 units, so the drawn
+   base is 1 px above the element's bottom: a 2 px sink lands it on the line.
+   The offset follows the height, so another size cannot hang inside again. */
+.cth-sc-pumpkin {
+  position: absolute;
+  top: calc(var(--cth-sc-sink, 2px) - var(--cth-sc-h, 22px));
+  right: 20px;
+  width: var(--cth-sc-w, 25px);
+  height: var(--cth-sc-h, 22px);
+}
+.cth-sc-lean {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 100%;
+  transition: transform 0.3s ease;
+}
+.cth-sc-layer { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.cth-sc-hit { pointer-events: auto; cursor: pointer; }
+
+/* Faces: only the one that matches the mood is shown. */
+.cth-sc-face { opacity: 0; transition: opacity 0.3s ease; }
+.cth-sc[data-mood='awake'] .cth-sc-face-awake,
+.cth-sc[data-mood='dozing'] .cth-sc-face-dozing,
+.cth-sc[data-mood='surprised'] .cth-sc-face-surprised,
+.cth-sc[data-mood='listening'] .cth-sc-face-listening,
+.cth-sc[data-mood='out'] .cth-sc-face-out { opacity: 1; }
+
+/* The candle. Two boxes: the outer one holds the level (how much context is
+   left, written by the component), the inner one holds the mood's own light. */
+.cth-sc-level { position: absolute; inset: -9px; transition: opacity 0.8s ease; }
+.cth-sc-glow {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--cth-season-glow), transparent);
+  opacity: 1;
+  transition: opacity 0.4s ease;
+}
+.cth-sc[data-mood='dozing'] .cth-sc-glow { animation: cth-sc-doze 5.5s ease-in-out infinite; }
+.cth-sc[data-mood='out'] .cth-sc-glow { opacity: 0; }
+@keyframes cth-sc-doze {
+  0%, 100% { opacity: 0.35; }
+  50%      { opacity: 0.75; }
+}
+
+/* Needs you: one start, then still. */
+.cth-sc[data-mood='surprised'] .cth-sc-lean { animation: cth-sc-start 0.45s ease-out 1; }
+@keyframes cth-sc-start {
+  0%   { transform: translateY(0) scale(1); }
+  35%  { transform: translateY(-5px) scale(1.08); }
+  100% { transform: translateY(0) scale(1); }
+}
+
+/* Dictation: it leans toward the text and listens; the candle pulses while
+   the words are on their way. */
+.cth-sc[data-mood='listening'] .cth-sc-lean { transform: rotate(-8deg); }
+.cth-sc[data-dictation='transcribing'] .cth-sc-glow { animation: cth-sc-pulse 1.1s ease-in-out infinite; }
+@keyframes cth-sc-pulse {
+  0%, 100% { opacity: 0.5; }
+  50%      { opacity: 1; }
+}
+
+/* Click: a wink and one hop. */
+.cth-sc-wink { opacity: 0; }
+.cth-sc-hop { animation: cth-sc-hop 0.5s ease-out 1; }
+.cth-sc-hop .cth-sc-wink { animation: cth-sc-wink 0.5s linear 1; }
+@keyframes cth-sc-hop {
+  0%, 100% { transform: translateY(0); }
+  40%      { transform: translateY(-7px); }
+  70%      { transform: translateY(0); }
+  85%      { transform: translateY(-2px); }
+}
+@keyframes cth-sc-wink {
+  0%, 100% { opacity: 0; }
+  15%, 80% { opacity: 1; }
+}
+
+/* A compact just ended: the candle is lit again. */
+.cth-sc-flare .cth-sc-level { animation: cth-sc-flare 0.9s ease-out 1; }
+@keyframes cth-sc-flare {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.7); }
+  100% { transform: scale(1); }
+}
+
+/* ── ghost mail: leaves from the send button's corner ──────────────────── */
+.cth-sc-ghost {
+  position: absolute;
+  right: 40px;
+  bottom: 30px;
+  opacity: 0;
+}
+.cth-sc-ghost svg { display: block; }
+.cth-sc-go { animation: cth-sc-mail 0.9s ease-out 1; }
+@keyframes cth-sc-mail {
+  0%   { transform: translate(0, 6px) scale(0.6); opacity: 0; }
+  18%  { transform: translate(0, -4px) scale(1); opacity: 1; }
+  60%  { transform: translate(5px, -30px) scale(1); opacity: 0.9; }
+  100% { transform: translate(-3px, -54px) scale(0.92); opacity: 0; }
+}
+
+/* The window is off screen: nothing runs. */
+:root[data-cth-window='hidden'] .cth-sc * { animation-play-state: paused !important; }
+
+/* Reduced motion: every piece is still and the moods change by a plain swap.
+   The ghost is never started (SeasonCorner.tsx). The spider is shown or
+   hidden with no travel: up is hidden, and a pointer on the web shows it
+   where it hangs. It is never held down: held down it would sit on "Clear
+   all" and on the queue note while messages are queued. */
+@media (prefers-reduced-motion: reduce) {
+  .cth-sc *, .cth-sc-hop, .cth-sc-go { animation: none !important; transition: none !important; }
+  .cth-sc[data-spider='up'] .cth-sc-spider { opacity: 0; }
+  .cth-sc[data-mood='listening'] .cth-sc-lean { transform: none; }
+  .cth-sc[data-mood='dozing'] .cth-sc-glow { opacity: 0.55; }
+}
+/* THE PAYWALL (paywall-059, Pam's design: hive pam work/paywall-059). Paywall.tsx and PaywallParts.tsx draw it.
+   Tokens only: no literal colour in this file; a shade the kit lacks is mixed from two tokens. Every border is 1px and
+   even; status sits in a chip; a limit is amber (the waiting colour), never the alarm colour. Professional light and dark come from the tokens.
+   The window steps are container queries on the wall's own box (paywallModel.ts PAYWALL_STEPS): above 1000 three
+   cards and a two column head; 881 to 1000 the head stacks; 641 to 880 the cards turn sideways; 640 and below the
+   overlay fills the window and the cards stack. Reduced motion: nothing moves, every scene is drawn finished. */
+
+.cth-pw2 {
+  --pw-line: var(--cth-ink-300);
+  --pw-line2: var(--cth-ink-100);
+  --pw-edge: color-mix(in srgb, var(--cth-accent) 78%, var(--cth-accent-text));
+  --pw-amber: var(--cth-status-waiting);
+  --pw-amber-bg: var(--cth-status-waiting-tint);
+  --pw-amber-line: color-mix(in srgb, var(--cth-status-waiting) 30%, var(--cth-cream-100));
+  --pw-amber-text: color-mix(in srgb, var(--cth-status-waiting) 75%, var(--cth-ink-900));
+  --pw-ok: var(--cth-status-working);
+  --pw-ok-bg: var(--cth-status-working-tint);
+  --pw-ok-line: color-mix(in srgb, var(--cth-status-working) 25%, var(--cth-cream-100));
+  --pw-think: var(--cth-status-thinking);
+  --pw-think-bg: var(--cth-status-thinking-tint);
+  --pw-think-line: color-mix(in srgb, var(--cth-status-thinking) 25%, var(--cth-cream-100));
+  --pw-shade: color-mix(in srgb, black 12%, transparent);
+  --pw-shade2: color-mix(in srgb, black 26%, transparent);
+  --pw-sh1: 0 1px 2px var(--pw-shade), 0 6px 18px -6px var(--pw-shade);
+  --pw-sh2: 0 2px 6px var(--pw-shade), 0 24px 50px -18px var(--pw-shade2);
+  --pw-sh3: 0 40px 100px -30px var(--pw-shade2), 0 20px 50px -20px var(--pw-shade2);
+  --pw-spring: cubic-bezier(.2, .9, .25, 1.15);
+  --pw-out: cubic-bezier(.16, 1, .3, 1);
+  position: fixed; inset: 0; display: grid; place-items: center; padding: 24px; overflow: auto;
+  container: pw / inline-size;
+  color: var(--cth-ink-900); font: 400 15px/1.5 var(--cth-font-ui); -webkit-font-smoothing: antialiased;
+}
+:root[data-cth-theme='dark'] .cth-pw2 { --pw-shade: color-mix(in srgb, black 40%, transparent); --pw-shade2: color-mix(in srgb, black 70%, transparent); }
+.cth-pw2.is-over { background: color-mix(in srgb, var(--cth-ink-900) 46%, transparent); -webkit-backdrop-filter: blur(3px) saturate(.9); backdrop-filter: blur(3px) saturate(.9); animation: cth-pw-fade .3s ease 1 both; }
+:root[data-cth-theme='dark'] .cth-pw2.is-over { background: color-mix(in srgb, black 64%, transparent); }
+.cth-pw2.is-full { background-color: var(--cth-cream-50); background-image: radial-gradient(var(--pw-line) 1px, transparent 1.2px); background-size: 22px 22px; }
+@keyframes cth-pw-fade { from { opacity: 0; } }
+.cth-pw2 :lang(ar), .cth-pw2:lang(ar) * { letter-spacing: 0 !important; }
+.cth-pw2 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+.cth-pw2 ul { list-style: none; margin: 0; padding: 0; }
+.cth-pw2 h1, .cth-pw2 h2, .cth-pw2 h4, .cth-pw2 p { margin: 0; }
+.cth-pw2 :focus-visible { outline: 2px solid var(--cth-focus-ring); outline-offset: 2px; border-radius: 8px; }
+.cth-pw2 bdi { unicode-bidi: isolate; }
+
+/* ── the card ─────────────────────────────────────────────────────────── */
+.cth-pw2 .pw {
+  position: relative; width: min(1120px, 100%); max-height: 100%; overflow: auto; overscroll-behavior: contain;
+  background: var(--cth-cream-100); border: 1px solid var(--pw-line); border-radius: 22px; box-shadow: var(--pw-sh3);
+  padding: 20px 24px 12px; outline: none; animation: cth-pw-in .5s var(--pw-spring) 1 both;
+}
+@keyframes cth-pw-in { from { opacity: 0; transform: translateY(16px) scale(.985); } }
+.cth-pw2 .pw::before { content: ""; position: absolute; inset-inline-start: -80px; top: -120px; width: 420px; height: 300px; background: radial-gradient(closest-side, var(--cth-accent-soft), transparent); opacity: .9; pointer-events: none; }
+.cth-pw2.is-full .pw { box-shadow: var(--pw-sh2); }
+.cth-pw2 .x { position: absolute; z-index: 3; top: 14px; inset-inline-end: 14px; width: 34px; height: 34px; border-radius: 10px; border: 1px solid var(--pw-line); background: var(--cth-cream-100); display: grid; place-items: center; color: var(--cth-ink-700); transition: background .2s, transform .3s var(--pw-spring); }
+.cth-pw2 .x:hover { background: var(--cth-cream-200); }
+.cth-pw2 .x:active { transform: scale(.92); }
+
+/* ── shared pieces ────────────────────────────────────────────────────── */
+.cth-pw2 .tile { width: 34px; height: 34px; border-radius: 9px; display: grid; place-items: center; overflow: hidden; flex: none; border: 1px solid var(--pw-line2); background: var(--cth-cream-200); }
+.cth-pw2 .em { display: inline-block; width: 16px; height: 16px; border-radius: 4px; flex: none; object-fit: cover; }
+.cth-pw2 .px { image-rendering: pixelated; }
+.cth-pw2 .chip { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--pw-line); background: var(--cth-cream-100); font: 600 12.5px/1 var(--cth-font-ui); white-space: nowrap; color: var(--cth-ink-700); }
+.cth-pw2 .chip i { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.cth-pw2 .chip.ok { background: var(--pw-ok-bg); border-color: var(--pw-ok-line); color: var(--pw-ok); }
+.cth-pw2 .chip.amber { background: var(--pw-amber-bg); border-color: var(--pw-amber-line); color: var(--pw-amber-text); }
+.cth-pw2 .st { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 8px; border-radius: 999px; font: 600 11px/1 var(--cth-font-ui); white-space: nowrap; border: 1px solid transparent; }
+.cth-pw2 .st i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.cth-pw2 .st-work { background: var(--pw-ok-bg); color: var(--pw-ok); border-color: var(--pw-ok-line); }
+.cth-pw2 .st-think { background: var(--pw-think-bg); color: var(--pw-think); border-color: var(--pw-think-line); }
+.cth-pw2 .st i, .cth-pw2 .ov.live i { animation: cth-pw-pulse 1.6s ease-in-out 6; }
+@keyframes cth-pw-pulse { 50% { opacity: .35; } }
+.cth-pw2 .mark { position: relative; white-space: nowrap; z-index: 0; }
+.cth-pw2 .mark::after { content: ""; position: absolute; inset-inline: -.05em -.06em; bottom: .05em; height: .34em; background: var(--cth-accent); z-index: -1; border-radius: .06em; transform: scaleX(0); transform-origin: left; animation: cth-pw-hl .9s var(--pw-out) .35s 1 forwards; }
+:root[dir='rtl'] .cth-pw2 .mark::after { transform-origin: right; }
+:root[data-cth-theme='dark'] .cth-pw2 .mark { color: var(--cth-accent); }
+:root[data-cth-theme='dark'] .cth-pw2 .mark::after { height: .09em; bottom: -.02em; }
+@keyframes cth-pw-hl { to { transform: none; } }
+
+/* ── head ─────────────────────────────────────────────────────────────── */
+.cth-pw2 .pw-head { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px 28px; align-items: center; padding-inline-end: 46px; }
+.cth-pw2.is-full .pw-head { padding-inline-end: 0; }
+.cth-pw2 .pw-proof { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.cth-pw2 .tb { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding-inline: 6px 8px; border-radius: 7px; background: var(--cth-cream-100); border: 1px solid var(--pw-line); font: 600 11.5px/1 var(--cth-font-ui); white-space: nowrap; color: var(--cth-ink-900); }
+.cth-pw2 .tb > svg { width: 14px; height: 14px; flex: none; }
+.cth-pw2 .tb-ai { display: grid; place-items: center; height: 18px; padding: 0 5px; border-radius: 5px; background: var(--cth-accent); border: 1px solid var(--pw-edge); font: 750 11.5px/1 var(--cth-font-ui); color: var(--cth-accent-ink); }
+.cth-pw2 .pw-title { margin-top: 10px; font-weight: 820; font-size: clamp(27px, 3.25cqi, 40px); line-height: 1.04; letter-spacing: -.045em; text-wrap: balance; }
+.cth-pw2 .pw-sub { margin-top: 7px; font-size: 15px; line-height: 1.5; color: var(--cth-ink-700); max-width: 62ch; text-wrap: pretty; }
+.cth-pw2 .ctx { display: grid; justify-items: end; gap: 10px; }
+.cth-pw2 .crew { display: flex; padding-inline-start: 8px; }
+.cth-pw2 .crew .tile { width: 44px; height: 44px; border-radius: 12px; margin-inline-start: -8px; box-shadow: 0 0 0 2px var(--cth-cream-100), var(--pw-sh1); animation: cth-pw-bob 2.4s ease-in-out 4; animation-delay: calc(var(--i) * -.45s); }
+@keyframes cth-pw-bob { 50% { transform: translateY(-3px); } }
+
+/* the usage limits card, over the app */
+.cth-pw2 .lc.yours { padding-bottom: 11px; }
+.cth-pw2 .lc.yours h4 { margin-bottom: 8px; }
+.cth-pw2 .lc.yours .checks { font-size: 12.5px; gap: 4px; }
+.cth-pw2 .lc { min-width: 300px; max-width: 400px; border: 1px solid var(--pw-line); border-radius: 14px; background: var(--cth-paper-200); padding: 10px 12px 6px; box-shadow: var(--pw-sh1); }
+.cth-pw2 .lc h4 { font: 600 10.5px/1 var(--cth-font-mono); letter-spacing: .12em; text-transform: uppercase; color: var(--cth-ink-500); margin-bottom: 5px; }
+.cth-pw2:lang(ar) .lc h4 { font-family: var(--cth-font-ui); font-size: 11.5px; }
+.cth-pw2 .lc .row { display: grid; grid-template-columns: 16px max-content minmax(36px, 1fr) 34px max-content; align-items: center; gap: 8px; height: 27px; font-size: 12.5px; font-weight: 600; color: var(--cth-ink-700); }
+.cth-pw2 .lc .row + .row { border-top: 1px solid var(--pw-line2); }
+.cth-pw2 .lc .nm { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cth-pw2 .lc .bar { height: 5px; border-radius: 3px; background: var(--cth-cream-200); overflow: hidden; }
+.cth-pw2 .lc .bar i { display: block; height: 100%; background: var(--pw-ok); border-radius: 3px; transform-origin: left; animation: cth-pw-grow 1.1s var(--pw-out) .2s 1 backwards; }
+:root[dir='rtl'] .cth-pw2 .lc .bar i { transform-origin: right; }
+@keyframes cth-pw-grow { from { transform: scaleX(0); } }
+.cth-pw2 .lc .pc { font: 600 11.5px/1 var(--cth-font-ui); color: var(--cth-ink-500); text-align: end; }
+.cth-pw2 .lc .r { font-size: 11.5px; font-weight: 500; color: var(--cth-ink-500); white-space: nowrap; }
+.cth-pw2 .lc .row.hot .bar i { background: var(--pw-amber); }
+.cth-pw2 .lc .row.hot .pc, .cth-pw2 .lc .row.hot .r { color: var(--pw-amber-text); font-weight: 650; }
+.cth-pw2 .lc.spent { border-color: var(--pw-amber-line); }
+.cth-pw2 .lc.spent .row.md { animation: cth-pw-nudge 2.8s ease-in-out 1.2s 3; }
+@keyframes cth-pw-nudge { 0%, 88%, 100% { transform: none; } 91% { transform: translateX(-2px); } 94% { transform: translateX(2px); } 97% { transform: translateX(-1px); } }
+
+/* ── bar: the period and the Stapler ──────────────────────────────────── */
+.cth-pw2 .pw-bar { position: relative; display: flex; align-items: center; gap: 14px; margin-top: 14px; min-width: 0; }
+.cth-pw2 .bill { display: inline-flex; flex: none; padding: 3px; border-radius: 12px; background: var(--cth-cream-200); border: 1px solid var(--pw-line); }
+.cth-pw2 .bill button { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 13px; border-radius: 9px; font: 600 13.5px/1 var(--cth-font-ui); color: var(--cth-ink-700); white-space: nowrap; transition: background .2s, color .2s, box-shadow .2s; }
+.cth-pw2 .bill button[aria-checked='true'] { background: var(--cth-cream-100); color: var(--cth-ink-900); box-shadow: var(--pw-sh1); }
+.cth-pw2 .save { display: inline-flex; align-items: center; gap: 5px; height: 20px; padding: 0 7px; border-radius: 6px; background: var(--cth-accent-soft); border: 1px solid var(--cth-accent-line); color: var(--cth-accent-text); font: 700 11px/1 var(--cth-font-ui); white-space: nowrap; }
+.cth-pw2 .bill .save { background: var(--cth-accent); border-color: var(--pw-edge); color: var(--cth-accent-ink); }
+.cth-pw2 .stap { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cth-pw2 .stap-face { width: 50px; height: 50px; flex: none; display: grid; place-items: center; padding: 0; border-radius: 50%; animation: cth-pw-boing .6s var(--pw-spring) 1; }
+@keyframes cth-pw-boing { 30% { transform: scale(1.15, .85); } 60% { transform: scale(.95, 1.08); } }
+.cth-pw2 .stap-say { position: relative; max-width: 420px; padding: 7px 11px; border-radius: 12px; background: var(--cth-cream-100); border: 1px solid var(--pw-line); box-shadow: var(--pw-sh1); font: 600 13px/1.3 var(--cth-font-ui); color: var(--cth-ink-900); text-wrap: balance; animation: cth-pw-pop .45s var(--pw-spring) 1; }
+.cth-pw2 .stap-say::before { content: ""; position: absolute; top: 50%; inset-inline-start: -5px; width: 9px; height: 9px; background: inherit; border-inline-start: 1px solid var(--pw-line); border-bottom: 1px solid var(--pw-line); transform: translateY(-50%) rotate(45deg); }
+:root[dir='rtl'] .cth-pw2 .stap-say::before { transform: translateY(-50%) rotate(-45deg); }
+@keyframes cth-pw-pop { from { transform: scale(.9); opacity: .3; } }
+
+/* ── plans ────────────────────────────────────────────────────────────── */
+.cth-pw2 .plans { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 12px; align-items: stretch; }
+/* Rent a cloud office: Max and Teams only, each the width a card has among three, centred. */
+.cth-pw2 .plans.two { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: calc((100% - 28px) * 2 / 3 + 14px); margin-inline: auto; width: 100%; }
+.cth-pw2 .plan { position: relative; display: flex; flex-direction: column; min-width: 0; padding: 9px 9px 12px; border-radius: 18px; border: 1px solid var(--pw-line); background: var(--cth-cream-100); box-shadow: var(--pw-sh1); transition: transform .4s var(--pw-spring), box-shadow .3s, border-color .3s; }
+.cth-pw2 .plan:hover, .cth-pw2 .plan:focus-within { transform: translateY(-3px); box-shadow: var(--pw-sh2); }
+.cth-pw2 .plan.pick { border-color: var(--cth-accent-line); background: linear-gradient(180deg, var(--cth-accent-soft), var(--cth-cream-100) 52%); }
+.cth-pw2 .scene { position: relative; height: 96px; border-radius: 12px; overflow: hidden; border: 1px solid var(--pw-line2); background: var(--cth-cream-200); flex: none; }
+.cth-pw2 .scene > img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: 50% 78%; }
+.cth-pw2 .scene.night > img { filter: brightness(.42) saturate(.75) hue-rotate(195deg); }
+.cth-pw2 .ov { position: absolute; z-index: 2; display: inline-flex; align-items: center; gap: 5px; height: 23px; padding: 0 8px; border-radius: 999px; border: 1px solid; font: 650 11.5px/1 var(--cth-font-ui); white-space: nowrap; box-shadow: 0 4px 10px -6px var(--pw-shade2); }
+.cth-pw2 .ov.tl { top: 7px; inset-inline-start: 7px; }
+.cth-pw2 .ov.tr { top: 7px; inset-inline-end: 7px; }
+.cth-pw2 .ov.bl { bottom: 7px; inset-inline-start: 7px; }
+.cth-pw2 .ov.rec { background: var(--cth-accent); border-color: var(--pw-edge); color: var(--cth-accent-ink); }
+.cth-pw2 .ov.ok { background: var(--pw-ok-bg); border-color: var(--pw-ok-line); color: var(--pw-ok); }
+.cth-pw2 .ov.moon { background: color-mix(in srgb, black 82%, var(--cth-accent)); border-color: color-mix(in srgb, black 65%, var(--cth-accent)); color: var(--cth-accent-hover); }
+.cth-pw2 .ov.live { background: color-mix(in srgb, black 80%, transparent); border-color: color-mix(in srgb, white 18%, transparent); color: color-mix(in srgb, var(--pw-ok-bg) 70%, white); }
+.cth-pw2 .ov.live i { width: 6px; height: 6px; border-radius: 50%; background: color-mix(in srgb, var(--pw-ok) 60%, white); }
+.cth-pw2 .mini { position: absolute; z-index: 2; bottom: 7px; inset-inline-start: 7px; display: flex; align-items: center; gap: 7px; padding-block: 4px; padding-inline: 4px 8px; border-radius: 10px; background: var(--cth-cream-100); border: 1px solid var(--pw-line); color: var(--cth-ink-900); box-shadow: 0 6px 16px -8px var(--pw-shade2); animation: cth-pw-mini .35s var(--pw-spring) 1 both; }
+@keyframes cth-pw-mini { from { opacity: 0; transform: translateY(6px); } }
+.cth-pw2 .mini .tile { width: 26px; height: 26px; border-radius: 7px; }
+.cth-pw2 .mini .mn { font-size: 12px; font-weight: 650; }
+.cth-pw2 .scene.net { background: var(--cth-paper-200); background-image: radial-gradient(var(--pw-line) 1px, transparent 1.2px); background-size: 14px 14px; }
+.cth-pw2 .scene.net svg.tw { position: absolute; inset: 0; width: 100%; height: 100%; }
+.cth-pw2 .scene.net line { stroke: var(--cth-ink-500); stroke-width: 1.4; opacity: .55; vector-effect: non-scaling-stroke; }
+/* Two offices on the top line, held to the scene's edges so a long name never runs into the other; yours below. */
+.cth-pw2 .office-pill { position: absolute; z-index: 2; display: flex; align-items: center; gap: 6px; height: 32px; max-width: 46%; padding-inline: 4px 9px; border-radius: 10px; background: var(--cth-cream-100); border: 1px solid var(--pw-line); box-shadow: var(--pw-sh1); font: 650 11.5px/1 var(--cth-font-ui); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; top: 28%; transform: translateY(-50%); }
+.cth-pw2 .office-pill.a { inset-inline-start: 4%; }
+.cth-pw2 .office-pill.b { inset-inline-end: 4%; }
+.cth-pw2 .office-pill.you { top: 74%; left: 50%; transform: translate(-50%, -50%); }
+.cth-pw2 .office-pill .tile { width: 24px; height: 24px; border-radius: 7px; }
+.cth-pw2 .office-pill.you { border-color: var(--pw-edge); background: var(--cth-accent-soft); }
+/* The piece of work: on the way from Jim's office to yours, then done on the way back from yours to Pam's. It passes
+   UNDER the office pills (Pam's prototype, cob2643): an office's name is never covered. */
+.cth-pw2 .parcel { position: absolute; z-index: 1; left: 70%; top: 51%; display: flex; align-items: center; gap: 5px; height: 20px; padding: 0 6px; border-radius: 6px; background: var(--cth-cream-100); border: 1px solid var(--pw-line); box-shadow: 0 6px 14px -8px var(--pw-shade2); font: 600 9.5px/1 var(--cth-font-mono); white-space: nowrap; pointer-events: none; color: var(--cth-ink-900); transform: translate(-50%, -50%); transition: left .8s var(--pw-out); }
+.cth-pw2 .parcel.done { left: 30%; }
+.cth-pw2:lang(ar) .parcel { font-family: var(--cth-font-ui); }
+.cth-pw2 .parcel i { width: 7px; height: 7px; border-radius: 2px; flex: none; background: var(--pw-think); }
+.cth-pw2 .parcel.done i { background: var(--pw-ok); }
+
+.cth-pw2 .pbody { display: flex; flex-direction: column; gap: 7px; flex: 1; padding: 10px 5px 0; }
+.cth-pw2 .pname { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cth-pw2 .pname h2 { font-size: 17px; font-weight: 760; letter-spacing: -.025em; line-height: 1.1; }
+/* The price line holds $1,000 without moving the card. */
+.cth-pw2 .price { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 7px; min-height: 32px; }
+.cth-pw2 .amt { font-size: 32px; font-weight: 820; letter-spacing: -.045em; line-height: 1; direction: ltr; }
+.cth-pw2 .per { font-size: 13px; font-weight: 550; color: var(--cth-ink-500); }
+.cth-pw2 .price .save { align-self: center; }
+.cth-pw2 .gfl { margin-top: -4px; font-size: 12px; font-weight: 600; color: var(--pw-ok); }
+.cth-pw2 .vp { font-size: 14px; font-weight: 650; line-height: 1.38; letter-spacing: -.012em; color: var(--cth-ink-900); text-wrap: pretty; }
+.cth-pw2 [data-paywall-teams-cloud] { display: grid; gap: 7px; margin-top: 3px; padding-top: 10px; border-top: 1px solid var(--pw-line); }
+.cth-pw2 .checks { display: grid; gap: 5px; font-size: 13px; line-height: 1.4; color: var(--cth-ink-700); }
+.cth-pw2 .checks li { display: flex; gap: 7px; align-items: flex-start; }
+.cth-pw2 .checks svg { flex: none; margin-top: 2px; color: var(--pw-ok); }
+/* More sits right above the pay button, so the three cards' More line up. */
+.cth-pw2 .more { align-self: flex-start; margin-top: auto; padding: 2px 0; font: 600 12.5px/1.3 var(--cth-font-ui); color: var(--cth-ink-700); text-decoration: underline; text-decoration-color: var(--pw-line); text-decoration-thickness: 1px; text-underline-offset: 3px; transition: color .2s, text-decoration-color .2s; }
+.cth-pw2 .more:hover, .cth-pw2 .more[aria-expanded='true'] { color: var(--cth-ink-900); text-decoration-color: currentColor; }
+.cth-pw2 .plan.popped { transform: translateY(-3px); box-shadow: var(--pw-sh2); }
+
+/* More's popover: in the dialog's scroll box, placed by paywallModel morePlace. An even 1px border, radius 14. */
+.cth-pw2 .mpop { position: absolute; z-index: 8; top: 0; left: 0; display: flex; flex-direction: column; border-radius: 14px; border: 1px solid var(--pw-line); background: var(--cth-cream-100); box-shadow: var(--pw-sh2); color: var(--cth-ink-900); outline: none; animation: cth-pw-mpop .3s var(--pw-spring) 1 both; }
+.cth-pw2 .mpop.down { animation-name: cth-pw-mpop-down; }
+@keyframes cth-pw-mpop { from { opacity: 0; transform: translateY(5px); } }
+@keyframes cth-pw-mpop-down { from { opacity: 0; transform: translateY(-5px); } }
+.cth-pw2 .mpop::after { content: ""; position: absolute; left: calc(var(--ax, 50%) - 6px); width: 11px; height: 11px; background: var(--cth-cream-100); border: 1px solid var(--pw-line); transform: rotate(45deg); }
+.cth-pw2 .mpop.up::after { bottom: -7px; border-top: 0; border-left: 0; }
+.cth-pw2 .mpop.down::after { top: -7px; border-bottom: 0; border-right: 0; }
+.cth-pw2 .mpop:focus-visible { outline: 2px solid var(--cth-focus-ring); outline-offset: 2px; border-radius: 14px; }
+.cth-pw2 .mpop-in { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 14px 16px 15px; }
+.cth-pw2 .mpop h3 { margin: 0; font-size: 14.5px; font-weight: 760; letter-spacing: -.02em; line-height: 1.2; }
+.cth-pw2 .mpop .pi { margin-top: 4px; font-size: 12.5px; line-height: 1.4; color: var(--cth-ink-700); }
+.cth-pw2 .mpop .pl { display: grid; gap: 10px 18px; margin-top: 11px; }
+.cth-pw2 .mpop .pl.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cth-pw2 .mpop.slim .pl.two { grid-template-columns: minmax(0, 1fr); }
+.cth-pw2 .mpop .pl li { display: grid; gap: 2px; align-content: start; }
+.cth-pw2 .mpop .pl b { font-size: 12.5px; font-weight: 700; line-height: 1.3; }
+.cth-pw2 .mpop .pl span { font-size: 12px; line-height: 1.4; color: var(--cth-ink-500); }
+.cth-pw2 .soonrow { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--pw-line2); font-size: 12px; font-weight: 550; color: var(--cth-ink-500); }
+.cth-pw2 .soon { height: 20px; padding: 0 7px; border-radius: 6px; background: var(--cth-accent-soft); border: 1px solid var(--cth-accent-line); color: var(--cth-accent-text); font: 700 10.5px/18px var(--cth-font-ui); white-space: nowrap; }
+.cth-pw2 .soonrow .pill { display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px; border-radius: 7px; border: 1px dashed var(--pw-line); font: 600 11px/20px var(--cth-font-ui); color: var(--cth-ink-500); white-space: nowrap; }
+
+.cth-pw2 .btn { position: relative; display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; height: 44px; border-radius: 12px; font: 700 15px/1 var(--cth-font-ui); letter-spacing: -.01em; overflow: hidden; white-space: nowrap; transition: transform .3s var(--pw-spring), background .2s, box-shadow .25s, border-color .2s; }
+.cth-pw2 .pbody > .btn { margin-top: auto; flex: none; }
+.cth-pw2 .pbody > .more + .btn { margin-top: 0; }
+.cth-pw2 .btn svg { flex: none; }
+.cth-pw2 .btn:active { transform: scale(.97); }
+.cth-pw2 .btn-acc { background: var(--cth-accent); color: var(--cth-accent-ink); border: 1px solid var(--pw-edge); box-shadow: inset 0 1px 0 color-mix(in srgb, white 65%, transparent), 0 10px 24px -10px color-mix(in srgb, var(--cth-accent-text) 70%, transparent); }
+.cth-pw2 .btn-acc:hover { background: var(--cth-accent-hover); }
+.cth-pw2 .btn-acc::after { content: ""; position: absolute; top: 0; bottom: 0; width: 46px; inset-inline-start: -60px; background: linear-gradient(100deg, transparent, color-mix(in srgb, white 75%, transparent), transparent); transform: skewX(-18deg); animation: cth-pw-shine 3.6s ease-in-out 1.4s 3; }
+@keyframes cth-pw-shine { 0% { inset-inline-start: -60px; } 38%, 100% { inset-inline-start: 110%; } }
+.cth-pw2 .btn-ink { background: var(--cth-ink-900); color: var(--cth-cream-100); border: 1px solid var(--cth-ink-900); }
+.cth-pw2 .btn-ink:hover { opacity: .9; }
+.cth-pw2 .btn-line { background: var(--cth-cream-100); color: var(--cth-ink-900); border: 1px solid var(--pw-line); }
+.cth-pw2 .btn-line:hover { background: var(--cth-paper-200); border-color: var(--cth-ink-500); }
+.cth-pw2 .btn-sm { width: auto; height: 36px; padding: 0 14px; border-radius: 10px; font-size: 13.5px; font-weight: 650; }
+.cth-pw2 .btn.went svg { animation: cth-pw-went .6s var(--pw-spring) 1; }
+@keyframes cth-pw-went { 40% { transform: translate(3px, -3px); } }
+:root[dir='rtl'] .cth-pw2 .btn svg { transform: scaleX(-1); }
+
+/* ── Free: the quiet path, and the foot ───────────────────────────────── */
+.cth-pw2 .free { display: flex; align-items: center; gap: 12px; margin-top: 12px; padding-block: 6px; padding-inline: 16px 8px; border-radius: 14px; border: 1px solid var(--pw-line); background: transparent; }
+.cth-pw2 .free .fn { font-size: 14.5px; font-weight: 720; }
+.cth-pw2 .free .fp { font-size: 14.5px; font-weight: 720; color: var(--cth-ink-500); }
+.cth-pw2 .free p { flex: 1; min-width: 0; font-size: 13px; line-height: 1.4; color: var(--cth-ink-500); }
+.cth-pw2 .free .chip { height: 24px; font-size: 11.5px; }
+.cth-pw2 .paynote { display: flex; align-items: center; justify-content: center; gap: 7px; margin-top: 8px; font-size: 12px; line-height: 1.4; color: var(--cth-ink-500); text-align: center; }
+.cth-pw2 .paynote svg { flex: none; }
+.cth-pw2 .paynote.opened { color: var(--pw-ok); font-weight: 600; }
+.cth-pw2 .pw-foot { display: flex; align-items: center; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-top: 8px; font-size: 12px; color: var(--cth-ink-500); }
+.cth-pw2 .pw-foot .why { display: inline-flex; align-items: center; gap: 6px; }
+.cth-pw2 .pw-foot .why svg { color: var(--pw-ok); }
+.cth-pw2 .pw-foot .links { display: inline-flex; flex-wrap: wrap; gap: 4px 16px; }
+.cth-pw2 .pw-foot .links button { font-size: 12px; color: var(--cth-ink-500); text-decoration: underline; text-underline-offset: 3px; padding: 2px; }
+.cth-pw2 .pw-foot .links button:hover { color: var(--cth-ink-900); }
+
+/* ── narrower windows ─────────────────────────────────────────────────── */
+@container pw (max-width: 1000px) {
+  .cth-pw2 .pw-head { grid-template-columns: minmax(0, 1fr); }
+  .cth-pw2 .ctx { justify-items: start; }
+}
+@container pw (max-width: 880px) {
+  .cth-pw2 .lc .row:not(.md) { display: none; }
+  .cth-pw2 .lc { min-width: 0; }
+  .cth-pw2 .plans { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .cth-pw2 .plans.two { grid-template-columns: minmax(0, 1fr); max-width: none; }
+  .cth-pw2 .plan { display: grid; grid-template-columns: minmax(0, 40%) minmax(0, 1fr); gap: 0 14px; }
+  .cth-pw2 .scene { height: auto; min-height: 170px; }
+  .cth-pw2 .scene > img { object-position: 50% 60%; }
+  .cth-pw2 .pbody { padding-top: 4px; }
+}
+/* The wall's own box is the window, so its padding steps with the window (a container query styles only what is inside). */
+@media (max-width: 640px) {
+  .cth-pw2.is-over { padding: 0; }
+}
+@container pw (max-width: 640px) {
+  .cth-pw2.is-over .pw { width: 100%; height: 100%; max-height: none; border-radius: 0; border: 0; padding: 18px 16px 14px; }
+  .cth-pw2 .pw-head { padding-inline-end: 40px; }
+  .cth-pw2.is-full .pw-head { padding-inline-end: 0; }
+  .cth-pw2 .x { top: 12px; inset-inline-end: 12px; }
+  .cth-pw2 .pw-bar { flex-wrap: wrap; }
+  .cth-pw2 .stap { flex: 1 1 220px; }
+  .cth-pw2 .plan { display: flex; }
+  .cth-pw2 .scene { height: 112px; min-height: 0; }
+  .cth-pw2 .free { flex-wrap: wrap; padding: 10px 12px; }
+  .cth-pw2 .free p { flex-basis: 100%; order: 3; }
+  .cth-pw2 .free .btn-sm { margin-inline-start: auto; }
+  .cth-pw2 .lc { width: 100%; }
+  .cth-pw2 .ctx { justify-items: start; width: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cth-pw2, .cth-pw2 *, .cth-pw2 *::before, .cth-pw2 *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; animation-delay: 0s !important; transition-duration: .01ms !important; }
+  .cth-pw2 .btn-acc::after { display: none; }
+}
+
+.cth-pw2 .was { font-size: 16px; color: var(--cth-ink-500); }
+.cth-pw2 .launch { font-size: 11px; font-weight: 650; color: var(--pw-ok); }
+.cth-pw2 .addon-note { font-size: 12px; color: var(--cth-ink-500); }
+/* Companion chrome proposal: outside the data-only theme pack. */
+:root[data-office-skin="open-seas"][data-cth-theme="light"] {
+  --cth-cream-50: #F7EEDB;
+  --cth-cream-100: #FFFFFF;
+  --cth-cream-200: #eae3d2;
+  --cth-cream-300: #ded9c8;
+  --cth-paper-100: #FFFFFF;
+  --cth-paper-200: #fbf6ed;
+  --cth-ink-900: #233C3D;
+  --cth-ink-700: #4d605d;
+  --cth-ink-500: #66746e;
+  --cth-ink-300: #899189;
+  --cth-ink-100: #d7d3c3;
+  --cth-accent: #116B70;
+  --cth-accent-hover: #13656a;
+  --cth-accent-ink: #FFFFFF;
+  --cth-accent-text: #116B70;
+  --cth-accent-soft: #dbdece;
+  --cth-accent-line: #116B70;
+  --cth-on-accent: #FFFFFF;
+  --cth-surface-active: #dbdece;
+  --cth-focus-ring: #116B70;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+:root[data-office-skin="open-seas"][data-cth-theme="dark"] {
+  --cth-cream-50: #142D31;
+  --cth-cream-100: #203E42;
+  --cth-cream-200: #21383b;
+  --cth-cream-300: #2f4445;
+  --cth-paper-100: #203E42;
+  --cth-paper-200: #1a363a;
+  --cth-ink-900: #F4EBD8;
+  --cth-ink-700: #c7c5b7;
+  --cth-ink-500: #a6a89e;
+  --cth-ink-300: #889088;
+  --cth-ink-100: #364a4a;
+  --cth-accent: #F0C36B;
+  --cth-accent-hover: #f2ca7d;
+  --cth-accent-ink: #202C2D;
+  --cth-accent-text: #F0C36B;
+  --cth-accent-soft: #2e3f38;
+  --cth-accent-line: #F0C36B;
+  --cth-on-accent: #202C2D;
+  --cth-surface-active: #2e3f38;
+  --cth-focus-ring: #F0C36B;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+/* Companion chrome proposal: outside the data-only theme pack. */
+:root[data-office-skin="playroom"][data-cth-theme="light"] {
+  --cth-cream-50: #FFF4DF;
+  --cth-cream-100: #FFFFFF;
+  --cth-cream-200: #f3e8d4;
+  --cth-cream-300: #e7dcc9;
+  --cth-paper-100: #FFFFFF;
+  --cth-paper-200: #fffaef;
+  --cth-ink-900: #3B3029;
+  --cth-ink-700: #62574d;
+  --cth-ink-500: #807569;
+  --cth-ink-300: #998e80;
+  --cth-ink-100: #e2d7c4;
+  --cth-accent: #335DAB;
+  --cth-accent-hover: #34589b;
+  --cth-accent-ink: #FFFFFF;
+  --cth-accent-text: #335DAB;
+  --cth-accent-soft: #e7e2d9;
+  --cth-accent-line: #335DAB;
+  --cth-on-accent: #FFFFFF;
+  --cth-surface-active: #e7e2d9;
+  --cth-focus-ring: #335DAB;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+:root[data-office-skin="playroom"][data-cth-theme="dark"] {
+  --cth-cream-50: #242D46;
+  --cth-cream-100: #333E59;
+  --cth-cream-200: #31394f;
+  --cth-cream-300: #3e4558;
+  --cth-paper-100: #333E59;
+  --cth-paper-200: #2c3650;
+  --cth-ink-900: #FFF4DF;
+  --cth-ink-700: #d3ccc0;
+  --cth-ink-500: #b2aea9;
+  --cth-ink-300: #969496;
+  --cth-ink-100: #454b5d;
+  --cth-accent: #F4C365;
+  --cth-accent-hover: #f5ca77;
+  --cth-accent-ink: #242D46;
+  --cth-accent-text: #F4C365;
+  --cth-accent-soft: #3d3f4a;
+  --cth-accent-line: #F4C365;
+  --cth-on-accent: #242D46;
+  --cth-surface-active: #3d3f4a;
+  --cth-focus-ring: #F4C365;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+/* Companion chrome proposal: outside the data-only theme pack. */
+:root[data-office-skin="neon-district"][data-cth-theme="light"] {
+  --cth-cream-50: #EEF2F7;
+  --cth-cream-100: #FFFFFF;
+  --cth-cream-200: #e2e6ec;
+  --cth-cream-300: #d6dae1;
+  --cth-paper-100: #FFFFFF;
+  --cth-paper-200: #f6f8fb;
+  --cth-ink-900: #25283E;
+  --cth-ink-700: #4d5063;
+  --cth-ink-500: #6b6f7f;
+  --cth-ink-300: #858997;
+  --cth-ink-100: #d0d4db;
+  --cth-accent: #4D4099;
+  --cth-accent-hover: #483d8e;
+  --cth-accent-ink: #FFFFFF;
+  --cth-accent-text: #4D4099;
+  --cth-accent-soft: #dbddec;
+  --cth-accent-line: #4D4099;
+  --cth-on-accent: #FFFFFF;
+  --cth-surface-active: #dbddec;
+  --cth-focus-ring: #4D4099;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+:root[data-office-skin="neon-district"][data-cth-theme="dark"] {
+  --cth-cream-50: #151B2B;
+  --cth-cream-100: #242C40;
+  --cth-cream-200: #212837;
+  --cth-cream-300: #2e3443;
+  --cth-paper-100: #242C40;
+  --cth-paper-200: #1c2436;
+  --cth-ink-900: #E4EDF5;
+  --cth-ink-700: #bbc3cd;
+  --cth-ink-500: #9ca4ae;
+  --cth-ink-300: #818894;
+  --cth-ink-100: #343a49;
+  --cth-accent: #76D4E2;
+  --cth-accent-hover: #86d9e5;
+  --cth-accent-ink: #17202B;
+  --cth-accent-text: #76D4E2;
+  --cth-accent-soft: #213141;
+  --cth-accent-line: #76D4E2;
+  --cth-on-accent: #17202B;
+  --cth-surface-active: #213141;
+  --cth-focus-ring: #76D4E2;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+/* Companion chrome proposal: outside the data-only theme pack. */
+:root[data-office-skin="executive-wing"][data-cth-theme="light"] {
+  --cth-cream-50: #F6F1E7;
+  --cth-cream-100: #FFFFFF;
+  --cth-cream-200: #e9e6de;
+  --cth-cream-300: #dddad4;
+  --cth-paper-100: #FFFFFF;
+  --cth-paper-200: #faf8f3;
+  --cth-ink-900: #24344B;
+  --cth-ink-700: #4e5a6a;
+  --cth-ink-500: #6e7682;
+  --cth-ink-300: #898f96;
+  --cth-ink-100: #d6d5d0;
+  --cth-accent: #29446C;
+  --cth-accent-hover: #284268;
+  --cth-accent-ink: #FFFFFF;
+  --cth-accent-text: #29446C;
+  --cth-accent-soft: #dddcd8;
+  --cth-accent-line: #29446C;
+  --cth-on-accent: #FFFFFF;
+  --cth-surface-active: #dddcd8;
+  --cth-focus-ring: #29446C;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+:root[data-office-skin="executive-wing"][data-cth-theme="dark"] {
+  --cth-cream-50: #192536;
+  --cth-cream-100: #29384D;
+  --cth-cream-200: #263140;
+  --cth-cream-300: #333d4a;
+  --cth-paper-100: #29384D;
+  --cth-paper-200: #212e42;
+  --cth-ink-900: #F3EBDD;
+  --cth-ink-700: #c7c3bc;
+  --cth-ink-500: #a7a6a3;
+  --cth-ink-300: #8a8c8d;
+  --cth-ink-100: #3a434f;
+  --cth-accent: #DFC18B;
+  --cth-accent-hover: #e3c899;
+  --cth-accent-ink: #202B3B;
+  --cth-accent-text: #DFC18B;
+  --cth-accent-soft: #313840;
+  --cth-accent-line: #DFC18B;
+  --cth-on-accent: #202B3B;
+  --cth-surface-active: #313840;
+  --cth-focus-ring: #DFC18B;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+/* Companion chrome proposal: outside the data-only theme pack. */
+:root[data-office-skin="hacker-house"][data-cth-theme="light"] {
+  --cth-cream-50: #F3F2E9;
+  --cth-cream-100: #FFFFFF;
+  --cth-cream-200: #e7e7de;
+  --cth-cream-300: #dcdcd3;
+  --cth-paper-100: #FFFFFF;
+  --cth-paper-200: #f9f8f4;
+  --cth-ink-900: #303B31;
+  --cth-ink-700: #576056;
+  --cth-ink-500: #6d756b;
+  --cth-ink-300: #8e9389;
+  --cth-ink-100: #d6d7cd;
+  --cth-accent: #426546;
+  --cth-accent-hover: #406043;
+  --cth-accent-ink: #FFFFFF;
+  --cth-accent-text: #426546;
+  --cth-accent-soft: #dee1d5;
+  --cth-accent-line: #426546;
+  --cth-on-accent: #FFFFFF;
+  --cth-surface-active: #dee1d5;
+  --cth-focus-ring: #426546;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+:root[data-office-skin="hacker-house"][data-cth-theme="dark"] {
+  --cth-cream-50: #202A25;
+  --cth-cream-100: #303E34;
+  --cth-cream-200: #2c3631;
+  --cth-cream-300: #39423c;
+  --cth-paper-100: #303E34;
+  --cth-paper-200: #28342c;
+  --cth-ink-900: #EDF0E5;
+  --cth-ink-700: #c4c8bf;
+  --cth-ink-500: #a5aba2;
+  --cth-ink-300: #8b9189;
+  --cth-ink-100: #3f4842;
+  --cth-accent: #B4D19B;
+  --cth-accent-hover: #bdd7a7;
+  --cth-accent-ink: #223027;
+  --cth-accent-text: #B4D19B;
+  --cth-accent-soft: #323e33;
+  --cth-accent-line: #B4D19B;
+  --cth-on-accent: #223027;
+  --cth-surface-active: #323e33;
+  --cth-focus-ring: #B4D19B;
+  --cth-panel-border: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-panel-border-dialog: inset 0 0 0 1px var(--cth-ink-300);
+  --cth-radius-sm: 0px;
+  --cth-radius-md: 0px;
+  --cth-radius-lg: 0px;
+  --cth-radius-xl: 0px;
+}
+/* Halloween decorations of the window (HalloweenLayer.tsx): the bats. The
+   whole layer ignores the mouse, sits under dialogs (z-index 40), and keeps
+   to the top of the window. Every loop is long and mostly quiet: a bat
+   crosses for about four seconds in every twenty six. The web, the spider,
+   the pumpkin and the ghost are in season/seasonCorner.css. */
+
+.cth-hw {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 40;
+  overflow: hidden;
+}
+
+/* ── bats ─────────────────────────────────────────────────────────────── */
+.cth-hw-bats { position: absolute; inset: 0 0 auto 0; height: 140px; }
+.cth-hw-bat {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate(-60px, 60px);
+  animation: cth-hw-fly 26s linear infinite;
+  will-change: transform;
+}
+.cth-hw-bat-1 { animation-delay: 3s; }
+.cth-hw-bat-2 { animation-delay: 4.1s; animation-duration: 26s; }
+.cth-hw-bat-2 .cth-pc-bat { transform: scale(0.75); }
+.cth-hw-bat-3 { animation-delay: 15s; animation-duration: 31s; }
+.cth-hw-bat-3 .cth-pc-bat { transform: scale(0.85); }
+@keyframes cth-hw-fly {
+  0%   { transform: translate(-60px, 84px); }
+  4%   { transform: translate(calc(25vw), 46px); }
+  8%   { transform: translate(calc(50vw), 78px); }
+  12%  { transform: translate(calc(75vw), 40px); }
+  16%  { transform: translate(calc(100vw + 60px), 70px); }
+  100% { transform: translate(calc(100vw + 60px), 70px); }
+}
+/* The bat's own boxes (.cth-pc-bat, .cth-pc-bat-wing) are laid out in
+   season/pieces/pieces.css; this file only flies and flaps them. */
+.cth-pc-bat-wing { will-change: transform; }
+/* Wings flap only while their bat is on screen: each keyframe list has the
+   flight's own duration and flaps inside the first 16%, the part of
+   cth-hw-fly where the bat crosses. Off screen the value holds still. */
+.cth-hw-bat-1 .cth-pc-bat-wing { animation: cth-hw-flap26 26s linear 3s infinite; }
+.cth-hw-bat-2 .cth-pc-bat-wing { animation: cth-hw-flap26 26s linear 4.1s infinite; }
+.cth-hw-bat-3 .cth-pc-bat-wing { animation: cth-hw-flap31 31s linear 15s infinite; }
+@keyframes cth-hw-flap26 {
+  0%, 2%, 4%, 6%, 8%, 10%, 12%, 14%, 16%, 100% { transform: scaleY(1); }
+  1%, 3%, 5%, 7%, 9%, 11%, 13%, 15% { transform: scaleY(0.35); }
+}
+@keyframes cth-hw-flap31 {
+  0%, 1.7%, 3.4%, 5.1%, 6.8%, 8.5%, 10.2%, 11.9%, 13.6%, 15.3%, 17%, 100% { transform: scaleY(1); }
+  0.85%, 2.55%, 4.25%, 5.95%, 7.65%, 9.35%, 11.05%, 12.75%, 14.45%, 16.15% { transform: scaleY(0.35); }
+}
+
+/* The window is off screen (season/windowHidden.ts): nothing runs. */
+:root[data-cth-window='hidden'] .cth-hw * { animation-play-state: paused !important; }
+
+/* Reduced motion: nothing flies. */
+@media (prefers-reduced-motion: reduce) {
+  .cth-hw-bats { display: none; }
+}

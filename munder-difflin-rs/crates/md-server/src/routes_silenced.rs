@@ -93,4 +93,7 @@ pub fn silenced_router() -> Router<AppState> {
         .route("/api/v1/update/{*rest}", post(silenced_ok_noop))
         // Outbound product analytics (`us.i.posthog.com`)
         .route("/api/v1/analytics/{*rest}", post(silenced_ok_noop))
+        // Voice dictation / Puck (omitted per user request)
+        .route("/api/v1/freeflow/{*rest}", post(silenced_disabled).get(silenced_disabled))
+        .route("/api/v1/puck/{*rest}", post(silenced_disabled).get(silenced_disabled))
 }

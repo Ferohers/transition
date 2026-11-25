@@ -1,0 +1,252 @@
+/* The season's pieces (W4). Art only: the callers (Darryl's W4a and W4b)
+   place and animate them. Nothing here takes the pointer or a tab stop, and
+   nothing here animates: moving parts are separate boxes so a caller moves
+   them with transform and opacity only, never an SVG child. */
+
+.cth-pc { position: relative; flex: none; pointer-events: none; }
+.cth-pc > svg { display: block; overflow: visible; }
+
+.cth-pc-wisp-orb {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 40% 40%, var(--cth-season-flame) 0 30%, var(--cth-season-orange) 55%, transparent 72%);
+}
+.cth-pc-wisp-tail {
+  position: absolute; border-radius: 999px;
+  background: linear-gradient(to left, var(--cth-season-glow), transparent);
+}
+
+.cth-pc-badge > svg { position: absolute; inset: 0; }
+
+.cth-pc-wax { height: 2px; }
+.cth-pc-wax-bar { position: absolute; inset: 0; border-radius: 1px; background: var(--cth-season-orange); }
+.cth-pc-wax-drip { position: absolute; top: 1px; right: 22%; width: 5px; height: 8px; transform-origin: 50% 0; }
+
+.cth-pc-wick { width: 2px; height: 3px; border-radius: 1px 1px 0 0; background: var(--cth-ink-700); }
+.cth-pc-flame { transform-origin: 50% 100%; }
+
+.cth-pc-lantern > svg { position: absolute; inset: 0; }
+.cth-pc-lantern-glow {
+  position: absolute; inset: -40%; border-radius: 50%;
+  background: radial-gradient(closest-side, var(--cth-season-glow), transparent);
+}
+.cth-pc-lantern-glow, .cth-pc-lantern-lit { opacity: 0; transition: opacity 240ms ease; }
+.cth-pc-lantern[data-lit='on'] .cth-pc-lantern-glow,
+.cth-pc-lantern[data-lit='on'] .cth-pc-lantern-lit { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .cth-pc-lantern-glow, .cth-pc-lantern-lit { transition: none; }
+}
+
+.cth-pc-web, .cth-pc-spider { display: block; pointer-events: none; }
+
+.cth-pc-bat { width: 44px; height: 22px; }
+.cth-pc-bat-body { position: absolute; inset: 0; }
+.cth-pc-bat-wing { position: absolute; top: 0; width: 22px; height: 22px; }
+.cth-pc-bat-wing svg { display: block; }
+.cth-pc-bat-wing-l { left: 0; transform-origin: 100% 50%; }
+.cth-pc-bat-wing-r { left: 22px; transform-origin: 0% 50%; }
+
+.cth-pc-stone { transform-origin: 50% 100%; }
+.cth-pc-strand { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.cth-pc-strand svg { display: block; overflow: visible; }
+.cth-pc-fog {
+  border-radius: 50%;
+  background: radial-gradient(closest-side, var(--cth-season-ghost), transparent);
+  opacity: 0.6;
+}
+/* The kit's eight interactions on real moments (Track W4a, Kit.tsx, rules in
+   kitPlan.ts, art in Pam's pieces/). Every rule here lives under the season;
+   with the season off none of these classes is in the page. Only transform
+   and opacity move, every animation runs a fixed count after something real
+   happened, nothing takes the pointer, and everything pauses when the window
+   is hidden or the person asked for reduced motion.
+
+   The boxes that move are this file's own wrappers (cth-k?-) or a part box a
+   piece hands to its caller (cth-pc-wisp-tail, cth-pc-wax-drip,
+   cth-pc-lantern-glow); a piece's drawing is never touched. */
+
+/* ── 22, the wisp: HTML boxes over the Agents grid ───────────────────────── */
+/* The straight line is two nested boxes: the outer runs X, the inner runs Y
+   with the arc, so the path is a curve made of two transforms. The
+   endpoints, the arc and the length are custom properties set per flight. */
+.cth-kw { position: absolute; inset: 0; pointer-events: none; z-index: 2; overflow: visible; }
+.cth-kw-x { position: absolute; left: 0; top: 0; animation: cth-kw-x var(--kw-ms) cubic-bezier(0.4, 0, 0.2, 1) 1 both; }
+.cth-kw-y { animation: cth-kw-y var(--kw-ms) linear 1 both; }
+.cth-kw-body { margin: -6px 0 0 -6px; animation: cth-kw-fade var(--kw-ms) linear 1 both; }
+@keyframes cth-kw-x { from { transform: translateX(var(--kw-x1)); } to { transform: translateX(var(--kw-x2)); } }
+@keyframes cth-kw-y {
+  0%   { transform: translateY(var(--kw-y1)); animation-timing-function: ease-out; }
+  50%  { transform: translateY(calc((var(--kw-y1) + var(--kw-y2)) / 2 - var(--kw-arc))); animation-timing-function: ease-in; }
+  100% { transform: translateY(var(--kw-y2)); }
+}
+@keyframes cth-kw-fade { 0% { opacity: 0; } 12% { opacity: 1; } 88% { opacity: 1; } 100% { opacity: 0; } }
+/* The tail is the piece's own part box: it trails and thins as the wisp flies. */
+.cth-kw .cth-pc-wisp-tail { transform-origin: 100% 50%; animation: cth-kw-tail var(--kw-ms) linear 1 both; }
+@keyframes cth-kw-tail { 0% { transform: scaleX(0.4); opacity: 0.6; } 40% { transform: scaleX(1); opacity: 1; } 100% { transform: scaleX(0.6); opacity: 0; } }
+/* The catch: the receiving card, once, when the wisp lands (the delay is the
+   flight's length, DOT_MS). */
+.pro-agent-card.cth-kw-catch { animation: cth-kw-catch 300ms ease-out 900ms 1; }
+@keyframes cth-kw-catch { 0% { transform: scale(1); } 45% { transform: scale(1.03); } 75% { transform: scale(0.99); } 100% { transform: scale(1); } }
+
+/* ── 17, the potion: two bubbles out of the context bar, once per change ── */
+.cth-kb { position: absolute; bottom: 100%; width: 0; height: 0; pointer-events: none; }
+.cth-kb > i { position: absolute; bottom: -1px; border-radius: 50%; background: var(--cth-season-orange); opacity: 0; animation: cth-kb-rise 1200ms ease-out 1; }
+.cth-kb > i:first-child { left: -4px; width: 2px; height: 2px; }
+.cth-kb > i:last-child { left: -1px; width: 3px; height: 3px; animation-delay: 250ms; }
+@keyframes cth-kb-rise { 0% { transform: translateY(0) scale(0.5); opacity: 0; } 25% { opacity: 0.9; } 100% { transform: translateY(-9px) scale(1); opacity: 0; } }
+
+/* ── 21, the badge: a shell behind the digits, a pop and a ring on change ── */
+.cth-kc { position: relative; isolation: isolate; }
+.cth-kc-shell { position: absolute; left: 50%; top: 50%; z-index: -1; display: block; pointer-events: none; }
+.cth-kc[data-pop='1'] .cth-kc-shell { animation: cth-kc-pop 420ms cubic-bezier(0.3, 1.4, 0.5, 1) 1; }
+@keyframes cth-kc-pop { 0% { transform: scale(1); } 35% { transform: scale(1.35); } 65% { transform: scale(0.92); } 100% { transform: scale(1); } }
+/* Round 4, R4-6: a badge with two states. Unlit: the shell dims. Lit: the
+   shell at full strength, and nothing else: the digits sit on the pumpkin
+   with no plate behind them (Round 7, R7-1). */
+.cth-kc[data-lit='0'] .cth-kc-shell { opacity: 0.62; }
+.cth-kr { display: inline-flex; transform-origin: 50% 10%; }
+.cth-kr[data-ring='1'] { animation: cth-kc-ring 600ms ease-in-out 1; }
+@keyframes cth-kc-ring { 0%, 100% { transform: rotate(0); } 20% { transform: rotate(14deg); } 40% { transform: rotate(-12deg); } 60% { transform: rotate(8deg); } 80% { transform: rotate(-4deg); } }
+
+/* ── 20, the grave toast: rises with an overshoot, sinks on dismiss ──────── */
+.cth-kt { animation: cth-kt-rise 360ms cubic-bezier(0.3, 1.2, 0.5, 1) 1 both; }
+.cth-kt[data-leaving='1'] { animation: cth-kt-sink 480ms ease-in 1 both; }
+@keyframes cth-kt-rise { 0% { transform: translateY(60px); opacity: 0; } 70% { transform: translateY(-4px); opacity: 1; } 100% { transform: translateY(0); opacity: 1; } }
+@keyframes cth-kt-sink { 0% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(60px); opacity: 0; } }
+.cth-kt-ground { position: fixed; left: 50%; bottom: 3px; margin-left: -130px; z-index: 299; opacity: 0.8; pointer-events: none; display: block; }
+
+/* ── 15, the wax tabs: one bar slides, three drips, then still ───────────── */
+.cth-kx { position: absolute; left: 0; bottom: 0; pointer-events: none; transition: transform 360ms cubic-bezier(0.3, 1.4, 0.5, 1); }
+.cth-kx-drip { display: block; }
+.cth-kx-drip .cth-pc-wax-drip { transform: scaleY(0); }
+.cth-kx-drip[data-drip='1'] .cth-pc-wax-drip { animation: cth-kx-drip 2800ms ease-in 3; }
+@keyframes cth-kx-drip { 0%, 55% { transform: scaleY(0); opacity: 1; } 75% { transform: scaleY(1); opacity: 1; } 100% { transform: scaleY(1); opacity: 0; } }
+
+/* ── 9, ignite: the button is the candle ─────────────────────────────────── */
+/* The wick stands on the button's top edge and the flame lights above it,
+   outside the box, so the button's own size and its focus ring do not
+   change. The press is the button's own transform. */
+.cth-ki-wick { position: absolute; top: -3px; right: 10px; display: block; pointer-events: none; }
+.cth-ki-flame { position: absolute; top: -14px; right: 7px; display: block; pointer-events: none; transform: scale(0); transform-origin: 50% 100%; transition: transform 240ms cubic-bezier(0.3, 1.4, 0.5, 1); }
+.cth-ki-fire { display: block; transform-origin: 50% 100%; }
+[data-cth-ignite]:hover .cth-ki-flame, [data-cth-ignite]:focus-visible .cth-ki-flame { transform: scale(1); }
+[data-cth-ignite]:hover .cth-ki-fire, [data-cth-ignite]:focus-visible .cth-ki-fire { animation: cth-ki-flicker 1.4s ease-in-out infinite; }
+:root[data-cth-season='halloween'] [data-cth-ignite]:active:not(:disabled) { transform: scale(0.96); }
+@keyframes cth-ki-flicker { 0%, 100% { transform: scale(1, 1) rotate(0deg); } 25% { transform: scale(0.9, 1.1) rotate(-4deg); } 50% { transform: scale(1.06, 0.94) rotate(3deg); } 75% { transform: scale(0.95, 1.05) rotate(-1deg); } }
+
+/* ── 13, boo: a ghost pops from behind the copy button, ducks back ───────── */
+.cth-kg { position: absolute; left: 50%; top: -19px; margin-left: -8px; z-index: -1; opacity: 0; pointer-events: none; display: block; animation: cth-kg-boo 1200ms ease-out 1 both; }
+@keyframes cth-kg-boo { 0% { transform: translateY(18px); opacity: 0; } 20% { transform: translateY(-2px); opacity: 1; } 30% { transform: translateY(0); } 75% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(18px); opacity: 0; } }
+
+/* ── 5, the lantern in the Halloween button: lit or out ──────────────────── */
+/* The piece lights its own glass (opacity, 240 ms). Lit, the glow breathes
+   three times as it lights, then holds still, so an open Settings page costs
+   nothing while the person reads it. */
+.cth-kl { display: inline-flex; margin-right: 2px; pointer-events: none; }
+.cth-kl .cth-pc-lantern[data-lit='on'] .cth-pc-lantern-glow { animation: cth-kl-glow 2.2s ease-in-out 3; }
+@keyframes cth-kl-glow { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   TRACK W4b
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* ── 4, the cauldron: two bubbles out of a thinking dot, three times ─────── */
+.cth-kq { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; }
+.cth-kq-bubbles { position: absolute; left: 50%; top: 0; width: 0; height: 0; pointer-events: none; }
+.cth-kq-bubbles > i { position: absolute; bottom: 0; border-radius: 50%; background: var(--cth-status-thinking); opacity: 0; animation: cth-kq-rise 1400ms ease-out 3; }
+.cth-kq-bubbles > i:first-child { left: -3px; width: 2px; height: 2px; }
+.cth-kq-bubbles > i:last-child { left: 0; width: 3px; height: 3px; animation-delay: 500ms; }
+@keyframes cth-kq-rise { 0% { transform: translateY(0) scale(0.5); opacity: 0; } 20% { opacity: 0.9; } 100% { transform: translateY(-7px) scale(1); opacity: 0; } }
+
+/* ── 6, the rattled ghost: one shake into blocked or looping ─────────────── */
+.cth-kq[data-shake='1'] { animation: cth-kq-shake 420ms ease-in-out 1; }
+@keyframes cth-kq-shake { 0%, 100% { transform: translateX(0); } 20% { transform: translateX(-2px) rotate(-3deg); } 40% { transform: translateX(2px) rotate(3deg); } 60% { transform: translateX(-1.5px) rotate(-2deg); } 80% { transform: translateX(1px) rotate(1deg); } }
+/* The failed download row carries a small rattled ghost before its words. */
+.cth-kq-ghost { display: inline-flex; margin-right: 4px; flex-shrink: 0; }
+
+/* ── 7, the cobweb in the corner of an idle card ─────────────────────────── */
+.cth-kv { position: absolute; top: 0; right: 0; display: block; opacity: 0.55; pointer-events: none; transform-origin: 50% 50%; transition: transform 900ms cubic-bezier(0.3, 0.9, 0.4, 1); }
+.pro-agent-card:hover .cth-kv, .cth-kv-host:hover .cth-kv { transform: rotate(360deg); }
+
+/* ── 2, the spider loader: a drop on its thread, then a bob ──────────────── */
+.cth-kd { position: relative; display: inline-block; flex-shrink: 0; pointer-events: none; }
+.cth-kd-thread { position: absolute; left: 50%; top: -6px; bottom: 6px; width: 1px; margin-left: -0.5px; background: var(--cth-ink-500); transform-origin: 50% 0; animation: cth-kd-thread 600ms ease-out 1 both; }
+.cth-kd-body { position: absolute; left: 0; bottom: 0; display: block; animation: cth-kd-drop 600ms ease-out 1 both; }
+.cth-kd-bob { display: block; animation: cth-kd-bob 1600ms ease-in-out 600ms 3; }
+.cth-kd[data-loop='1'] .cth-kd-bob { animation: cth-kd-bob 1600ms ease-in-out 600ms infinite; }
+@keyframes cth-kd-thread { from { transform: scaleY(0); } to { transform: scaleY(1); } }
+@keyframes cth-kd-drop { from { transform: translateY(-14px); opacity: 0; } 60% { opacity: 1; } to { transform: translateY(0); opacity: 1; } }
+@keyframes cth-kd-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+
+/* ── 3 and 14, the floats: over the page at the measured spot ────────────── */
+.cth-kf { position: fixed; z-index: 298; pointer-events: none; display: block; margin-left: -9px; }
+.cth-kf[data-kind='poof'] { margin-top: -10px; animation: cth-kf-poof 1100ms ease-out 1 both; }
+.cth-kf[data-kind='stone'] { margin-top: -18px; animation: cth-kf-stone 1300ms ease-out 1 both; }
+@keyframes cth-kf-poof { 0% { transform: translateY(0) scale(0.6); opacity: 0; } 20% { opacity: 1; } 100% { transform: translateY(-34px) scale(1); opacity: 0; } }
+@keyframes cth-kf-stone { 0% { transform: translateY(12px) scale(0.6); opacity: 0; } 30% { transform: translateY(0) scale(1); opacity: 1; } 75% { transform: translateY(0); opacity: 1; } 100% { transform: translateY(4px); opacity: 0; } }
+
+/* ── 23, the bat burst: three bats out of a positioned parent, once ──────── */
+.cth-kz { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; z-index: 2; }
+.cth-kz-bat { position: absolute; left: -22px; top: -11px; opacity: 0; animation: cth-kz-fly 1200ms ease-out 1 both; }
+.cth-kz-bat-1 { --kz-x: -70px; --kz-y: -48px; }
+.cth-kz-bat-2 { --kz-x: 8px; --kz-y: -64px; animation-delay: 60ms; }
+.cth-kz-bat-3 { --kz-x: 76px; --kz-y: -40px; animation-delay: 120ms; }
+.cth-kz-bat .cth-pc-bat-wing-l { animation: cth-kz-flap-l 240ms ease-in-out 5; }
+.cth-kz-bat .cth-pc-bat-wing-r { animation: cth-kz-flap-r 240ms ease-in-out 5; }
+@keyframes cth-kz-fly { 0% { transform: translate(0, 0) scale(0.5); opacity: 0; } 15% { opacity: 1; } 100% { transform: translate(var(--kz-x), var(--kz-y)) scale(0.8); opacity: 0; } }
+@keyframes cth-kz-flap-l { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-28deg); } }
+@keyframes cth-kz-flap-r { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(28deg); } }
+
+/* ── 24, the summoning palette: a keycap press, a sheet that settles ─────── */
+kbd[data-cth-keycap='1'] { animation: cth-kk-press 200ms ease-out 1; }
+@keyframes cth-kk-press { 0% { transform: translateY(0); } 40% { transform: translateY(1px) scale(0.96); } 100% { transform: translateY(0); } }
+.cth-kk-sheet { animation: cth-kk-settle 200ms ease-out 1 both; }
+@keyframes cth-kk-settle { 0% { transform: translateY(-4px) scale(0.985); opacity: 0; } 100% { transform: translateY(0) scale(1); opacity: 1; } }
+
+/* ── 10, the web spun checkbox: three strands out of the top left corner ─── */
+.cth-kn { position: relative; display: inline-flex; flex-shrink: 0; }
+/* The strands fan right and down from their origin (Pam's contract); turned
+   half round on the box's top left corner they fan up and left, out of the
+   box and away from the label. The turn is static; the growth is each
+   strand's own. */
+.cth-kn-strands { position: absolute; left: 1px; top: 1px; display: block; pointer-events: none; transform: rotate(180deg); transform-origin: 0 0; }
+.cth-kn-strands .cth-pc-strand { animation: cth-kn-spin 700ms ease-out 1 both; }
+.cth-kn-strands .cth-pc-strand-2 { animation-delay: 60ms; }
+.cth-kn-strands .cth-pc-strand-3 { animation-delay: 120ms; }
+@keyframes cth-kn-spin { 0% { transform: scale(0); opacity: 1; } 60% { transform: scale(1); opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
+
+/* ── 11, fog focus: two wisps settle in at opposite corners ──────────────── */
+.cth-kh { position: relative; display: flex; flex: 1; min-width: 0; }
+.cth-kh-a, .cth-kh-b { position: absolute; display: block; opacity: 0; pointer-events: none; transition: opacity 400ms ease-out, transform 400ms ease-out; }
+.cth-kh-a { left: -6px; top: -5px; transform: translateX(4px); }
+.cth-kh-b { right: -6px; bottom: -5px; transform: translateX(-4px); }
+.cth-kh:focus-within .cth-kh-a, .cth-kh:focus-within .cth-kh-b { opacity: 0.9; transform: translateX(0); }
+
+/* ── 16, the peeking tooltip ─────────────────────────────────────────────── */
+.cth-ky { position: absolute; right: 8px; top: -11px; display: block; pointer-events: none; animation: cth-ky-peek 300ms ease-out 1 both; }
+@keyframes cth-ky-peek { 0% { transform: translateY(8px); opacity: 0; } 100% { transform: translateY(0); opacity: 1; } }
+
+/* ── the window hidden, and reduced motion ───────────────────────────────── */
+:root[data-cth-window='hidden'] .cth-kw-x, :root[data-cth-window='hidden'] .cth-kw-y, :root[data-cth-window='hidden'] .cth-kw-body,
+:root[data-cth-window='hidden'] .cth-kw .cth-pc-wisp-tail, :root[data-cth-window='hidden'] .cth-kb > i, :root[data-cth-window='hidden'] .cth-kc-shell,
+:root[data-cth-window='hidden'] .cth-kr, :root[data-cth-window='hidden'] .cth-kt, :root[data-cth-window='hidden'] .cth-kx-drip .cth-pc-wax-drip,
+:root[data-cth-window='hidden'] .cth-ki-fire, :root[data-cth-window='hidden'] .cth-kg, :root[data-cth-window='hidden'] .cth-kl .cth-pc-lantern-glow,
+:root[data-cth-window='hidden'] .pro-agent-card.cth-kw-catch,
+:root[data-cth-window='hidden'] .cth-kq-bubbles > i, :root[data-cth-window='hidden'] .cth-kq[data-shake='1'], :root[data-cth-window='hidden'] .cth-kd-thread,
+:root[data-cth-window='hidden'] .cth-kd-body, :root[data-cth-window='hidden'] .cth-kd-bob, :root[data-cth-window='hidden'] .cth-kf, :root[data-cth-window='hidden'] .cth-kz-bat,
+:root[data-cth-window='hidden'] .cth-kz-bat .cth-pc-bat-wing, :root[data-cth-window='hidden'] kbd[data-cth-keycap='1'], :root[data-cth-window='hidden'] .cth-kk-sheet,
+:root[data-cth-window='hidden'] .cth-kn-strands .cth-pc-strand, :root[data-cth-window='hidden'] .cth-ky { animation-play-state: paused !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cth-kw *, .cth-kw, .cth-kb > i, .cth-kc-shell, .cth-kr, .cth-kt, .cth-kx, .cth-kx-drip .cth-pc-wax-drip, .cth-ki-flame, .cth-ki-fire, .cth-kg, .cth-kl .cth-pc-lantern-glow, .pro-agent-card.cth-kw-catch,
+  .cth-kq, .cth-kq-bubbles > i, .cth-kv, .cth-kd-thread, .cth-kd-body, .cth-kd-bob, .cth-kf, .cth-kz-bat, .cth-kz-bat .cth-pc-bat-wing, kbd[data-cth-keycap], .cth-kk-sheet, .cth-kn-strands .cth-pc-strand, .cth-kh-a, .cth-kh-b, .cth-ky { animation: none !important; transition: none !important; }
+  .cth-kb > i, .cth-kg { opacity: 0; }
+  .cth-kt[data-leaving='1'] { opacity: 0; }
+  /* Still pieces the person can see: the thread and the spider hang, the web
+     sits, the tooltip's ghost peeks, the fog stays down, the strands and the
+     bats and the floats are not drawn. */
+  .cth-kq-bubbles > i, .cth-kf, .cth-kz-bat, .cth-kn-strands { opacity: 0; }
+  .cth-kh-a, .cth-kh-b { opacity: 0 !important; }
+  .cth-kd-thread { transform: scaleY(1); }
+  .cth-kd-body { transform: translateY(0); opacity: 1; }
+  .cth-ky { transform: translateY(0); opacity: 1; }
+}

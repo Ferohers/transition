@@ -328,7 +328,11 @@ pub fn ingest(kg_root: &Path, input: KgIngestInput) -> Result<KgMeta, String> {
         .title
         .clone()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| if derived.is_empty() { None } else { Some(derived) })
+        .or(if derived.is_empty() {
+            None
+        } else {
+            Some(derived)
+        })
         .unwrap_or_else(|| source.clone());
 
     let mut chunks = chunk_text(index_text);

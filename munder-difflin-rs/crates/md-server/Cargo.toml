@@ -19,6 +19,7 @@ md-core = { path = "../md-core" }
 md-db = { path = "../md-db" }
 md-git = { path = "../md-git" }
 md-hive = { path = "../md-hive" }
+md-integrations = { path = "../md-integrations" }
 md-pty = { path = "../md-pty" }
 
 [dev-dependencies]

@@ -264,6 +264,40 @@ async fn worktrees_size(Json(req): Json<PathReq>) -> Json<Value> {
     Json(serde_json::json!(md_git::directory_size_bytes(p)))
 }
 
+async fn fs_stat_abs(Json(req): Json<PathReq>) -> Json<Value> {
+    let p = md_core::config::expand_tilde(&req.path);
+    match std::fs::metadata(&p) {
+        Ok(m) => Json(serde_json::json!({
+            "exists": true,
+            "isFile": m.is_file(),
+            "isDir": m.is_dir(),
+            "path": p.to_string_lossy()
+        })),
+        Err(_) => Json(serde_json::json!({
+            "exists": false,
+            "isFile": false,
+            "isDir": false,
+            "path": p.to_string_lossy()
+        })),
+    }
+}
+
+async fn tools_status() -> Json<Value> {
+    let engines = ["claude", "codex", "gemini", "antigravity", "qwen", "cursor"];
+    let mut rows = Vec::new();
+    for name in engines {
+        let resolved = md_pty::manager::resolve_command(name);
+        let exists = resolved.as_ref().is_some_and(|p| p.is_file());
+        rows.push(serde_json::json!({
+            "id": format!("engine:{name}"),
+            "found": exists,
+            "path": resolved.map(|p| p.to_string_lossy().into_owned()),
+            "installCommand": if name == "claude" { Some("curl -fsSL https://claude.ai/install.sh | bash") } else { None }
+        }));
+    }
+    Json(Value::Array(rows))
+}
+
 async fn ide_page() -> Html<&'static str> {
     Html(
         r#"<!doctype html>
@@ -325,6 +359,8 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/fs/create", post(fs_create))
         .route("/api/v1/fs/rename", post(fs_rename))
         .route("/api/v1/fs/trash", post(fs_trash))
+        .route("/api/v1/fs/stat-abs", post(fs_stat_abs))
+        .route("/api/v1/tools/status", get(tools_status))
         .route("/api/v1/git/is-repo", get(git_is_repo))
         .route("/api/v1/git/main-repo", get(git_main_repo))
         .route("/api/v1/git/branch", get(git_branch))

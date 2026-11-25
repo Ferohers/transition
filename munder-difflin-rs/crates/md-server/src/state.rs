@@ -7,6 +7,11 @@ use md_hive::{
     manager::HiveManager,
     roster::RosterStore,
 };
+use md_integrations::{
+    file_share::FileShareRegistry,
+    secrets::{IntegrationBroker, SecretStore},
+    webhooks::WebhookRegistry,
+};
 use md_pty::{
     manager::PtyManager,
     submitter::{PtySubmitter, TerminalProbes},
@@ -43,6 +48,10 @@ pub struct AppState {
     pub submitter: PtySubmitter,
     pub probes: TerminalProbes,
     pub ide: Arc<Mutex<IdeState>>,
+    pub secrets: Arc<Mutex<SecretStore>>,
+    pub broker: Arc<Mutex<IntegrationBroker>>,
+    pub webhooks: Arc<Mutex<WebhookRegistry>>,
+    pub file_share: Arc<Mutex<FileShareRegistry>>,
     pub events_tx: broadcast::Sender<ServerEvent>,
 }
 

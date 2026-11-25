@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en" data-cth-theme="dark" data-cth-skin="professional">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Munder Difflin (Rust Web)</title>
+  <link rel="stylesheet" href="/assets/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="pro-sidebar" aria-label="Pro View Sidebar">
+      <div class="pro-brand">
+        <span>Munder Difflin</span>
+        <span class="pro-chip" id="ws-badge">WS</span>
+      </div>
+      <div class="pro-section-label">Workspace</div>
+      <button type="button" class="pro-nav-btn active" data-tab="floor">Main Office Floor</button>
+      <button type="button" class="pro-nav-btn" data-tab="terminal">Terminal (PTY)</button>
+      <button type="button" class="pro-nav-btn" data-tab="tasks">Kanban Tasks</button>
+      <button type="button" class="pro-nav-btn" data-tab="themes">Theme Workbench</button>
+      <div class="pro-section-label">Agents (Pro View)</div>
+      <div id="agent-list"></div>
+    </aside>
+
+    <main class="main-stage">
+      <header class="topbar">
+        <div class="toolbar-row">
+          <button type="button" class="btn primary" id="btn-spawn-shell">+ Spawn Shell</button>
+          <button type="button" class="btn" id="btn-open-task-dialog">+ New Task</button>
+          <button type="button" class="btn" id="theme-toggle">Toggle Theme</button>
+        </div>
+        <span class="pro-chip" id="floor-dims">Floor Ready</span>
+      </header>
+
+      <section id="tab-floor" class="view-pane active">
+        <div id="floor-stage">
+          <div id="floor-box">
+            <div class="toolbar-row">
+              <strong>Main Office Area (Enlarged)</strong>
+              <span class="pro-chip">Local-Only · Zero Telemetry</span>
+            </div>
+            <div id="floor-desks" class="floor-desks"></div>
+            <div class="pro-chip" id="catalog-summary">Loading catalog…</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tab-terminal" class="view-pane">
+        <pre id="term-out" class="terminal-out">Click "+ Spawn Shell" to start a Rust portable-pty session.</pre>
+        <form id="term-form" class="toolbar-row">
+          <input id="term-input" type="text" placeholder="Type command and press Enter…" style="flex:1" />
+          <button type="submit" class="btn primary">Send</button>
+        </form>
+      </section>
+
+      <section id="tab-tasks" class="view-pane">
+        <div id="tasks-list"></div>
+      </section>
+
+      <section id="tab-themes" class="view-pane">
+        <div class="pro-chip" id="sandbox-status">Initializing sandboxed preview…</div>
+        <iframe
+          id="theme-sandbox"
+          class="theme-sandbox"
+          sandbox="allow-scripts"
+          title="Code Theme Preview"
+          srcdoc="<!doctype html><html><body style='margin:0;padding:12px;background:#121216;color:#dedbd6;font:12px monospace'><div>Sandboxed Code Theme Preview</div><script>parent.postMessage({type:'sandbox-ready'}, '*');window.addEventListener('message',e=>{if(e.data?.type==='theme'){document.body.style.background=e.data.theme==='light'?'#f4f2ee':'#121216';document.body.style.color=e.data.theme==='light'?'#1e1e24':'#dedbd6';}});</script></body></html>"
+        ></iframe>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="add-task-dialog" aria-labelledby="task-dlg-title" closedby="any">
+    <h1 id="task-dlg-title" style="margin:0 0 10px;font-size:14px">Create Kanban Task</h1>
+    <form method="dialog" style="display:flex;flex-direction:column;gap:10px">
+      <input id="task-title-input" type="text" placeholder="Task title…" autofocus />
+      <div class="toolbar-row" style="justify-content:flex-end">
+        <button value="cancel" class="btn">Cancel</button>
+        <button value="create" class="btn primary">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

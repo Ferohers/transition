@@ -50,8 +50,10 @@ struct SearchQuery {
 }
 
 fn resolve_kg_root(state: &AppState) -> (PathBuf, bool) {
-    let mut cfg_store = state.config.lock().unwrap();
-    let cfg = cfg_store.read();
+    let cfg = {
+        let mut cfg_store = state.config.lock().unwrap();
+        cfg_store.read()
+    };
     let kg_obj = cfg.extra.get("knowledgeGraph").and_then(|v| v.as_object());
     let enabled = kg_obj
         .and_then(|o| o.get("enabled"))
@@ -64,9 +66,9 @@ fn resolve_kg_root(state: &AppState) -> (PathBuf, bool) {
         .filter(|s| !s.is_empty())
         .map(expand_tilde)
         .unwrap_or_else(|| {
-            state
-                .harness_home()
-                .map(|h| h.join("knowledge"))
+            cfg.harness_home
+                .as_deref()
+                .map(|h| PathBuf::from(h).join("knowledge"))
                 .unwrap_or_else(|| default_data_dir().join("knowledge"))
         });
     (root, enabled)

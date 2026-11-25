@@ -116,17 +116,28 @@
 
     // Hive & Controls
     hiveRegistry: () => req('/api/v1/hive/registry'),
-    hiveTasks: () => req('/api/v1/hive/tasks'),
-    hiveTasksArchive: () => req('/api/v1/hive/tasks-archive'),
+    hiveTasks: () => req('/api/v1/hive/tasks').then((r) => (Array.isArray(r) ? r : [])),
+    hiveTasksArchive: () => req('/api/v1/hive/tasks/archive').then((r) => (Array.isArray(r) ? r : [])),
     hiveAddTask: (task) => req('/api/v1/hive/tasks', { method: 'POST', body: JSON.stringify(task) }),
     hivePatchTask: (id, patch) => req(`/api/v1/hive/tasks/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     hiveDeleteTask: (id) => req(`/api/v1/hive/tasks/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    hiveBoard: () => req('/api/v1/hive/board'),
-    hiveLog: (limit) => req(`/api/v1/hive/log${limit ? `?limit=${limit}` : ''}`),
-    hiveInbox: (agentId) => req(`/api/v1/hive/inbox/${encodeURIComponent(agentId)}`),
-    hiveMessages: (agentId) => req(`/api/v1/hive/messages/${encodeURIComponent(agentId)}`),
+    hiveBoard: () => req('/api/v1/hive/board').then((r) => (typeof r === 'string' ? r : (r?.board ?? ''))),
+    hiveLog: (limit) => req(`/api/v1/hive/log${limit ? `?limit=${limit}` : ''}`).then((r) => (Array.isArray(r) ? r : [])),
+    hiveInbox: (agentId) => req(`/api/v1/hive/inbox/${encodeURIComponent(agentId)}`).then((r) => (Array.isArray(r) ? r : [])),
+    hiveMessages: (arg) => {
+      const params = new URLSearchParams();
+      if (typeof arg === 'string') params.set('agentId', arg);
+      else if (arg && typeof arg === 'object') {
+        if (arg.agentId) params.set('agentId', arg.agentId);
+        if (arg.limit) params.set('limit', String(arg.limit));
+      }
+      const qs = params.toString();
+      return req(`/api/v1/hive/messages${qs ? `?${qs}` : ''}`).then((r) => (Array.isArray(r) ? r : []));
+    },
+    hiveHumanMailSince: () => Promise.resolve([]),
+    historyPage: () => Promise.resolve({ rows: [], hasMore: false }),
     textSearch: (q) => req(`/api/v1/hive/search?q=${encodeURIComponent(q)}`),
-    controlSnapshot: () => req('/api/v1/control/snapshot'),
+    controlSnapshot: (agentId) => req(`/api/v1/control/${encodeURIComponent(agentId || 'god')}/snapshot`),
     controlPause: (agentId, reason) => req('/api/v1/control/pause', { method: 'POST', body: JSON.stringify({ agentId, reason }) }),
     controlResume: (agentId) => req('/api/v1/control/resume', { method: 'POST', body: JSON.stringify({ agentId }) }),
     controlSteer: (agentId, message) => req('/api/v1/control/steer', { method: 'POST', body: JSON.stringify({ agentId, message }) }),
@@ -178,7 +189,8 @@
     kgSearch: (q, limit) => req(`/api/v1/kg/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ''}`),
     kgGet: (id) => req(`/api/v1/kg/docs/${encodeURIComponent(id)}`),
     kgRemove: (id) => req(`/api/v1/kg/docs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-    agentTemplates: () => req('/api/v1/templates'),
+    agentTemplates: () => req('/api/v1/templates/pro').then((r) => (Array.isArray(r) ? r : [])),
+    agentTemplateRead: (id) => req(`/api/v1/templates/pro/${encodeURIComponent(id)}`),
 
     // Silenced external/omitted services & safe empty containers
     cloudList: () => Promise.resolve([]),
@@ -188,6 +200,9 @@
     teamsMembership: () => Promise.resolve(null),
     teamsOrg: () => Promise.resolve(null),
     teamsPolicy: () => Promise.resolve(null),
+    teamsConnection: () => Promise.resolve({ state: 'disconnected', reason: 'offline' }),
+    teamsRoster: () => Promise.resolve({ ok: false, error: 'offline' }),
+    hiveTakeDegraded: () => Promise.resolve([]),
     freeAccount: () => Promise.resolve(null),
     connectionsList: () => Promise.resolve([]),
     connectionsGrants: () => Promise.resolve([]),
@@ -204,6 +219,16 @@
     billingSummary: () => Promise.resolve(null),
     updateCurrent: () => Promise.resolve({ state: 'disabled' }),
     slackStatus: () => Promise.resolve({ running: false, disabled: true }),
+    slackHistory: () => Promise.resolve([]),
+    slackAnswersIn: () => Promise.resolve([]),
+    slackAnswerIn: () => Promise.resolve([]),
+    webhooksStatus: () => Promise.resolve({ running: false, endpoints: [], port: null }),
+    webhookStatus: () => Promise.resolve({ running: false, endpoints: [], port: null }),
+    puckState: () => Promise.resolve({ shown: false, recording: null, recipient: null, recipients: [], busy: false, error: null }),
+    puckConfig: () => Promise.resolve({ enabled: false }),
+    puckMeetings: () => Promise.resolve([]),
+    puckScreenshots: () => Promise.resolve([]),
+    puckHistory: () => Promise.resolve([]),
     telemetrySnapshot: () => Promise.resolve(null),
     telemetryUsage: () => Promise.resolve(null),
     telemetrySpans: () => Promise.resolve([]),
@@ -219,9 +244,11 @@
     customSecretList: () => Promise.resolve([]),
     integrationsList: () => Promise.resolve([]),
     officeThemesList: () => Promise.resolve({ themes: [], bad: [] }),
+    officeThemesRead: () => Promise.resolve(null),
     codeThemeList: () => Promise.resolve([]),
-    capabilitiesCatalog: () => Promise.resolve([]),
-    capabilitiesInstalled: () => Promise.resolve([]),
+    capabilitiesCatalog: () => req('/api/v1/catalog/capabilities').then((r) => r || { version: 1, entries: [], purposes: [] }),
+    capabilitiesInstalled: (body) => req('/api/v1/catalog/capabilities/installed', { method: 'POST', body: JSON.stringify(body || {}) }).then((r) => r || { plugins: [], servers: [], tools: [] }),
+    capabilitiesUnavailable: () => Promise.resolve([]),
     skillsCatalog: () => Promise.resolve([]),
     skillsLocal: () => Promise.resolve([]),
     fileShareList: () => Promise.resolve([]),

@@ -96120,7 +96120,7 @@ function RowMenu({ at: at2, items, onClose }) {
   );
 }
 function Strip({ kind, word, text: text2, color, tint, title, onClick, action }) {
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-strip": kind, title: title ?? text2, onClick, style: { marginTop: 4, display: "flex", alignItems: "center", gap: 6, fontSize: 15.4, padding: "3px 7px", borderRadius: 6, background: tint, color, minWidth: 0, cursor: onClick ? "pointer" : void 0 }, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-strip": kind, title: title ?? text2, onClick, style: { marginTop: 4, display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 7px", borderRadius: 6, background: tint, color, minWidth: 0, cursor: onClick ? "pointer" : void 0 }, children: [
     word && /* @__PURE__ */ jsxRuntimeExports.jsx("b", { style: { fontWeight: 600, flexShrink: 0 }, children: word }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { dir: "auto", style: { flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: text2 }),
     action && /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", "data-strip-action": kind, onClick: (e) => {
@@ -101592,11 +101592,11 @@ function ProjectRows({ side, rows, current: current2, onSelect }) {
         },
         style: { display: "flex", flexDirection: "column", alignItems: "stretch", gap: 1, width: "100%", padding: "5px 8px", borderRadius: 7, border: "none", cursor: "pointer", textAlign: "start", font: "inherit", background: on ? "var(--cth-surface-active)" : "transparent", color: on ? "var(--cth-ink-900)" : "var(--cth-ink-700)" },
         children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 17.5, fontWeight: on ? 500 : 400 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 12.5, fontWeight: on ? 500 : 400 }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "folder", size: 12, style: { color: "var(--cth-ink-500)", flexShrink: 0 } }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: r6.cloud?.officeFiles ? t2("pro.projects.officeFiles.name") : r6.name })
           ] }),
-          r6.cloud?.noAgent && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-project-no-agent": r6.key, style: { paddingInlineStart: 18, fontSize: 15.4, color: "var(--cth-ink-500)" }, children: t2("pro.projects.home.noAgent") })
+          r6.cloud?.noAgent && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-project-no-agent": r6.key, style: { paddingInlineStart: 18, fontSize: 11, color: "var(--cth-ink-500)" }, children: t2("pro.projects.home.noAgent") })
         ]
       },
       r6.key
@@ -101650,8 +101650,8 @@ function OfficeHeading({ name: name2, open: open2, onToggle, count, hot = false,
         style: { display: "flex", alignItems: "center", gap: 6, flex: "0 1 auto", minWidth: 0, padding: 0, border: "none", background: "transparent", font: "inherit", cursor: "pointer", color: "var(--cth-ink-500)" },
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { display: "inline-grid", placeItems: "center", width: 14, height: 14, flexShrink: 0, transform: open2 ? "rotate(90deg)" : "none", transition: "transform 120ms" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "chevronRight", size: 10 }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 14.7, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: name2 }),
-          !open2 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-office-folded-count": hot ? "hot" : "", style: { fontSize: 14.7, fontVariantNumeric: "tabular-nums", color: hot ? "var(--cth-status-waiting)" : "var(--cth-ink-500)" }, children: count })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: name2 }),
+          !open2 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-office-folded-count": hot ? "hot" : "", style: { fontSize: 10.5, fontVariantNumeric: "tabular-nums", color: hot ? "var(--cth-status-waiting)" : "var(--cth-ink-500)" }, children: count })
         ]
       }
     ),
@@ -101668,7 +101668,7 @@ function AddAgentRow({ onClick, off = false, data, title }) {
       ...data,
       disabled: off,
       onClick,
-      style: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "5px 8px", borderRadius: 7, border: "1px dashed var(--cth-ink-300)", background: "transparent", font: "inherit", fontSize: 17.5, color: "var(--cth-ink-700)", cursor: off ? "default" : "pointer", opacity: off ? 0.5 : 1, textAlign: "start" },
+      style: { display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "5px 8px", borderRadius: 7, border: "1px dashed var(--cth-ink-300)", background: "transparent", font: "inherit", fontSize: 12.5, color: "var(--cth-ink-700)", cursor: off ? "default" : "pointer", opacity: off ? 0.5 : 1, textAlign: "start" },
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "plus", size: 13 }),
         t2("rail.addAgent")
@@ -101708,14 +101708,14 @@ function OfficeProjectsSlot({ office: office2, current: current2, onSelect, onAd
         label: t2("pro.projects.title"),
         onClick: toggle2,
         trailing: /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginInlineStart: "auto", fontSize: 15.4, color: "var(--cth-ink-500)", fontVariantNumeric: "tabular-nums" }, children: rows.filter((r6) => !r6.cloud?.officeFiles).length }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { marginInlineStart: "auto", fontSize: 11, color: "var(--cth-ink-500)", fontVariantNumeric: "tabular-nums" }, children: rows.filter((r6) => !r6.cloud?.officeFiles).length }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(ListChevron, { open: open2 })
         ] }),
         data: { "data-office-projects-row": office2 ?? "local", "aria-expanded": String(open2) }
       }
     ),
     open2 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-office-projects": office2 ?? "local", style: { display: "flex", flexDirection: "column", gap: 1, paddingTop: 2, paddingBottom: 4, paddingInlineStart: 10 }, children: [
-      rows.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(ProjectRows, { side: office2 === null ? "here" : "cloud", rows, current: current2, onSelect }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-office-projects-empty": office2 ?? "local", style: { margin: "4px 8px 4px 0", padding: 10, border: "1px dashed var(--cth-ink-300)", borderRadius: 8, fontSize: 16.8, lineHeight: 1.45, color: "var(--cth-ink-700)" }, children: [
+      rows.length > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(ProjectRows, { side: office2 === null ? "here" : "cloud", rows, current: current2, onSelect }) : /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-office-projects-empty": office2 ?? "local", style: { margin: "4px 8px 4px 0", padding: 10, border: "1px dashed var(--cth-ink-300)", borderRadius: 8, fontSize: 12, lineHeight: 1.45, color: "var(--cth-ink-700)" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("b", { style: { fontWeight: 600, color: "var(--cth-ink-900)" }, children: t2("pro.projects.empty.title") }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("br", {}),
         t2(office2 === null ? "pro.projects.empty.body" : "pro.projects.empty.bodyCloud"),
@@ -101726,7 +101726,7 @@ function OfficeProjectsSlot({ office: office2, current: current2, onSelect, onAd
             "data-office-projects-add": office2 ?? "local",
             disabled: addOff,
             onClick: onAdd,
-            style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 7, border: "1px solid var(--cth-ink-300)", background: "transparent", font: "inherit", fontSize: 16.8, color: "var(--cth-ink-900)", cursor: addOff ? "default" : "pointer", opacity: addOff ? 0.5 : 1 },
+            style: { display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 7, border: "1px solid var(--cth-ink-300)", background: "transparent", font: "inherit", fontSize: 12, color: "var(--cth-ink-900)", cursor: addOff ? "default" : "pointer", opacity: addOff ? 0.5 : 1 },
             children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "plus", size: 12 }),
               t2("rail.addAgent")
@@ -101741,7 +101741,7 @@ function OfficeProjectsSlot({ office: office2, current: current2, onSelect, onAd
           "data-office-projects-home": office2,
           "aria-current": current2 === officeProjectsScreen(office2) ? "page" : void 0,
           onClick: () => onSelect(officeProjectsScreen(office2)),
-          style: { display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "5px 8px", borderRadius: 7, border: "none", cursor: "pointer", textAlign: "start", font: "inherit", fontSize: 16.8, background: current2 === officeProjectsScreen(office2) ? "var(--cth-surface-active)" : "transparent", color: "var(--cth-ink-500)" },
+          style: { display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "5px 8px", borderRadius: 7, border: "none", cursor: "pointer", textAlign: "start", font: "inherit", fontSize: 12, background: current2 === officeProjectsScreen(office2) ? "var(--cth-surface-active)" : "transparent", color: "var(--cth-ink-500)" },
           children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "chevronRight", size: 11, style: { flexShrink: 0 } }),
             t2("pro.projects.home.open")
@@ -101753,7 +101753,7 @@ function OfficeProjectsSlot({ office: office2, current: current2, onSelect, onAd
 }
 function Live({ n, word }) {
   if (!n) return null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 15.4, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("i", { style: { width: 6, height: 6, borderRadius: "50%", background: "var(--cth-status-working)", display: "inline-block" } }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-figures)" }, children: n }),
     " ",
@@ -102186,9 +102186,9 @@ function CloudAgentRowView({ officeId, agent, row: row2, active, onSelect, onRem
                 },
                 "aria-label": t2("pro.rail.menu.rename"),
                 "data-cloud-rename": agent.id,
-                style: { ...inputStyle$3, height: 25, padding: "0 6px", borderRadius: 5, fontSize: 17.5, flex: 1, minWidth: 0, width: "auto" }
+                style: { ...inputStyle$3, height: 25, padding: "0 6px", borderRadius: 5, fontSize: 12.5, flex: 1, minWidth: 0, width: "auto" }
               }
-            ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-name": true, style: { fontSize: 18.2, fontWeight: 400, flex: "0 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: agent.name }),
+            ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-name": true, style: { fontSize: 13, fontWeight: 400, flex: "0 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: agent.name }),
             row2.start && /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "button",
               {
@@ -102197,7 +102197,7 @@ function CloudAgentRowView({ officeId, agent, row: row2, active, onSelect, onRem
                 disabled: row2.start === "off" || starting,
                 title: startTitle,
                 onClick: () => start2(),
-                style: { marginLeft: "auto", height: 25, padding: "0 7px", borderRadius: 5, flexShrink: 0, border: "1px solid var(--cth-ink-300)", background: "var(--cth-cream-100)", color: "var(--cth-ink-900)", font: "inherit", fontSize: 14.7, fontWeight: 500, lineHeight: 1, cursor: row2.start === "off" || starting ? "default" : "pointer", opacity: row2.start === "off" || starting ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: 4 },
+                style: { marginLeft: "auto", height: 25, padding: "0 7px", borderRadius: 5, flexShrink: 0, border: "1px solid var(--cth-ink-300)", background: "var(--cth-cream-100)", color: "var(--cth-ink-900)", font: "inherit", fontSize: 10.5, fontWeight: 500, lineHeight: 1, cursor: row2.start === "off" || starting ? "default" : "pointer", opacity: row2.start === "off" || starting ? 0.5 : 1, display: "inline-flex", alignItems: "center", gap: 4 },
                 children: [
                   starting && /* @__PURE__ */ jsxRuntimeExports.jsx(Spin, { size: 8 }),
                   t2("pro.cloud.button.start")
@@ -102222,10 +102222,10 @@ function CloudAgentRowView({ officeId, agent, row: row2, active, onSelect, onRem
               }
             )
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 14.7, color: "var(--cth-ink-500)", minHeight: 22 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 10.5, color: "var(--cth-ink-500)", minHeight: 22 }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(EngineBadge, { provider: engine.provider, size: 14, title: engine.name }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-model": agent.model ?? "", title: engine.name, style: { flex: "0 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: officeRowModel(engine.name, agent.model ? modelLabel(engine.provider, agent.model) : null) }),
-            agent.held && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-held-mail": agent.held.reason, title: heldLine(t2, agent.held, agent.name), style: { flexShrink: 0, display: "inline-flex" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: "warn", style: { height: 21, fontSize: 13.3, padding: "0 5px" }, children: t2("pro.cloud.held.chip", { count: agent.held.ids.length }) }) }),
+            agent.held && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-held-mail": agent.held.reason, title: heldLine(t2, agent.held, agent.name), style: { flexShrink: 0, display: "inline-flex" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: "warn", style: { height: 21, fontSize: 9.5, padding: "0 5px" }, children: t2("pro.cloud.held.chip", { count: agent.held.ids.length }) }) }),
             statusWord2 !== null && // Sleeping: a click on the word wakes it, as Wake in its menu (RC13, agentWake.ts); Waking up from the press.
             /* @__PURE__ */ jsxRuntimeExports.jsxs(
               "span",
@@ -102237,7 +102237,7 @@ function CloudAgentRowView({ officeId, agent, row: row2, active, onSelect, onRem
                   e.stopPropagation();
                   acts.wake.run();
                 } : void 0,
-                style: { marginLeft: "auto", fontSize: 15.4, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, color: DOT_COLOR[row2.dot], cursor: acts.wake.can ? "pointer" : void 0 },
+                style: { marginLeft: "auto", fontSize: 11, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, color: DOT_COLOR[row2.dot], cursor: acts.wake.can ? "pointer" : void 0 },
                 children: [
                   agent.state === "starting" || acts.wake.asked || row2.dot === "busy" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Spin, { size: 8 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(StatusDot$1, { status: row2.dot, size: 7 }),
                   acts.wake.asked ? t2("pro.agentSleep.waking") : statusWord2
@@ -102256,7 +102256,7 @@ function CloudAgentRowView({ officeId, agent, row: row2, active, onSelect, onRem
               action: { label: t2("pro.cloud.signin.button.signIn"), run: () => openCloudSignIn({ officeId, engine: agent.engine }) }
             }
           ),
-          live2 && agent.modelRefused && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-cloud-row-line": true, "data-cloud-model-refused": agent.modelRefused.model, style: { marginTop: 4, fontSize: 14.7, lineHeight: 1.35, color: statusColor$1("waiting") }, children: [
+          live2 && agent.modelRefused && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-cloud-row-line": true, "data-cloud-model-refused": agent.modelRefused.model, style: { marginTop: 4, fontSize: 10.5, lineHeight: 1.35, color: statusColor$1("waiting") }, children: [
             t2("pro.cloud.row.modelRefused.line", { model: modelLabel(engine.provider, agent.modelRefused.model), default: modelLabel(engine.provider, agent.modelRefused.use) }),
             " ",
             /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -102274,23 +102274,23 @@ function CloudAgentRowView({ officeId, agent, row: row2, active, onSelect, onRem
               }
             )
           ] }),
-          agent.task && statusWord2 !== null && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-cloud-task": agent.task.id, style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 16.8, color: active ? "var(--cth-ink-900)" : "var(--cth-ink-700)" }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-mono)", fontSize: 14.7, color: "var(--cth-ink-500)", flexShrink: 0 }, children: agent.task.id }),
+          agent.task && statusWord2 !== null && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-cloud-task": agent.task.id, style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 12, color: active ? "var(--cth-ink-900)" : "var(--cth-ink-700)" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-mono)", fontSize: 10.5, color: "var(--cth-ink-500)", flexShrink: 0 }, children: agent.task.id }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: agent.task.title })
           ] }),
-          room && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-full": room.part, "data-cloud-room": room.case, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2(room.key, { office: office2, name: agent.name }) }),
-          row2.needsYou && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-needs-you": true, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2(active ? "pro.cloud.row.needsYouOpen" : "pro.cloud.row.needsYou", { name: agent.name }) }),
-          live2 && agent.heldBySchedule && agent.state === "stopped" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-held": true, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2("pro.cloud.row.heldBySchedule", { name: agent.name }) }),
+          room && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-full": room.part, "data-cloud-room": room.case, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2(room.key, { office: office2, name: agent.name }) }),
+          row2.needsYou && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-needs-you": true, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2(active ? "pro.cloud.row.needsYouOpen" : "pro.cloud.row.needsYou", { name: agent.name }) }),
+          live2 && agent.heldBySchedule && agent.state === "stopped" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-held": true, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2("pro.cloud.row.heldBySchedule", { name: agent.name }) }),
           live2 && agent.overCap && !agent.isGod && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-over-cap": true, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: usedLine(t2, agent.overCap.used, agent.overCap.cap, agent.period) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-over-cap": true, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: usedLine(t2, agent.overCap.used, agent.overCap.cap, agent.period) }),
             /* @__PURE__ */ jsxRuntimeExports.jsx(Strip, { kind: "cloud-cap", word: t2("pro.cloud.row.cap.strip"), text: "", color: statusColor$1("blocked"), tint: statusTint("blocked"), action: { label: t2("pro.cloud.row.cap.button"), run: acts.openCap } })
           ] }),
-          live2 && !agent.overCap && !agent.isGod && agent.cap !== void 0 && agent.used !== void 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-cap-line": true, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: usedLine(t2, agent.used, agent.cap, agent.period) }),
-          live2 && agent.startedInNewFolder && agent.state !== "stopped" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-new-folder": true, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2("office.agent.row.folderGoneStarted", { name: agent.name }) }),
-          agent.movedFrom && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-copy-of": true, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2("pro.runIn.row.copyOf", { name: agent.name, mainOffice: t2("pro.office.main") }) }),
+          live2 && !agent.overCap && !agent.isGod && agent.cap !== void 0 && agent.used !== void 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-cap-line": true, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: usedLine(t2, agent.used, agent.cap, agent.period) }),
+          live2 && agent.startedInNewFolder && agent.state !== "stopped" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-new-folder": true, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2("office.agent.row.folderGoneStarted", { name: agent.name }) }),
+          agent.movedFrom && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-copy-of": true, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2("pro.runIn.row.copyOf", { name: agent.name, mainOffice: t2("pro.office.main") }) }),
           live2 && agent.retiredOn === "laptop" && /* @__PURE__ */ jsxRuntimeExports.jsx(Strip, { kind: "cloud-retired", word: t2("pro.cloud.row.retired"), text: "", color: statusColor$1("idle"), tint: statusTint("idle"), action: { label: t2("pro.cloud.row.remove"), run: onRemove } }),
           notUp && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-not-started": notUp.case, title: notUpWhy, style: { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2(notUp.key, { office: office2, engine: engine.name, name: agent.name }) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-cloud-row-line": true, "data-cloud-not-started": notUp.case, title: notUpWhy, style: { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)" }, children: t2(notUp.key, { office: office2, engine: engine.name, name: agent.name }) }),
             notUp.strip && /* @__PURE__ */ jsxRuntimeExports.jsx(
               Strip,
               {
@@ -102418,17 +102418,17 @@ function CloudAreaConfirm({ shut, onToggle, onConfirm, confirmed, opening: openi
   };
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-area": "confirm", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(OfficeHeading, { name: t2("pro.section.cloudOffice"), open: !shut, onToggle: toggle2, count: 0, data: { "data-office-heading": "cloud" } }),
-    !shut && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: "2px 12px 6px 30px", display: "flex", gap: 6, fontSize: 16.8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: press2, disabled: asking2 || opening2, dataAttrs: confirmed ? { "data-cloud-open": "" } : { "data-cloud-confirm-computer": "" }, children: confirmed ? t2("pro.cloud.open.button") : t2("pro.menu.confirm") }) })
+    !shut && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: "2px 12px 6px 30px", display: "flex", gap: 6, fontSize: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: press2, disabled: asking2 || opening2, dataAttrs: confirmed ? { "data-cloud-open": "" } : { "data-cloud-confirm-computer": "" }, children: confirmed ? t2("pro.cloud.open.button") : t2("pro.menu.confirm") }) })
   ] });
 }
 function CloudAreaTeamInactive({ shut, onToggle }) {
   const { t: t2 } = useTranslation();
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-area": "teamInactive", children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(OfficeHeading, { name: t2("pro.section.cloudOffice"), open: !shut, onToggle, count: 0, data: { "data-office-heading": "cloud" } }),
-    !shut && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { margin: "2px 12px 6px 30px", fontSize: 16.1, lineHeight: 1.4, color: "var(--cth-ink-700)" }, children: t2("pro.cloud.teamInactive") })
+    !shut && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { margin: "2px 12px 6px 30px", fontSize: 11.5, lineHeight: 1.4, color: "var(--cth-ink-700)" }, children: t2("pro.cloud.teamInactive") })
   ] });
 }
-const AREA_LINE = { display: "flex", alignItems: "center", gap: 6, padding: "0 12px 4px 30px", fontSize: 15.4, lineHeight: 1.4, color: "var(--cth-ink-500)" };
+const AREA_LINE = { display: "flex", alignItems: "center", gap: 6, padding: "0 12px 4px 30px", fontSize: 11, lineHeight: 1.4, color: "var(--cth-ink-500)" };
 function CloudAreaPending({ settingUp, shut, onToggle }) {
   const { t: t2 } = useTranslation();
   const chip2 = settingUp ? /* @__PURE__ */ jsxRuntimeExports.jsxs(Chip$2, { tone: "think", style: { height: 24, fontSize: 14, padding: "0 6px", flexShrink: 0 }, children: [
@@ -102443,8 +102443,8 @@ function CloudAreaPending({ settingUp, shut, onToggle }) {
       /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonRow, {}),
       /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonRow, {})
     ] }),
-    !shut && !settingUp && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-none": true, style: { margin: "4px 12px 6px 30px", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start", fontSize: 16.8 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 16.1, lineHeight: 1.4, color: "var(--cth-ink-700)" }, children: t2("pro.cloud.none.line") }),
+    !shut && !settingUp && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-none": true, style: { margin: "4px 12px 6px 30px", display: "flex", flexDirection: "column", gap: 8, alignItems: "flex-start", fontSize: 12 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11.5, lineHeight: 1.4, color: "var(--cth-ink-700)" }, children: t2("pro.cloud.none.line") }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: openCloudEnable, children: t2("pro.cloud.enable.menu") })
     ] })
   ] });
@@ -102470,7 +102470,7 @@ function CloudAreaOpen({ offer, failed: failed2, shut, onToggle }) {
   ] }) : offer === "failed" ? /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: "bad", style: { height: 24, fontSize: 14, padding: "0 6px", flexShrink: 0 }, children: t2("pro.cloud.state.down") }) : null;
   const right = /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
     chip2,
-    shut && offer !== "opening" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flexShrink: 0, fontSize: 16.8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: press2, dataAttrs: { "data-cloud-open-short": "" }, children: t2("pro.cloud.open.short") }) })
+    shut && offer !== "opening" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flexShrink: 0, fontSize: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: press2, dataAttrs: { "data-cloud-open-short": "" }, children: t2("pro.cloud.open.short") }) })
   ] });
   const line2 = offer === "opening" ? "pro.cloud.line.connecting" : offer === "failed" ? failed2 && OPEN_FAILED[failed2] || "pro.cloud.open.failed.other" : "pro.cloud.open.line";
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-area": "open", "data-cloud-open-state": offer, children: [
@@ -102480,7 +102480,7 @@ function CloudAreaOpen({ offer, failed: failed2, shut, onToggle }) {
       offer === "opening" ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonRow, {}),
         /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonRow, {})
-      ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: "2px 12px 4px 30px", display: "flex", gap: 6, fontSize: 16.8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: press2, dataAttrs: { "data-cloud-open": "" }, children: offer === "failed" ? t2("pro.cloud.button.tryAgain") : t2("pro.cloud.open.button") }) })
+      ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: "2px 12px 4px 30px", display: "flex", gap: 6, fontSize: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: press2, dataAttrs: { "data-cloud-open": "" }, children: offer === "failed" ? t2("pro.cloud.button.tryAgain") : t2("pro.cloud.open.button") }) })
     ] })
   ] });
 }
@@ -102513,7 +102513,7 @@ function CloudArea({ section, shut, onToggle, listOpen, onToggleList, current: c
       !shut && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
         line2 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { "data-cloud-line": true, style: AREA_LINE, children: /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1, minWidth: 0 }, children: words2(line2) }) }),
         view2.behind && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { "data-cloud-behind": true, title: ((k2) => k2 === null ? void 0 : t2(k2))(cloudSectionKey(section.kind, "line.behindTitle")), style: AREA_LINE, children: t2("pro.cloud.line.behind") }),
-        act2 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: "2px 12px 4px 30px", display: "flex", gap: 6, fontSize: 16.8 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: act2, dataAttrs: { "data-cloud-action": view2.action ?? void 0 }, children: actLabel }) }),
+        act2 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: "2px 12px 4px 30px", display: "flex", gap: 6, fontSize: 12 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: act2, dataAttrs: { "data-cloud-action": view2.action ?? void 0 }, children: actLabel }) }),
         onOffice && /* @__PURE__ */ jsxRuntimeExports.jsx(OfficeActionNote, { officeId }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(AddAgentRow, { off: !addable, onClick: () => openAgentSheet(onOffice ? { mode: "add" } : { mode: "add", officeId, onAdded: onSelect }), data: { "data-cloud-add-agent": officeId } }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "4px 8px", display: "flex", flexDirection: "column", gap: 1 }, children: [
@@ -102542,7 +102542,7 @@ function CloudArea({ section, shut, onToggle, listOpen, onToggleList, current: c
               /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonRow, {}),
               /* @__PURE__ */ jsxRuntimeExports.jsx(SkeletonRow, {})
             ] }),
-            view2.state === "awake" && lasting.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-empty": true, style: { margin: "6px 8px 6px 0", padding: 10, border: "1px dashed var(--cth-ink-300)", borderRadius: 8, fontSize: 16.8, lineHeight: 1.45, color: "var(--cth-ink-700)" }, children: [
+            view2.state === "awake" && lasting.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-cloud-empty": true, style: { margin: "6px 8px 6px 0", padding: 10, border: "1px dashed var(--cth-ink-300)", borderRadius: 8, fontSize: 12, lineHeight: 1.45, color: "var(--cth-ink-700)" }, children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("b", { style: { fontWeight: 600, color: "var(--cth-ink-900)" }, children: t2("pro.cloud.empty.title") }),
               /* @__PURE__ */ jsxRuntimeExports.jsx("br", {}),
               t2("pro.cloud.empty.body")
@@ -102995,11 +102995,11 @@ function SandboxSetupStrip({ onShow, platform: platform2 }) {
       onClick: onShow,
       style: { display: "flex", flexDirection: "column", gap: 5, width: "100%", boxSizing: "border-box", padding: "7px 9px", borderRadius: 8, border: "1px solid var(--cth-ink-300)", background: "var(--cth-paper-100)", font: "inherit", fontFamily: "var(--cth-font-ui)", textAlign: "start", cursor: "pointer", color: "var(--cth-ink-700)" },
       children: [
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 15.4, fontWeight: 500, fontVariantNumeric: "tabular-nums" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, fontWeight: 500, fontVariantNumeric: "tabular-nums" }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "sandbox", size: 13, style: { color: "var(--cth-ink-500)" } }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1 }, children: t2(strip.label.key, strip.label.vars) })
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 15.4, color: "var(--cth-ink-500)", fontVariantNumeric: "tabular-nums" }, children: t2(strip.step.key, strip.step.vars) })
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11, color: "var(--cth-ink-500)", fontVariantNumeric: "tabular-nums" }, children: t2(strip.step.key, strip.step.vars) })
       ]
     }
   );
@@ -103007,7 +103007,7 @@ function SandboxSetupStrip({ onShow, platform: platform2 }) {
 function sandboxHeadingHere(windowOffice) {
   return false;
 }
-const LINE$1 = { padding: "0 8px 2px 19px", fontSize: 14.7, lineHeight: 1.4, color: "var(--cth-ink-500)" };
+const LINE$1 = { padding: "0 8px 2px 19px", fontSize: 10.5, lineHeight: 1.4, color: "var(--cth-ink-500)" };
 function useSandboxSetupOffered(windowOffice) {
   const { status } = useSandbox();
   return sandboxHeadingHere() && !!status && status.phase === "not-set-up" && sandboxHeadingState(status) === "none";
@@ -103046,16 +103046,16 @@ function SandboxOfficeEntry({ alone = false, flat = false } = {}) {
     await stop2();
   });
   const act2 = view2.action === "finish" ? openSandboxSetup : view2.action === "start" ? run(open2) : view2.action === "retry" ? run(retry) : view2.action === "chooseFile" ? run(chooseImage) : view2.action === "write" ? writeToUs : view2.action === "stop" ? view2.ask ? openAsk2 : stopNow : void 0;
-  const button = view2.button && act2 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "2px 8px 2px 19px", display: "flex", gap: 6, fontSize: 16.8 }, children: [
+  const button = view2.button && act2 && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { padding: "2px 8px 2px 19px", display: "flex", gap: 6, fontSize: 12 }, children: [
     view2.before && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: run(retry), disabled: busy, dataAttrs: { "data-sandbox-action": view2.before.action }, children: words2(view2.before.button) }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: act2, disabled: busy, dataAttrs: { "data-sandbox-action": view2.action ?? void 0 }, children: words2(view2.button) }),
     view2.after && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", kind: "ghost", onClick: openAsk2, disabled: busy, dataAttrs: { "data-sandbox-action": view2.after.action }, children: words2(view2.after.button) })
   ] });
-  const ask2 = asking2 && view2.ask && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-sandbox-stop-ask": true, style: { margin: "2px 8px 4px 19px", padding: 8, border: "1px solid var(--cth-ink-300)", borderRadius: 8, fontSize: 16.1, lineHeight: 1.45, color: "var(--cth-ink-700)" }, children: [
+  const ask2 = asking2 && view2.ask && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-sandbox-stop-ask": true, style: { margin: "2px 8px 4px 19px", padding: 8, border: "1px solid var(--cth-ink-300)", borderRadius: 8, fontSize: 11.5, lineHeight: 1.45, color: "var(--cth-ink-700)" }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("b", { style: { fontWeight: 600, color: "var(--cth-ink-900)" }, children: words2(view2.ask.title) }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: words2(view2.ask.text) }),
     view2.ask.more && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: words2(view2.ask.more) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, marginTop: 6, fontSize: 16.8 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, marginTop: 6, fontSize: 12 }, children: [
       /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: () => setAsked(null), children: words2(view2.ask.cancel) }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", kind: "primary", onClick: stopNow, disabled: busy, children: words2(view2.ask.confirm) })
     ] })
@@ -103067,11 +103067,11 @@ function SandboxOfficeEntry({ alone = false, flat = false } = {}) {
   if (view2.state === "running") return null;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-sandbox-office": view2.state, style: flat ? { display: "flex", flexDirection: "column", gap: 1 } : { margin: "8px 0 0", borderTop: "1px solid var(--cth-ink-300)", paddingTop: 6, display: "flex", flexDirection: "column", gap: 1 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 5, padding: "3px 8px 3px 2px", minHeight: 24 }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 5, minWidth: 0, paddingInlineStart: 17, fontWeight: 600, fontSize: 14.7, letterSpacing: "0.04em", color: "var(--cth-ink-700)" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "flex", alignItems: "center", gap: 5, minWidth: 0, paddingInlineStart: 17, fontWeight: 600, fontSize: 10.5, letterSpacing: "0.04em", color: "var(--cth-ink-700)" }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "sandbox", size: 13, style: { color: "var(--cth-ink-500)" } }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { whiteSpace: "nowrap" }, children: t2("pro.office.sandbox") })
       ] }),
-      view2.chip && /* @__PURE__ */ jsxRuntimeExports.jsxs(Chip$2, { tone: view2.chip.tone, style: { height: 21, fontSize: 13.3, padding: "0 5px", flexShrink: 0 }, children: [
+      view2.chip && /* @__PURE__ */ jsxRuntimeExports.jsxs(Chip$2, { tone: view2.chip.tone, style: { height: 21, fontSize: 9.5, padding: "0 5px", flexShrink: 0 }, children: [
         view2.chip.busy && /* @__PURE__ */ jsxRuntimeExports.jsx(Spin, { size: 7 }),
         t2(view2.chip.key)
       ] })
@@ -103094,11 +103094,11 @@ function SandboxFoldedLine({ onOpen }) {
       onClick: onOpen,
       title: label2,
       "aria-label": label2,
-      style: { display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "4px 8px 4px 26px", border: "none", borderRadius: 7, background: "transparent", font: "inherit", fontSize: 16.8, color: "var(--cth-ink-700)", cursor: "pointer", textAlign: "start" },
+      style: { display: "flex", alignItems: "center", gap: 6, width: "100%", padding: "4px 8px 4px 26px", border: "none", borderRadius: 7, background: "transparent", font: "inherit", fontSize: 12, color: "var(--cth-ink-700)", cursor: "pointer", textAlign: "start" },
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "sandbox", size: 13, style: { color: "var(--cth-ink-500)" } }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { whiteSpace: "nowrap" }, children: t2("pro.office.sandbox") }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: view2.chip.tone, style: { height: 21, fontSize: 13.3, padding: "0 5px", flexShrink: 0 }, children: t2(view2.chip.key) })
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: view2.chip.tone, style: { height: 21, fontSize: 9.5, padding: "0 5px", flexShrink: 0 }, children: t2(view2.chip.key) })
       ]
     }
   ) });
@@ -103187,7 +103187,7 @@ function RestoreTeamRow({ config: config2 }) {
   const left = useStore((s) => s.restorableAgents);
   const { restoring: restoring2, autoRestoring: autoRestoring2, restoreNote, restoreTeam } = useRestoreTeam(config2);
   if (!OFFICE_WINDOW.restoresTeam || left.length === 0 || restoring2 || autoRestoring2 || autoRestorePhase() !== "done") return null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-restore-team-row": true, title: restoreNote ?? void 0, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 12px 4px 30px", fontSize: 16.8, lineHeight: 1.4, color: "var(--cth-ink-700)" }, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-restore-team-row": true, title: restoreNote ?? void 0, style: { display: "flex", alignItems: "center", gap: 8, padding: "4px 12px 4px 30px", fontSize: 12, lineHeight: 1.4, color: "var(--cth-ink-700)" }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1, minWidth: 0 }, children: t2("pro.restore.line", { names: left.map((a) => a.name).join(", ") }) }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: () => {
       void restoreTeam();
@@ -104079,9 +104079,7 @@ function HelpMenu({ collapsed: collapsed2, appVersion, onUpdates }) {
         },
         children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(HelpRow, { icon: "play", label: t2("pro.help.replay"), onClick: pick2(() => startTour("first")) }),
-          news && /* @__PURE__ */ jsxRuntimeExports.jsx(HelpRow, { icon: "sparkle", label: t2("pro.tour.newsTitle", { version: news }), onClick: pick2(() => startTour("news")) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "separator", style: { borderTop: "1px solid var(--cth-ink-300)", margin: "6px 0" } }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(HelpRow, { icon: "update", label: t2("pro.menu.updates"), hint: `v${appVersion}`, onClick: pick2(onUpdates) })
+          news && /* @__PURE__ */ jsxRuntimeExports.jsx(HelpRow, { icon: "sparkle", label: t2("pro.tour.newsTitle", { version: news }), onClick: pick2(() => startTour("news")) })
         ]
       }
     ),
@@ -104155,12 +104153,12 @@ function HelpRow({ icon, label: label2, hint: hint2, onClick }) {
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: icon, size: 15, style: { color: "var(--cth-ink-500)" } }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1, whiteSpace: "nowrap" }, children: label2 }),
-        hint2 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 15.4, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: hint2 })
+        hint2 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: hint2 })
       ]
     }
   );
 }
-const PRO_SIDEBAR_WIDTH = 288;
+const PRO_SIDEBAR_WIDTH = 240;
 const PRO_SIDEBAR_WIDTH_COLLAPSED = 60;
 const AGENTS_OPEN_KEY = "cth.proAgentsOpen";
 const LOCAL_OPEN_KEY = "cth.proLocalOfficeOpen";
@@ -104470,11 +104468,11 @@ function ProSidebar({
           },
           placeholder: t2("pro.sidebar.searchAgents"),
           "aria-label": t2("pro.sidebar.searchAgents"),
-          style: { flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", font: "inherit", fontSize: 16.8, color: "var(--cth-ink-900)" }
+          style: { flex: 1, minWidth: 0, border: "none", background: "transparent", outline: "none", font: "inherit", fontSize: 12, color: "var(--cth-ink-900)" }
         }
       )
     ] }),
-    searching && shownAgents.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { "data-agent-search-empty": true, style: { padding: "6px 8px 8px 2px", fontSize: 16.1, lineHeight: 1.4, color: "var(--cth-ink-500)" }, children: t2("pro.sidebar.noAgentMatches", { query: agentQuery.trim() }) }),
+    searching && shownAgents.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { "data-agent-search-empty": true, style: { padding: "6px 8px 8px 2px", fontSize: 11.5, lineHeight: 1.4, color: "var(--cth-ink-500)" }, children: t2("pro.sidebar.noAgentMatches", { query: agentQuery.trim() }) }),
     /* @__PURE__ */ jsxRuntimeExports.jsx(SandboxSetupOffered.Provider, { value: sandboxOffered, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(RailOrderContext.Provider, { value: railDrag.order, children: [
       grouped.pinned.map(agentRow),
       grouped.groups.map((g) => {
@@ -104520,7 +104518,7 @@ function ProSidebar({
         background: "var(--cth-paper-100)",
         borderRight: "1px solid var(--cth-ink-300)",
         fontFamily: "var(--cth-font-ui)",
-        fontSize: 18.2,
+        fontSize: 13,
         color: "var(--cth-ink-900)",
         // No transition while the edge is dragged: the column follows the
         // pointer, it does not chase it.
@@ -104796,10 +104794,6 @@ function ProSidebar({
                   setMenu(false);
                   onSelect("settings");
                 } }),
-                can(standing, "billing.view") && /* @__PURE__ */ jsxRuntimeExports.jsx(MenuRow, { icon: "billing", label: t2("pro.menu.billing"), onClick: () => {
-                  setMenu(false);
-                  onSelect("billing");
-                } }),
                 dest.ownLicense && /* @__PURE__ */ jsxRuntimeExports.jsx(MenuRow, { icon: "external", label: t2("pro.menu.license"), onClick: () => {
                   setMenu(false);
                   void window.cth.openExternal?.(soloConsoleUrl());
@@ -104820,10 +104814,6 @@ function ProSidebar({
                     }
                   }
                 ),
-                /* @__PURE__ */ jsxRuntimeExports.jsx(MenuRow, { icon: "update", label: t2("pro.menu.updates"), hint: `v${appVersion}`, onClick: () => {
-                  setMenu(false);
-                  onSelect("updates");
-                } }),
                 archived.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(MenuRow, { icon: "archive", label: t2("pro.menu.archived"), hint: String(archived.length), expanded: archivedOpen, onClick: () => setArchivedOpen((o) => !o) }),
                 archivedOpen && archived.length > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(
                   ArchivedAgentsList,
@@ -104986,7 +104976,7 @@ function askFor(agent, tasks) {
   if (!newest) return {};
   return { text: previewLine(openQuestion(newest)?.q ?? "") || void 0, card: newest.id };
 }
-const MOVE_LINE = { fontSize: 14.7, lineHeight: 1.35, color: "var(--cth-ink-500)", minWidth: 0, overflowWrap: "anywhere" };
+const MOVE_LINE = { fontSize: 10.5, lineHeight: 1.35, color: "var(--cth-ink-500)", minWidth: 0, overflowWrap: "anywhere" };
 const MOVE_ACT = { flexShrink: 0, padding: 0, border: "none", background: "transparent", color: "var(--cth-ink-700)", font: "inherit", fontWeight: 600, textDecoration: "underline", cursor: "pointer" };
 function AgentRowBody({ agent, active, onSelect, onGo }) {
   const { t: t2 } = useTranslation();
@@ -105240,11 +105230,11 @@ function AgentRowBody({ agent, active, onSelect, onGo }) {
                 },
                 "aria-label": t2("pro.rail.menu.rename"),
                 "data-agent-rename": true,
-                style: { ...inputStyle$3, height: 18, padding: "0 6px", borderRadius: 5, fontSize: 17.5, flex: 1, minWidth: 0, width: "auto" }
+                style: { ...inputStyle$3, height: 18, padding: "0 6px", borderRadius: 5, fontSize: 12.5, flex: 1, minWidth: 0, width: "auto" }
               }
-            ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-name": true, style: { fontSize: 18.2, fontWeight: unread ? 600 : 400, color: unread || active ? "var(--cth-ink-900)" : "inherit", flex: "0 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: agent.name }),
-            isGodRow && /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: "accent", style: { height: 21, fontSize: 12.6, padding: "0 5px", flexShrink: 0 }, children: t2("pro.agents.orchestrator") }),
-            agent.onHold && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-hold": true, title: t2("pro.rail.oneOnOneTitle"), style: { display: "inline-flex", alignItems: "center", height: 15, padding: "0 5px", borderRadius: 6, fontSize: 13.3, fontWeight: 500, background: "var(--cth-cream-200)", color: "var(--cth-ink-500)", flexShrink: 0 }, children: t2("pro.rail.oneOnOne") }),
+            ) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-name": true, style: { fontSize: 13, fontWeight: unread ? 600 : 400, color: unread || active ? "var(--cth-ink-900)" : "inherit", flex: "0 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: agent.name }),
+            isGodRow && /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: "accent", style: { height: 16, fontSize: 9, padding: "0 5px", flexShrink: 0 }, children: t2("pro.agents.orchestrator") }),
+            agent.onHold && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-hold": true, title: t2("pro.rail.oneOnOneTitle"), style: { display: "inline-flex", alignItems: "center", height: 15, padding: "0 5px", borderRadius: 6, fontSize: 9.5, fontWeight: 500, background: "var(--cth-cream-200)", color: "var(--cth-ink-500)", flexShrink: 0 }, children: t2("pro.rail.oneOnOne") }),
             mail2.count > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx(
               CountBadge,
               {
@@ -105255,12 +105245,12 @@ function AgentRowBody({ agent, active, onSelect, onGo }) {
                 "aria-label": t2("pro.rail.newFrom", { count: mail2.count, name: agent.name }),
                 onMouseEnter: (e) => showBadgeTip(e.currentTarget),
                 onMouseLeave: tip.leave,
-                style: { marginInlineStart: "auto", minWidth: 18, height: 18, padding: "0 6px", borderRadius: 999, background: "var(--cth-accent)", color: "var(--cth-accent-ink)", fontSize: 14.7, fontWeight: 600, display: "inline-grid", placeItems: "center", flexShrink: 0, cursor: "default", fontVariantNumeric: "tabular-nums" },
+                style: { marginInlineStart: "auto", minWidth: 18, height: 18, padding: "0 6px", borderRadius: 999, background: "var(--cth-accent)", color: "var(--cth-accent-ink)", fontSize: 10.5, fontWeight: 600, display: "inline-grid", placeItems: "center", flexShrink: 0, cursor: "default", fontVariantNumeric: "tabular-nums" },
                 children: mail2.count
               }
             ) : !agent.note && !editing ? clipBtn(t2("pro.rail.noteAdd"), { marginInlineStart: "auto" }) : null
           ] }),
-          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-meta": true, style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 14.7, color: "var(--cth-ink-500)", height: 22 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-meta": true, style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 10.5, color: "var(--cth-ink-500)", height: 22 }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx(EngineBadge, { provider: agent.provider, size: 14, title: engine.title }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-engine-model": true, title: engine.title, style: { flex: "0 1 auto", minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: engine.model }),
             !agent.ptyId && ctxPct === null && plainRow && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-no-session": true, style: { whiteSpace: "nowrap" }, children: [
@@ -105279,7 +105269,7 @@ function AgentRowBody({ agent, active, onSelect, onGo }) {
                   e.stopPropagation();
                   wakeNow();
                 } : void 0,
-                style: { marginInlineStart: "auto", fontSize: 15.4, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, color: statusPaint, cursor: wakeable && plainRow ? "pointer" : void 0, ...ended ? { padding: "0 6px", borderRadius: 6, border: `1px solid ${statusPaint}`, background: exitTint(ended.verdict) } : {} },
+                style: { marginInlineStart: "auto", fontSize: 11, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5, flexShrink: 0, color: statusPaint, cursor: wakeable && plainRow ? "pointer" : void 0, ...ended ? { padding: "0 6px", borderRadius: 6, border: `1px solid ${statusPaint}`, background: exitTint(ended.verdict) } : {} },
                 children: [
                   agent.waking ? /* @__PURE__ */ jsxRuntimeExports.jsx(WakingMark, {}) : ended ? /* @__PURE__ */ jsxRuntimeExports.jsx(ExitDot, { verdict: ended.verdict }) : /* @__PURE__ */ jsxRuntimeExports.jsx(StatusDot$1, { status: statusKind, size: 7 }),
                   statusWord2
@@ -105287,15 +105277,15 @@ function AgentRowBody({ agent, active, onSelect, onGo }) {
               }
             )
           ] }),
-          ctxPct !== null && plainRow && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-context": ctxPct, title: t2("pro.agents.contextTitle", { pct: ctxPct }), style: { display: "flex", alignItems: "center", gap: 8, height: 14, fontSize: 14.7, color: "var(--cth-ink-500)" }, children: [
+          ctxPct !== null && plainRow && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-context": ctxPct, title: t2("pro.agents.contextTitle", { pct: ctxPct }), style: { display: "flex", alignItems: "center", gap: 8, height: 14, fontSize: 10.5, color: "var(--cth-ink-500)" }, children: [
             /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { flex: 1, height: 4, borderRadius: 2, background: "var(--cth-ink-300)", overflow: kit ? "visible" : "hidden", position: kit ? "relative" : void 0 }, children: [
               /* @__PURE__ */ jsxRuntimeExports.jsx("i", { style: { display: "block", height: "100%", width: `${ctxPct}%`, borderRadius: 2, background: ctxColor } }),
               /* @__PURE__ */ jsxRuntimeExports.jsx(PotionBubbles, { pct: ctxPct })
             ] }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontWeight: 500, fontVariantNumeric: "tabular-nums", flexShrink: 0, color: ctxColor }, children: t2("pro.rail.contextPct", { pct: ctxPct }) })
           ] }),
-          ticket && plainRow && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-task": ticket.id, onMouseEnter: (e) => showTicketTip(e.currentTarget), onMouseLeave: tip.leave, style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 16.8, color: active ? "var(--cth-ink-900)" : "var(--cth-ink-700)" }, children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-mono)", fontSize: 14.7, color: "var(--cth-ink-500)", flexShrink: 0 }, children: ticket.id }),
+          ticket && plainRow && /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { "data-agent-task": ticket.id, onMouseEnter: (e) => showTicketTip(e.currentTarget), onMouseLeave: tip.leave, style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0, fontSize: 12, color: active ? "var(--cth-ink-900)" : "var(--cth-ink-700)" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-mono)", fontSize: 10.5, color: "var(--cth-ink-500)", flexShrink: 0 }, children: ticket.id }),
             /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: ticket.title })
           ] }),
           move.line && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-move": move.state ?? "", style: MOVE_LINE, children: t2(move.line.key, move.line.vars) }),
@@ -105394,7 +105384,7 @@ const ROW_GAP = 8;
 const CARD_PAD_LEFT = 10;
 function SectionLabel({ collapsed: collapsed2, trailing, children }) {
   if (collapsed2) return /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 1, background: "var(--cth-ink-300)", margin: "10px 14px 4px" } });
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 14.7, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--cth-ink-500)", padding: "14px 16px 4px", fontWeight: 600 }, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, fontSize: 10.5, letterSpacing: "0.08em", textTransform: "uppercase", color: "var(--cth-ink-500)", padding: "14px 16px 4px", fontWeight: 600 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { flex: 1, minWidth: 0 }, children }),
     trailing
   ] });
@@ -105638,8 +105628,8 @@ function MateRow$1({ row: row2, active, onSelect }) {
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(GlyphAvatar, { name: row2.name, presence: row2.presence, size: 24, surface: active ? "var(--cth-surface-active)" : "var(--cth-paper-100)" }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 1 }, children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-teammate-name": true, style: { fontSize: 18.2, fontWeight: row2.unread > 0 ? 600 : 400, color: row2.unread > 0 || active ? "var(--cth-ink-900)" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: row2.name }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-teammate-presence": row2.presence, style: { fontSize: 14.7, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: presence })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-teammate-name": true, style: { fontSize: 13, fontWeight: row2.unread > 0 ? 600 : 400, color: row2.unread > 0 || active ? "var(--cth-ink-900)" : "inherit", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, children: row2.name }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-teammate-presence": row2.presence, style: { fontSize: 10.5, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: presence })
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(Count, { value: row2.unread, hot: true, title: t2("pro.rail.newFrom", { count: row2.unread, name: row2.name }) })
       ]
@@ -128114,8 +128104,8 @@ function clearLocalState() {
   }
 }
 const DEV_BUILD = false;
-const NAV_SECTIONS = settingsNavFor(["General", "Theme", "Prerequisites", "Agents & Models", ...[], "Billing", "Autonomy & Budgets", "Integrations", "Voice", "Dictation & Meetings", "Memory & Knowledge", "Developer"], DEV_BUILD);
-const navSectionsFor = (chrome2) => NAV_SECTIONS.filter((s) => (s !== "Integrations" || chrome2 === "modal") && (s !== "Billing" || chrome2 === "inline"));
+const NAV_SECTIONS = settingsNavFor(["General", "Theme", "Prerequisites", "Agents & Models", ...[], "Autonomy & Budgets", "Integrations", "Voice", "Dictation & Meetings", "Memory & Knowledge", "Developer"], DEV_BUILD);
+const navSectionsFor = (chrome2) => NAV_SECTIONS.filter((s) => s !== "Integrations" || chrome2 === "modal");
 const NAV_SECTION_KEYS = {
   "General": "settings.nav.general",
   "Theme": "settings.nav.theme",
@@ -128616,15 +128606,6 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
       }) }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: pane, children: [
         activeSection === "General" && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-          /* @__PURE__ */ jsxRuntimeExports.jsx(SettingsHeroCard, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 1, background: "var(--cth-ink-300)" } }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(UpdatesSection, {}),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 1, background: "var(--cth-ink-300)" } }),
-          chrome2 === "inline" && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-            /* @__PURE__ */ jsxRuntimeExports.jsx(NameSection, {}),
-            /* @__PURE__ */ jsxRuntimeExports.jsx(BossNameSection, {}),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 1, background: "var(--cth-ink-300)" } })
-          ] }),
           /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
             /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: sectionHead2, children: t2("settings.general.homeFolder") }),
             /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 12, fontSize: 13, lineHeight: "20px", alignItems: "center" }, children: [
@@ -128754,30 +128735,6 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
                 autoCompactDraw === "greyed" && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-office-greyed": "autoCompact", style: { fontSize: 12, lineHeight: "16px", color: "var(--cth-ink-900)" }, children: t2("pro.office.notYet.sentence") })
               ] }),
               autoCompactDraw === "live" && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: autoCompactOn ? "primary" : "default", size: "sm", onClick: toggleAutoCompact, children: autoCompactOn ? t2("common.on") : t2("common.off") })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 10 } }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }, children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 2 }, children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 13, lineHeight: "20px", color: "var(--cth-ink-900)" }, children: t2("settings.general.autoUpdate") }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, lineHeight: "16px", color: "var(--cth-ink-500)" }, children: t2("settings.general.autoUpdateDesc") })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: autoUpdateOn ? "primary" : "default", size: "sm", onClick: toggleAutoUpdate, children: autoUpdateOn ? t2("common.on") : t2("common.off") })
-            ] }),
-            /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 10 } }),
-            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }, children: [
-              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 2 }, children: [
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 13, lineHeight: "20px", color: "var(--cth-ink-900)" }, children: t2("settings.general.telemetry") }),
-                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, lineHeight: "16px", color: "var(--cth-ink-500)" }, children: t2("usageNotice.text") })
-              ] }),
-              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-usage-locked": true, style: {
-                padding: "2px 10px",
-                borderRadius: 999,
-                whiteSpace: "nowrap",
-                border: "1px solid var(--cth-ink-300)",
-                fontSize: 12,
-                lineHeight: "20px",
-                color: "var(--cth-ink-700)"
-              }, children: t2("settings.general.telemetryRequired") })
             ] })
           ] })
         ] }),
@@ -148071,8 +148028,7 @@ function App() {
           /* @__PURE__ */ jsxRuntimeExports.jsx(TeamsToast, {}, "approval"),
           /* @__PURE__ */ jsxRuntimeExports.jsx(CompletionToast, {}, "completion"),
           /* @__PURE__ */ jsxRuntimeExports.jsx(DegradedToast, {}, "degraded"),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(LicenceEndedToast, {}, "licence-ended"),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(UpdateToast, {}, "update")
+          /* @__PURE__ */ jsxRuntimeExports.jsx(LicenceEndedToast, {}, "licence-ended")
         ]
       }
     ) : /* @__PURE__ */ jsxRuntimeExports.jsx(ProTransients, { quit: quitWarn ? { ptyCount: quitWarn.ptyCount, ...quitHandlers } : null }),

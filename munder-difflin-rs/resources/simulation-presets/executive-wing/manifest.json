@@ -1,0 +1,936 @@
+{
+  "format": 2,
+  "id": "executive-wing",
+  "label": "Off-white House",
+  "base": "own",
+  "inspiredBy": "The White House and a fictional presidential staff",
+  "detail": "rich",
+  "scene": {
+    "cell": 16,
+    "width": 64,
+    "height": 32
+  },
+  "tiles": [
+    {
+      "file": "art/floor.png",
+      "cell": 16
+    }
+  ],
+  "rooms": [
+    {
+      "name": "Office",
+      "kind": "desks",
+      "x": 1,
+      "y": 2,
+      "w": 62,
+      "h": 29
+    }
+  ],
+  "seats": [
+    {
+      "name": "Lead seat",
+      "x": 32,
+      "y": 9,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 1",
+      "x": 6,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 2",
+      "x": 12,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 3",
+      "x": 6,
+      "y": 24,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 4",
+      "x": 12,
+      "y": 24,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 5",
+      "x": 21,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 6",
+      "x": 27,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 7",
+      "x": 37,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 8",
+      "x": 44,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 9",
+      "x": 50,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 10",
+      "x": 56,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 11",
+      "x": 3,
+      "y": 9,
+      "facing": "right",
+      "room": "Office"
+    },
+    {
+      "name": "Station 12",
+      "x": 12,
+      "y": 9,
+      "facing": "left",
+      "room": "Office"
+    }
+  ],
+  "activities": [
+    {
+      "kind": "work",
+      "at": "Office",
+      "weight": 10
+    },
+    {
+      "kind": "chat",
+      "at": "Sitting area",
+      "weight": 3,
+      "pose": "talk",
+      "secs": 14
+    },
+    {
+      "kind": "chat",
+      "at": "Oval rug",
+      "weight": 2,
+      "pose": "talk",
+      "secs": 14
+    },
+    {
+      "kind": "coffee",
+      "at": "Coffee table west",
+      "weight": 3,
+      "pose": "drink",
+      "effect": "steam",
+      "secs": 12
+    },
+    {
+      "kind": "coffee",
+      "at": "Coffee table east",
+      "weight": 2,
+      "pose": "drink",
+      "effect": "steam",
+      "secs": 12
+    },
+    {
+      "kind": "snack",
+      "at": "Side table west",
+      "weight": 2,
+      "pose": "drink",
+      "effect": "hearts",
+      "secs": 10
+    },
+    {
+      "kind": "snack",
+      "at": "Side table east",
+      "weight": 2,
+      "pose": "drink",
+      "effect": "hearts",
+      "secs": 10
+    },
+    {
+      "kind": "sofa",
+      "at": "Lounge armchair west",
+      "weight": 2,
+      "pose": "nap",
+      "effect": "zzz",
+      "secs": 30
+    },
+    {
+      "kind": "sofa",
+      "at": "Lounge armchair east",
+      "weight": 2,
+      "pose": "nap",
+      "effect": "zzz",
+      "secs": 30
+    },
+    {
+      "kind": "read",
+      "at": "Cabinet bookshelf",
+      "weight": 2,
+      "pose": "read",
+      "effect": "pages",
+      "secs": 16
+    },
+    {
+      "kind": "read",
+      "at": "Corridor shelf",
+      "weight": 2,
+      "pose": "read",
+      "effect": "pages",
+      "secs": 16
+    },
+    {
+      "kind": "plant",
+      "at": "Hall plant",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Lounge plant",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Oval plant west",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Press plant east",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "stretch",
+      "at": "Oval west",
+      "weight": 1,
+      "pose": "stretch",
+      "secs": 8
+    },
+    {
+      "kind": "stretch",
+      "at": "Corridor",
+      "weight": 1,
+      "pose": "stretch",
+      "secs": 8
+    },
+    {
+      "kind": "look",
+      "at": "West window",
+      "weight": 2,
+      "pose": "stand",
+      "secs": 14
+    },
+    {
+      "kind": "look",
+      "at": "East window",
+      "weight": 2,
+      "pose": "stand",
+      "secs": 14
+    },
+    {
+      "kind": "pressBriefing",
+      "at": "Podium",
+      "weight": 2,
+      "secs": 14
+    },
+    {
+      "kind": "photoOp",
+      "at": "Flag west",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "photoOp",
+      "at": "Flag east",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "rehearseSpeech",
+      "at": "Press aisle west",
+      "weight": 1,
+      "secs": 14
+    },
+    {
+      "kind": "rehearseSpeech",
+      "at": "Press back row",
+      "weight": 1,
+      "secs": 14
+    },
+    {
+      "kind": "fileMemos",
+      "at": "West filing",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "fileMemos",
+      "at": "Corridor filing",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "fileMemos",
+      "at": "East filing",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "confCall",
+      "at": "Cabinet west",
+      "weight": 1,
+      "secs": 14
+    },
+    {
+      "kind": "confCall",
+      "at": "Cabinet east",
+      "weight": 1,
+      "secs": 14
+    },
+    {
+      "kind": "securitySweep",
+      "at": "Cabinet door",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "securitySweep",
+      "at": "Press door",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "securitySweep",
+      "at": "Front door",
+      "weight": 1,
+      "secs": 10
+    }
+  ],
+  "dataShown": {
+    "tag": [
+      "name",
+      "status"
+    ],
+    "desk": [
+      "tool"
+    ],
+    "card": [
+      "role",
+      "engine",
+      "context",
+      "tokens"
+    ]
+  },
+  "colors": {
+    "background": "#18222D"
+  },
+  "inboxThinking": {
+    "fill": "#F1E9D5",
+    "ink": "#26313B",
+    "outline": "#26313B",
+    "shape": "panel",
+    "motion": "dots"
+  },
+  "cover": "art/cover.png",
+  "cast": {
+    "sheet": "art/cast.png",
+    "frameWidth": 48,
+    "frameHeight": 48,
+    "frames": 4,
+    "rows": [
+      "down",
+      "up",
+      "left",
+      "right",
+      "sitDown",
+      "sitUp",
+      "sitLeft",
+      "sitRight",
+      "workDown",
+      "workUp",
+      "workLeft",
+      "workRight",
+      "carryDown",
+      "carryUp",
+      "carryLeft",
+      "carryRight",
+      "stretch",
+      "drink",
+      "read",
+      "use",
+      "talk",
+      "cheer",
+      "nap",
+      "crouch",
+      "reach"
+    ],
+    "scale": 1.18,
+    "characters": [
+      {
+        "name": "Tonald D",
+        "column": 0,
+        "avatar": "art/avatars/c0.png",
+        "headshot": "art/headshots/c0.png"
+      },
+      {
+        "name": "Nancy Peloadsi",
+        "column": 4,
+        "avatar": "art/avatars/c1.png",
+        "headshot": "art/headshots/c1.png"
+      },
+      {
+        "name": "Hillary Clipton",
+        "column": 8,
+        "avatar": "art/avatars/c2.png",
+        "headshot": "art/headshots/c2.png"
+      },
+      {
+        "name": "Secret Serverice",
+        "column": 12,
+        "avatar": "art/avatars/c3.png",
+        "headshot": "art/headshots/c3.png"
+      },
+      {
+        "name": "Pete Boot-edge-edge",
+        "column": 16,
+        "avatar": "art/avatars/c4.png",
+        "headshot": "art/headshots/c4.png"
+      },
+      {
+        "name": "Kamala Harri-sync",
+        "column": 20,
+        "avatar": "art/avatars/c5.png",
+        "headshot": "art/headshots/c5.png"
+      },
+      {
+        "name": "Bernie Sandboxes",
+        "column": 24,
+        "avatar": "art/avatars/c6.png",
+        "headshot": "art/headshots/c6.png"
+      },
+      {
+        "name": "Alexandria Ocasio-Codez",
+        "column": 28,
+        "avatar": "art/avatars/c7.png",
+        "headshot": "art/headshots/c7.png"
+      },
+      {
+        "name": "Captain Air Force Once",
+        "column": 32,
+        "avatar": "art/avatars/c8.png",
+        "headshot": "art/headshots/c8.png"
+      },
+      {
+        "name": "Michelle ODrama",
+        "column": 36,
+        "avatar": "art/avatars/c9.png",
+        "headshot": "art/headshots/c9.png"
+      }
+    ]
+  },
+  "orchestrator": {
+    "character": 0,
+    "seat": 0
+  },
+  "props": [
+    {
+      "name": "Chair 0",
+      "file": "art/chair-0.png",
+      "x": 490,
+      "y": 126,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 1",
+      "file": "art/chair-1.png",
+      "x": 90,
+      "y": 281,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 2",
+      "file": "art/chair-2.png",
+      "x": 185,
+      "y": 281,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 3",
+      "file": "art/chair-3.png",
+      "x": 90,
+      "y": 375,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 4",
+      "file": "art/chair-4.png",
+      "x": 185,
+      "y": 375,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 5",
+      "file": "art/chair-5.png",
+      "x": 326,
+      "y": 443,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 6",
+      "file": "art/chair-6.png",
+      "x": 423,
+      "y": 443,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 7",
+      "file": "art/chair-7.png",
+      "x": 592,
+      "y": 443,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 8",
+      "file": "art/chair-8.png",
+      "x": 692,
+      "y": 443,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 9",
+      "file": "art/chair-9.png",
+      "x": 795,
+      "y": 443,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 10",
+      "file": "art/chair-10.png",
+      "x": 892,
+      "y": 443,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 11",
+      "file": "art/chair-11.png",
+      "x": 50,
+      "y": 115,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 12",
+      "file": "art/chair-12.png",
+      "x": 187,
+      "y": 115,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 0",
+      "file": "art/desk-0.png",
+      "x": 455,
+      "y": 159,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 1",
+      "file": "art/desk-1.png",
+      "x": 62,
+      "y": 249,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 2",
+      "file": "art/desk-2.png",
+      "x": 157,
+      "y": 249,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 3",
+      "file": "art/desk-3.png",
+      "x": 62,
+      "y": 342,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 4",
+      "file": "art/desk-4.png",
+      "x": 157,
+      "y": 342,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 5",
+      "file": "art/desk-5.png",
+      "x": 307,
+      "y": 408,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 6",
+      "file": "art/desk-6.png",
+      "x": 405,
+      "y": 408,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 7",
+      "file": "art/desk-7.png",
+      "x": 575,
+      "y": 408,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 8",
+      "file": "art/desk-8.png",
+      "x": 675,
+      "y": 408,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 9",
+      "file": "art/desk-9.png",
+      "x": 778,
+      "y": 408,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 10",
+      "file": "art/desk-10.png",
+      "x": 875,
+      "y": 408,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 11",
+      "file": "art/desk-11.png",
+      "x": 68,
+      "y": 111,
+      "depth": "sort",
+      "solid": false
+    }
+  ],
+  "stops": [
+    {
+      "name": "Cabinet west",
+      "x": 2,
+      "y": 6,
+      "facing": "right"
+    },
+    {
+      "name": "Cabinet east",
+      "x": 13,
+      "y": 10,
+      "facing": "left"
+    },
+    {
+      "name": "Cabinet bookshelf",
+      "x": 14,
+      "y": 7,
+      "facing": "up"
+    },
+    {
+      "name": "Cabinet door",
+      "x": 17,
+      "y": 9,
+      "facing": "left"
+    },
+    {
+      "name": "West filing",
+      "x": 4,
+      "y": 19,
+      "facing": "left"
+    },
+    {
+      "name": "Hall plant",
+      "x": 15,
+      "y": 15,
+      "facing": "right"
+    },
+    {
+      "name": "Lounge plant",
+      "x": 16,
+      "y": 25,
+      "facing": "right"
+    },
+    {
+      "name": "Lounge armchair west",
+      "x": 8,
+      "y": 28,
+      "facing": "down"
+    },
+    {
+      "name": "Lounge armchair east",
+      "x": 12,
+      "y": 28,
+      "facing": "down"
+    },
+    {
+      "name": "West window",
+      "x": 24,
+      "y": 7,
+      "facing": "up"
+    },
+    {
+      "name": "East window",
+      "x": 40,
+      "y": 7,
+      "facing": "up"
+    },
+    {
+      "name": "Oval plant west",
+      "x": 20,
+      "y": 7,
+      "facing": "up"
+    },
+    {
+      "name": "Flag west",
+      "x": 28,
+      "y": 9,
+      "facing": "down"
+    },
+    {
+      "name": "Flag east",
+      "x": 36,
+      "y": 9,
+      "facing": "down"
+    },
+    {
+      "name": "Oval west",
+      "x": 21,
+      "y": 12,
+      "facing": "down"
+    },
+    {
+      "name": "Side table west",
+      "x": 22,
+      "y": 15,
+      "facing": "right"
+    },
+    {
+      "name": "Side table east",
+      "x": 42,
+      "y": 15,
+      "facing": "left"
+    },
+    {
+      "name": "Sitting area",
+      "x": 32,
+      "y": 19,
+      "facing": "up"
+    },
+    {
+      "name": "Coffee table west",
+      "x": 30,
+      "y": 19,
+      "facing": "up"
+    },
+    {
+      "name": "Coffee table east",
+      "x": 34,
+      "y": 19,
+      "facing": "up"
+    },
+    {
+      "name": "Oval rug",
+      "x": 32,
+      "y": 21,
+      "facing": "up"
+    },
+    {
+      "name": "Press door",
+      "x": 45,
+      "y": 15,
+      "facing": "right"
+    },
+    {
+      "name": "Front door",
+      "x": 33,
+      "y": 28,
+      "facing": "down"
+    },
+    {
+      "name": "Podium",
+      "x": 57,
+      "y": 9,
+      "facing": "down"
+    },
+    {
+      "name": "Press plant east",
+      "x": 61,
+      "y": 8,
+      "facing": "up"
+    },
+    {
+      "name": "Press aisle west",
+      "x": 49,
+      "y": 13,
+      "facing": "right"
+    },
+    {
+      "name": "Press back row",
+      "x": 55,
+      "y": 18,
+      "facing": "up"
+    },
+    {
+      "name": "Corridor",
+      "x": 50,
+      "y": 22,
+      "facing": "down"
+    },
+    {
+      "name": "Corridor filing",
+      "x": 55,
+      "y": 24,
+      "facing": "up"
+    },
+    {
+      "name": "Corridor shelf",
+      "x": 59,
+      "y": 24,
+      "facing": "up"
+    },
+    {
+      "name": "East filing",
+      "x": 60,
+      "y": 28,
+      "facing": "right"
+    }
+  ],
+  "moves": [
+    {
+      "id": "pressBriefing",
+      "pose": "talk",
+      "effect": "sparkle"
+    },
+    {
+      "id": "photoOp",
+      "pose": "stand",
+      "effect": "sparkle"
+    },
+    {
+      "id": "rehearseSpeech",
+      "pose": "read",
+      "effect": "notes"
+    },
+    {
+      "id": "fileMemos",
+      "pose": "reach",
+      "effect": "pages"
+    },
+    {
+      "id": "confCall",
+      "pose": "use",
+      "effect": "notes"
+    },
+    {
+      "id": "securitySweep",
+      "pose": "use"
+    }
+  ],
+  "hangout": "Sitting area",
+  "board": {
+    "x": 846,
+    "y": 34,
+    "w": 72,
+    "h": 54,
+    "askMe": {
+      "x": 868,
+      "y": 133,
+      "w": 26,
+      "h": 22
+    },
+    "stand": {
+      "x": 52,
+      "y": 8
+    }
+  },
+  "oneOnOne": {
+    "x": 10,
+    "y": 25,
+    "facing": "down"
+  },
+  "waitAt": {
+    "x": 32,
+    "y": 25,
+    "facing": "down"
+  },
+  "reportTo": {
+    "x": 32,
+    "y": 15
+  },
+  "work": {
+    "effect": "glow",
+    "color": "#9FD3FF"
+  },
+  "burst": {
+    "kind": "confetti",
+    "colors": [
+      "#F2C14E",
+      "#FFF6D8",
+      "#2F5DA8",
+      "#9FD3FF"
+    ]
+  }
+}

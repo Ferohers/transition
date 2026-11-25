@@ -1,0 +1,790 @@
+{
+  "format": 2,
+  "id": "playroom",
+  "label": "Playroom",
+  "base": "own",
+  "inspiredBy": "Toy Story and living toys",
+  "detail": "rich",
+  "scene": {
+    "cell": 16,
+    "width": 64,
+    "height": 32
+  },
+  "tiles": [
+    {
+      "file": "art/floor.png",
+      "cell": 16
+    }
+  ],
+  "rooms": [
+    {
+      "name": "Office",
+      "kind": "desks",
+      "x": 1,
+      "y": 5,
+      "w": 62,
+      "h": 26
+    }
+  ],
+  "seats": [
+    {
+      "name": "Lead seat",
+      "x": 30,
+      "y": 13,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 1",
+      "x": 14,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 2",
+      "x": 17,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 3",
+      "x": 24,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 4",
+      "x": 26,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 5",
+      "x": 34,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 6",
+      "x": 36,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 7",
+      "x": 43,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 8",
+      "x": 46,
+      "y": 5,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 9",
+      "x": 18,
+      "y": 23,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 10",
+      "x": 21,
+      "y": 23,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 11",
+      "x": 29,
+      "y": 23,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 12",
+      "x": 32,
+      "y": 23,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 13",
+      "x": 40,
+      "y": 23,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 14",
+      "x": 43,
+      "y": 23,
+      "facing": "down",
+      "room": "Office"
+    }
+  ],
+  "activities": [
+    {
+      "kind": "work",
+      "at": "Office",
+      "weight": 10
+    },
+    {
+      "kind": "chat",
+      "at": "Road rug",
+      "weight": 3,
+      "pose": "talk",
+      "secs": 14
+    },
+    {
+      "kind": "chat",
+      "at": "Rug corner",
+      "weight": 2,
+      "pose": "talk",
+      "secs": 14
+    },
+    {
+      "kind": "coffee",
+      "at": "Snack bar",
+      "weight": 4,
+      "pose": "drink",
+      "effect": "steam",
+      "secs": 12
+    },
+    {
+      "kind": "snack",
+      "at": "Snack bar stool",
+      "weight": 2,
+      "pose": "drink",
+      "effect": "hearts",
+      "secs": 10
+    },
+    {
+      "kind": "look",
+      "at": "Window",
+      "weight": 2,
+      "pose": "stand",
+      "effect": "sparkle",
+      "secs": 10
+    },
+    {
+      "kind": "sofa",
+      "at": "Bedside",
+      "weight": 2,
+      "pose": "nap",
+      "effect": "zzz",
+      "secs": 30
+    },
+    {
+      "kind": "read",
+      "at": "Book stack",
+      "weight": 2,
+      "pose": "read",
+      "effect": "pages",
+      "secs": 16
+    },
+    {
+      "kind": "play",
+      "at": "Star ball",
+      "weight": 2,
+      "pose": "reach",
+      "effect": "sparkle",
+      "secs": 10
+    },
+    {
+      "kind": "stretch",
+      "at": "Rug middle",
+      "weight": 2,
+      "pose": "stretch",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Rug trees",
+      "weight": 1,
+      "pose": "stand",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "drumRoll",
+      "at": "Drum",
+      "weight": 1,
+      "pose": "use",
+      "effect": "notes",
+      "secs": 10
+    },
+    {
+      "kind": "clawGrab",
+      "at": "Claw machine",
+      "weight": 1,
+      "pose": "reach",
+      "effect": "sparkle",
+      "secs": 10
+    },
+    {
+      "kind": "spinTop",
+      "at": "Spinning top",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "sparkle",
+      "secs": 8
+    },
+    {
+      "kind": "playXylophone",
+      "at": "Xylophone",
+      "weight": 1,
+      "pose": "use",
+      "effect": "notes",
+      "secs": 10
+    },
+    {
+      "kind": "windTrain",
+      "at": "Toy train",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "steam",
+      "secs": 10
+    },
+    {
+      "kind": "shootMarble",
+      "at": "Marbles",
+      "weight": 1,
+      "pose": "crouch",
+      "effect": "sparkle",
+      "secs": 8
+    },
+    {
+      "kind": "flyKite",
+      "at": "Kite",
+      "weight": 1,
+      "pose": "reach",
+      "secs": 10
+    },
+    {
+      "kind": "monkeyChain",
+      "at": "Monkey barrel",
+      "weight": 1,
+      "pose": "reach",
+      "effect": "hearts",
+      "secs": 10
+    }
+  ],
+  "dataShown": {
+    "tag": [
+      "name",
+      "status"
+    ],
+    "desk": [
+      "tool"
+    ],
+    "card": [
+      "role",
+      "engine",
+      "context",
+      "tokens"
+    ]
+  },
+  "colors": {
+    "background": "#18222D"
+  },
+  "inboxThinking": {
+    "fill": "#F1E9D5",
+    "ink": "#26313B",
+    "outline": "#26313B",
+    "shape": "panel",
+    "motion": "dots"
+  },
+  "cover": "art/cover.png",
+  "cast": {
+    "sheet": "art/cast.png",
+    "frameWidth": 48,
+    "frameHeight": 48,
+    "frames": 4,
+    "characters": [
+      {
+        "name": "Buzz Lightgear",
+        "column": 0,
+        "avatar": "art/avatars/c0.png",
+        "headshot": "art/headshots/c0.png"
+      },
+      {
+        "name": "Woodrow",
+        "column": 4,
+        "avatar": "art/avatars/c1.png",
+        "headshot": "art/headshots/c1.png"
+      },
+      {
+        "name": "Major Crackers",
+        "column": 8,
+        "avatar": "art/avatars/c2.png",
+        "headshot": "art/headshots/c2.png"
+      },
+      {
+        "name": "Dolly Patch",
+        "column": 12,
+        "avatar": "art/avatars/c3.png",
+        "headshot": "art/headshots/c3.png"
+      },
+      {
+        "name": "Rexabyte",
+        "column": 16,
+        "avatar": "art/avatars/c4.png",
+        "headshot": "art/headshots/c4.png"
+      },
+      {
+        "name": "Hammlet",
+        "column": 20,
+        "avatar": "art/avatars/c5.png",
+        "headshot": "art/headshots/c5.png"
+      },
+      {
+        "name": "Motato",
+        "column": 24,
+        "avatar": "art/avatars/c6.png",
+        "headshot": "art/headshots/c6.png"
+      },
+      {
+        "name": "Bo Peepin",
+        "column": 28,
+        "avatar": "art/avatars/c7.png",
+        "headshot": "art/headshots/c7.png"
+      },
+      {
+        "name": "Sargeant Play",
+        "column": 32,
+        "avatar": "art/avatars/c8.png",
+        "headshot": "art/headshots/c8.png"
+      },
+      {
+        "name": "Buttercupcake",
+        "column": 36,
+        "avatar": "art/avatars/c9.png",
+        "headshot": "art/headshots/c9.png"
+      }
+    ],
+    "rows": [
+      "down",
+      "up",
+      "left",
+      "right",
+      "sitDown",
+      "sitUp",
+      "sitLeft",
+      "sitRight",
+      "workDown",
+      "workUp",
+      "workLeft",
+      "workRight",
+      "carryDown",
+      "carryUp",
+      "carryLeft",
+      "carryRight",
+      "stretch",
+      "drink",
+      "read",
+      "use",
+      "talk",
+      "cheer",
+      "nap",
+      "crouch",
+      "reach"
+    ],
+    "scale": 1.15
+  },
+  "orchestrator": {
+    "character": 0,
+    "seat": 0
+  },
+  "props": [
+    {
+      "name": "Chair 0",
+      "file": "art/chair-0.png",
+      "x": 473,
+      "y": 202,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 1",
+      "file": "art/chair-1.png",
+      "x": 224,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 2",
+      "file": "art/chair-2.png",
+      "x": 265,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 3",
+      "file": "art/chair-3.png",
+      "x": 380,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 4",
+      "file": "art/chair-4.png",
+      "x": 418,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 5",
+      "file": "art/chair-5.png",
+      "x": 535,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 6",
+      "file": "art/chair-6.png",
+      "x": 575,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 7",
+      "file": "art/chair-7.png",
+      "x": 692,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 8",
+      "file": "art/chair-8.png",
+      "x": 732,
+      "y": 72,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 9",
+      "file": "art/chair-9.png",
+      "x": 284,
+      "y": 359,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 10",
+      "file": "art/chair-10.png",
+      "x": 328,
+      "y": 359,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 11",
+      "file": "art/chair-11.png",
+      "x": 462,
+      "y": 359,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 12",
+      "file": "art/chair-12.png",
+      "x": 506,
+      "y": 359,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 13",
+      "file": "art/chair-13.png",
+      "x": 637,
+      "y": 360,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 14",
+      "file": "art/chair-14.png",
+      "x": 681,
+      "y": 359,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 0",
+      "file": "art/desk-0.png",
+      "x": 445,
+      "y": 224,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 1",
+      "file": "art/desk-1.png",
+      "x": 202,
+      "y": 95,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 2",
+      "file": "art/desk-2.png",
+      "x": 355,
+      "y": 95,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 3",
+      "file": "art/desk-3.png",
+      "x": 512,
+      "y": 95,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 4",
+      "file": "art/desk-4.png",
+      "x": 669,
+      "y": 95,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 5",
+      "file": "art/desk-5.png",
+      "x": 260,
+      "y": 380,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 6",
+      "file": "art/desk-6.png",
+      "x": 439,
+      "y": 380,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 7",
+      "file": "art/desk-7.png",
+      "x": 613,
+      "y": 380,
+      "depth": "sort",
+      "solid": false
+    }
+  ],
+  "stops": [
+    {
+      "name": "Window",
+      "x": 22,
+      "y": 5,
+      "facing": "up"
+    },
+    {
+      "name": "Bedside",
+      "x": 10,
+      "y": 8,
+      "facing": "left"
+    },
+    {
+      "name": "Spinning top",
+      "x": 20,
+      "y": 10,
+      "facing": "left"
+    },
+    {
+      "name": "Xylophone",
+      "x": 20,
+      "y": 22,
+      "facing": "left"
+    },
+    {
+      "name": "Drum",
+      "x": 48,
+      "y": 12,
+      "facing": "left"
+    },
+    {
+      "name": "Snack bar",
+      "x": 52,
+      "y": 11,
+      "facing": "up"
+    },
+    {
+      "name": "Snack bar stool",
+      "x": 55,
+      "y": 11,
+      "facing": "up"
+    },
+    {
+      "name": "Claw machine",
+      "x": 61,
+      "y": 11,
+      "facing": "up"
+    },
+    {
+      "name": "Book stack",
+      "x": 50,
+      "y": 16,
+      "facing": "left"
+    },
+    {
+      "name": "Road rug",
+      "x": 56,
+      "y": 15,
+      "facing": "down"
+    },
+    {
+      "name": "Rug corner",
+      "x": 54,
+      "y": 17,
+      "facing": "right"
+    },
+    {
+      "name": "Rug middle",
+      "x": 58,
+      "y": 13,
+      "facing": "down"
+    },
+    {
+      "name": "Star ball",
+      "x": 46,
+      "y": 20,
+      "facing": "left"
+    },
+    {
+      "name": "Monkey barrel",
+      "x": 60,
+      "y": 21,
+      "facing": "down"
+    },
+    {
+      "name": "Kite",
+      "x": 51,
+      "y": 26,
+      "facing": "left"
+    },
+    {
+      "name": "Toy train",
+      "x": 27,
+      "y": 28,
+      "facing": "left"
+    },
+    {
+      "name": "Marbles",
+      "x": 36,
+      "y": 29,
+      "facing": "right"
+    },
+    {
+      "name": "Rug trees",
+      "x": 59,
+      "y": 17,
+      "facing": "right"
+    }
+  ],
+  "moves": [
+    {
+      "id": "drumRoll",
+      "pose": "use",
+      "effect": "notes"
+    },
+    {
+      "id": "clawGrab",
+      "pose": "reach",
+      "effect": "sparkle"
+    },
+    {
+      "id": "spinTop",
+      "pose": "crouch",
+      "effect": "sparkle"
+    },
+    {
+      "id": "playXylophone",
+      "pose": "use",
+      "effect": "notes"
+    },
+    {
+      "id": "windTrain",
+      "pose": "crouch",
+      "effect": "steam"
+    },
+    {
+      "id": "shootMarble",
+      "pose": "crouch",
+      "effect": "sparkle"
+    },
+    {
+      "id": "flyKite",
+      "pose": "reach"
+    },
+    {
+      "id": "monkeyChain",
+      "pose": "reach",
+      "effect": "hearts"
+    }
+  ],
+  "hangout": "Road rug",
+  "board": {
+    "x": 504,
+    "y": 17,
+    "w": 95,
+    "h": 43,
+    "askMe": {
+      "x": 662,
+      "y": 16,
+      "w": 82,
+      "h": 36
+    },
+    "stand": {
+      "x": 32,
+      "y": 5
+    }
+  },
+  "oneOnOne": {
+    "x": 52,
+    "y": 20,
+    "facing": "down"
+  },
+  "waitAt": {
+    "x": 33,
+    "y": 29,
+    "facing": "down"
+  },
+  "reportTo": {
+    "x": 34,
+    "y": 14
+  },
+  "work": {
+    "effect": "glow",
+    "color": "#9BDDFF"
+  },
+  "burst": {
+    "kind": "stars",
+    "colors": [
+      "#FEBC01",
+      "#2250B2",
+      "#F93632",
+      "#FCF8F2"
+    ]
+  }
+}

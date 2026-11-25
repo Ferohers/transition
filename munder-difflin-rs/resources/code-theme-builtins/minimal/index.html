@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minimal</title>
+<style>
+/* MINIMAL, the app's built in code theme (founder, 6 Nov; was Tokens on top). Pam's approved board,
+   hive/agents/pam-mt6kt8lf/work/office-home/office-home-tokens-top.html and SPEC.md, drawn only from the data line.
+   Her colours, sizes and markup as they are; the app keeps its own top row, office switch and Theme button. */
+:root{
+  --ground:#F5F4EF; --surface:#FFFFFF; --raised:#ECEAE3; --hover:#F0EEE8; --active:#ECEAE3; --line:#DEDBD2; --line-strong:#CBC7BC;
+  --ink:#1A1916; --ink-2:#44423C; --muted:#6B685F; --faint:#9B978D;
+  --accent:#FFC94F; --accent-ink:#17150E; --accent-text:#8A5A00; --accent-soft:#FFF3D2; --accent-line:#F0CF7A;
+  --mint:#3F8F5E; --mint-text:#2F7449; --mint-soft:#E7F0EB;
+  --sky:#2F7FB8; --sky-text:#22679A; --sky-soft:#E6EFF6;
+  --lilac:#7563B8; --lilac-text:#5F4EA3; --lilac-soft:#EEECF5;
+  --amber:#B8621F; --amber-text:#96500F; --amber-soft:#F4E9E0;
+  --sand-soft:#F0EEE8; --sand-text:#5E5B53;
+  --shadow:0 1px 2px rgba(26,25,22,.06);
+  --ui:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:light;
+}
+:root[data-scheme="dark"]{
+  --ground:#131315; --surface:#1B1B1E; --raised:#232326; --hover:#26262A; --active:#26262A; --line:#2E2E32; --line-strong:#3D3D43;
+  --ink:#ECEAE3; --ink-2:#C9C6BE; --muted:#8E8B83; --faint:#66645E;
+  --accent:#FFD165; --accent-ink:#17150E; --accent-text:#FFCA54; --accent-soft:#3A2F12; --accent-line:#6B5620;
+  --mint:#7FC59A; --mint-text:#8FD0A8; --mint-soft:#1E3227;
+  --sky:#7DB8E4; --sky-text:#8EC3EA; --sky-soft:#1F3238;
+  --lilac:#B4A5E8; --lilac-text:#C0B3EC; --lilac-soft:#2B2740;
+  --amber:#E9A070; --amber-text:#EDAA7E; --amber-soft:#352822;
+  --sand-soft:#26262A; --sand-text:#B8B5AD;
+  --shadow:none; color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--ground);color:var(--ink);font:13px/1.45 var(--ui);-webkit-font-smoothing:antialiased;overflow:hidden;container-type:size;container-name:page}
+button{font:inherit;color:inherit;cursor:pointer}
+
+.chip{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px;border-radius:999px;border:1px solid var(--line);font-size:11.5px;font-weight:500;white-space:nowrap;background:var(--surface);color:var(--ink-2)}
+.chip i{width:6px;height:6px;border-radius:50%;background:currentColor;display:inline-block}
+.c-mint{background:var(--mint-soft);color:var(--mint-text);border-color:color-mix(in srgb,var(--mint) 35%,transparent)}
+.c-sky{background:var(--sky-soft);color:var(--sky-text);border-color:color-mix(in srgb,var(--sky) 35%,transparent)}
+.c-lilac{background:var(--lilac-soft);color:var(--lilac-text);border-color:color-mix(in srgb,var(--lilac) 35%,transparent)}
+.c-amber{background:var(--amber-soft);color:var(--amber-text);border-color:color-mix(in srgb,var(--amber) 40%,transparent)}
+.c-grey{background:var(--raised);color:var(--ink-2)}
+.c-idle{background:transparent;color:var(--muted)}
+.c-out{background:transparent;color:var(--ink-2)}
+.av{width:26px;height:26px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:12px;flex-shrink:0;border:1px solid var(--line)}
+.av.sm{width:20px;height:20px;border-radius:6px;font-size:10.5px}
+.h-sky{background:var(--sky-soft);color:var(--sky-text)} .h-mint{background:var(--mint-soft);color:var(--mint-text)}
+.h-lilac{background:var(--lilac-soft);color:var(--lilac-text)} .h-lemon{background:var(--accent-soft);color:var(--accent-text)}
+.h-sand{background:var(--sand-soft);color:var(--sand-text)}
+.btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border-radius:8px;border:1px solid var(--line-strong);background:var(--surface);font-size:12.5px;font-weight:500;white-space:nowrap}
+.btn:hover{background:var(--hover)}
+.btn.sm{height:24px;padding:0 8px;font-size:12px}
+.btn.primary{background:var(--accent);border-color:var(--accent-line);color:var(--accent-ink)}
+.btn.primary:hover{filter:brightness(1.04)}
+.btn:disabled{opacity:.55;cursor:default}
+.muted{color:var(--muted)}
+
+.main{height:100%;min-height:0;min-width:0;display:flex;flex-direction:column;gap:8px;padding:10px 16px 12px}
+.grid{flex:1;min-height:0;display:grid;gap:8px;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.1fr);grid-template-rows:216px minmax(0,1fr);grid-template-areas:"limits limits asks" "active top asks"}
+#s-active{grid-area:active} #s-asks{grid-area:asks} #s-top{grid-area:top} #s-limits{grid-area:limits}
+.box{background:var(--surface);border:1px solid var(--line);border-radius:12px;display:flex;flex-direction:column;min-height:0;min-width:0;overflow:hidden;box-shadow:var(--shadow);container-type:inline-size}
+.sh{display:flex;align-items:center;gap:8px;padding:5px 12px;border-bottom:1px solid var(--line);flex-shrink:0;min-height:36px}
+#s-limits .sh{min-height:34px}
+.sh h2{font-size:13.5px;font-weight:600;margin:0;white-space:nowrap}
+.sh .sp{flex:1}
+.sb{flex:1;min-height:0;overflow:auto}
+.sf{border-top:1px solid var(--line);padding:4px 12px 3px;font-size:12px;color:var(--muted);flex-shrink:0}
+.sm{font-size:11.5px}
+.lnk{border:0;background:none;padding:0;font:inherit;color:var(--ink);font-weight:600;cursor:pointer;white-space:nowrap}
+.lnk:hover{text-decoration:underline}
+.lnk:focus-visible,.prow:focus-visible{outline:2px solid var(--accent-line);outline-offset:0}
+.step{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.when{color:var(--faint);font-size:11.5px;white-space:nowrap}
+.empty{padding:12px;color:var(--muted)}
+
+.arow{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:center;padding:3px 12px;border-bottom:1px solid var(--line)}
+.arow:last-child{border-bottom:0}
+.am{min-width:0}
+.am .l1{display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;height:19px}
+.am .l1 .ttl{overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--ink-2)}
+.am .l1 .ttl.lnk{font-weight:400}
+.am .l2{display:flex;gap:8px;align-items:center;min-width:0;height:19px}
+.am .l2 .sp{flex:1}
+
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;background:var(--surface);padding:2px;gap:2px}
+.seg button{border:0;background:transparent;border-radius:6px;padding:3px 9px;font-size:12px;color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--active);color:var(--ink);font-weight:500}
+.seg.mini button{padding:2px 7px;font-size:11.5px}
+.fbar{display:flex;padding:5px 8px;border-bottom:1px solid var(--line);flex-shrink:0;background:var(--surface)}
+.seg.win{display:flex;width:100%}
+.seg.win button{flex:1 1 auto;display:inline-flex;align-items:center;justify-content:center;gap:4px;padding:2px 4px;white-space:nowrap}
+.seg.win b{font-size:11px;font-weight:500;font-variant-numeric:tabular-nums;color:var(--faint)}
+.seg.win button[aria-pressed="true"] b{color:var(--ink-2)}
+
+#s-asks .sb{background:var(--ground)}
+.asks{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:5px;padding:5px 8px 6px;align-items:stretch}
+.ask{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:6px 10px;display:flex;flex-direction:column;gap:5px;min-width:0;container-type:inline-size}
+.ask .qt{margin:0;font-size:13px;line-height:18px;color:var(--ink);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.ask:not(.k-question) .qt{-webkit-line-clamp:2;color:var(--ink-2)}
+.ask .qf{display:flex;align-items:center;gap:8px;margin-top:auto;min-height:26px}
+.ask .qm{flex:1;min-width:0;display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted);white-space:nowrap;overflow:hidden}
+.ask .qm .lnk{font-size:12px;font-weight:500}
+.ask .qm .ds{color:var(--faint)}
+.ask .qm > *{flex-shrink:0}
+.ask .qx{display:flex;gap:6px;flex-shrink:0}
+@container (max-width:340px){.ask .qm .av{display:none}}
+.ask.done{flex-direction:row;align-items:center;gap:8px;background:var(--raised);min-height:38px}
+.ask .qd{font-size:12.5px;color:var(--ink-2);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ask .qerr{font-size:11.5px;color:var(--amber-text)}
+textarea.answer-box{display:block;width:100%;height:40px;font:inherit;font-size:12.5px;line-height:17px;border:1px solid var(--line-strong);border-radius:8px;padding:4px 8px;background:var(--surface);color:var(--ink);resize:none;overflow:auto}
+textarea.answer-box::placeholder{color:var(--faint)}
+textarea.answer-box:focus{outline:2px solid var(--accent-line);outline-offset:0}
+.qa-row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+.live{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--muted)}
+.live i{width:7px;height:7px;border-radius:50%;background:var(--mint);animation:livepulse 2s ease-in-out infinite}
+@keyframes livepulse{0%,100%{opacity:1}50%{opacity:.35}}
+:root[data-motion="reduce"] .live i{animation:none}
+
+/* Tasks: the line gives no card key and no time, so the row is the task's state, its title and its owner */
+.trow{display:grid;grid-template-columns:62px minmax(0,1fr) auto auto;gap:10px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line)}
+.trow:last-child{border-bottom:0}
+.trow .ttl{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;text-align:start;font-weight:400}
+.trow .own{display:inline-flex;gap:6px;align-items:center;min-width:0;max-width:150px}
+.trow .own .lnk{overflow:hidden;text-overflow:ellipsis}
+@container (max-width:540px){
+  .trow{grid-template-columns:62px minmax(0,1fr) auto;row-gap:0;padding:3px 12px}
+  .trow .ttl{grid-column:2 / -1;grid-row:1;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+  .trow .own{grid-column:2;grid-row:2}
+  .trow .chip.st{grid-column:3;grid-row:2}
+}
+
+.tk-head{padding:0 12px}
+.tk-big{display:flex;align-items:baseline;gap:6px}
+.tk-big b{font-size:26px;line-height:30px;font-weight:600;letter-spacing:-.4px;font-variant-numeric:tabular-nums;color:var(--ink)}
+.tk-big span{color:var(--muted);font-size:12.5px}
+.tk-sub{display:flex;flex-wrap:wrap;gap:2px 12px;font-size:12px;color:var(--muted);margin-top:3px}
+.tk-sub b{color:var(--ink);font-weight:600;font-variant-numeric:tabular-nums}
+.prows{display:flex;flex-direction:column}
+.prow{display:grid;grid-template-columns:minmax(52px,92px) minmax(70px,1fr) 42px 38px;gap:8px;align-items:center;min-height:24px;padding:0 12px;font-size:12.5px;cursor:pointer}
+.prow:hover{background:var(--hover)}
+.prow.ph{min-height:18px;cursor:default;font-size:11px;color:var(--muted);font-weight:600}
+.prow.ph:hover{background:none}
+.prow .pn{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+.prow .pr,.prow .pt{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.prow .pr{font-weight:600;color:var(--ink)}
+.prow .pt{color:var(--ink-2)}
+.prow.ph .pr,.prow.ph .pt{font-weight:600;color:var(--muted)}
+.hs{display:grid;grid-template-columns:repeat(14,minmax(0,1fr));gap:2px;height:12px;min-width:0}
+.hs i{border-radius:2px;background:var(--raised)}
+.hs i.l1{background:color-mix(in srgb,var(--accent) 18%,var(--raised))}
+.hs i.l2{background:color-mix(in srgb,var(--accent) 42%,var(--raised))}
+.hs i.l3{background:color-mix(in srgb,var(--accent) 72%,var(--raised))}
+.hs i.l4{background:var(--accent);box-shadow:inset 0 0 0 1px var(--accent-line)}
+.hs i.nr{background:transparent;box-shadow:inset 0 0 0 1px var(--line)}
+.hs i:hover{outline:1px solid var(--ink-2);outline-offset:0}
+.ax{display:flex;justify-content:space-between;font-size:10px;font-weight:500;color:var(--faint);white-space:nowrap;min-width:0;overflow:hidden}
+.tip{position:fixed;left:0;top:0;z-index:40;display:flex;gap:6px;align-items:baseline;padding:4px 8px;border-radius:6px;background:var(--ink);color:var(--ground);font-size:11.5px;white-space:nowrap;pointer-events:none;opacity:0;transition:opacity .08s}
+.tip.on{opacity:1}
+.tk-quiet{padding:0 12px;font-size:12px;color:var(--muted)}
+.tk-quiet .lnk{font-weight:500;color:var(--ink-2)}
+.tk-plan{padding:0 12px;font-size:11.5px;color:var(--muted)}
+.tk-plan b{font-weight:600;color:var(--ink-2)}
+.tk-plan b.near{color:var(--amber-text)}
+.tband{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,.8fr) minmax(0,1.25fr)}
+.tband .tl{padding:10px 0 8px;display:flex;flex-direction:column;gap:10px;border-inline-end:1px solid var(--line);min-width:0}
+.tband .tr{padding:5px 0 6px;display:flex;flex-direction:column;gap:4px;min-width:0;min-height:0}
+.tband .prow{min-height:19px}
+.tband .prows{overflow:auto;min-height:0}
+.tband .tk-plan{margin-top:auto}
+[dir="rtl"] .prow .pr,[dir="rtl"] .prow .pt{text-align:left}
+
+/* Pam's rule, on Home's slot: the grid while it is at least 860 wide and 480 tall (each list scrolls in its card);
+   under that the sections stack and the page scrolls */
+@container page (max-width:859px) or (max-height:479px){
+  body{overflow:auto}
+  .main{height:auto}
+  .grid{flex:none;grid-template-columns:minmax(0,1fr);grid-template-rows:none;grid-template-areas:"active" "asks" "top" "limits"}
+  .tband{grid-template-columns:minmax(0,1fr)}
+  .tband .tl{border-inline-end:0;border-bottom:1px solid var(--line)}
+  .grid > .box{min-height:200px}
+}
+@container (max-width:460px){.sh .sub{display:none}}
+</style>
+</head>
+<body>
+<div class="main">
+  <div class="grid">
+    <section class="box" id="s-active"></section>
+    <section class="box" id="s-asks"></section>
+    <section class="box" id="s-top"></section>
+    <section class="box" id="s-limits"></section>
+  </div>
+</div>
+<div class="tip" id="tip" role="tooltip"></div>
+<script>
+// MINIMAL (was Tokens on top): every number comes from the data line (window.md.onData); a click asks the app
+// (window.md.ask), which opens its own sheets. Words are the app's own, in the line's language and direction.
+// Nothing from the line is ever read as HTML: text goes in with textContent only.
+'use strict';
+/* WORDS:BEGIN (scripts/tokens-home-words.cjs) */
+const WORDS = {
+ "en": {
+  "tokens": "Tokens",
+  "fastest": "Fastest first. Each cell is one minute.",
+  "today": "tokens today",
+  "todayShort": "today",
+  "h5": "5 hours",
+  "week": "This week",
+  "limH5": "5 hour",
+  "limWeekly": "Weekly",
+  "burning": "Burning now",
+  "aMin": "a min",
+  "quiet": "Quiet now:",
+  "noneBurning": "No agent is using tokens right now.",
+  "rowTip": "{{name}}: {{rate}} tokens a minute now, {{today}} today",
+  "axisFrom": "14 min ago",
+  "axisNow": "now",
+  "active": "Active now",
+  "noneWorking": "No agent is working right now.",
+  "top": "Tasks",
+  "topSub": "Doing, last touched first",
+  "noTasks": "No task is being worked on.",
+  "asks": "Ask me",
+  "newestFirst": "Newest first",
+  "noAsks": "Nothing is waiting on you.",
+  "answerTo": "Your answer to {{name}}",
+  "answer": "Answer",
+  "decline": "Decline",
+  "answered": "Answered",
+  "answeredWords": "{{name}} has your answer.",
+  "declined": "Declined",
+  "declineNeedsReason": "Write a reason in the box to decline.",
+  "goneWords": "This question changed or closed. Nothing was sent.",
+  "notSent": "Not sent. Try again.",
+  "resetsMin_one": "resets in {{count}} min",
+  "resetsMin_other": "resets in {{count}} min",
+  "resetsHours": "resets in {{h}} h {{m}} min",
+  "comma": ", ",
+  "ageNow": "just now",
+  "ageMin_one": "{{count}} min ago",
+  "ageMin_other": "{{count}} min ago",
+  "ageHour_one": "{{count}} h ago",
+  "ageHour_other": "{{count}} h ago",
+  "ageDay_one": "{{count}} day ago",
+  "ageDay_other": "{{count}} days ago",
+  "st_working": "Working",
+  "st_thinking": "Thinking",
+  "st_compacting": "Compacting",
+  "st_looping": "Looping",
+  "task_doing": "Doing",
+  "task_blocked": "Blocked",
+  "st_blocked": "Needs you",
+  "st_waiting": "Waiting",
+  "st_idle": "Idle",
+  "st_success": "Done",
+  "st_ghost": "Gone",
+  "st_typing": "Your draft",
+  "live": "Live",
+  "notWorking": "Not working:",
+  "needsYou_one": "needs you",
+  "needsYou_other": "need you",
+  "waiting_one": "waiting",
+  "waiting_other": "waiting",
+  "idle_one": "idle",
+  "idle_other": "idle",
+  "topSubBlocked": "Doing and Blocked, last touched first",
+  "showFrom": "Show from",
+  "nowLabel": "Now",
+  "win_today": "Today",
+  "win_24h": "24h",
+  "win_48h": "48h",
+  "win_7d": "7d",
+  "win_all": "All",
+  "stripLabel": "{{name}}, work tokens in each of the last 14 minutes, oldest first: {{counts}}",
+  "cellTip_one": "{{from}} to {{to}}: {{n}} token",
+  "cellTip_other": "{{from}} to {{to}}: {{n}} tokens",
+  "noReading": "{{from}} to {{to}}: no reading",
+  "noAsksHere_one": "Nothing in this window. {{count}} older ask is under All time.",
+  "noAsksHere_other": "Nothing in this window. {{count}} older asks are under All time.",
+  "boxWords_one": "{{count}} message waits for {{name}}. It is typed when {{name}} is free.",
+  "boxWords_other": "{{count}} messages wait for {{name}}. They are typed when {{name}} is free.",
+  "keyWords": "{{label}} needs a key.",
+  "aConnection": "A connection",
+  "declinedWords": "{{name}} is told, with your reason: “{{reason}}”",
+  "theAgent": "The agent",
+  "held_text": "Waiting: there is text in {{name}}'s box. This is typed when the box is empty.",
+  "held_unread": "Waiting: the office cannot see whether {{name}}'s box is empty. This is typed after the next message sent there.",
+  "held_unknown": "Waiting: the office does not know yet what {{name}} is doing. This is typed after its next step.",
+  "held_paused": "Waiting: deliveries to {{name}} are switched off.",
+  "held_question": "Waiting: {{name}} has a question open on its screen. This is typed when it is answered.",
+  "held_menu": "Waiting: a menu is open on {{name}}'s screen. This is typed when it is closed.",
+  "held_codexScreen": "Waiting: {{name}}'s screen shows a Codex panel, not its prompt. This is typed when the prompt is back.",
+  "held_moment": "Waiting a moment: this is typed to {{name}} shortly.",
+  "held_notTaken": "Not confirmed: this was typed to {{name}} with no sign it was taken. It is not typed again by itself; Send anyway types it once more.",
+  "plan": "Nearest plan limit:"
+ },
+ "ar": {
+  "tokens": "الرموز",
+  "fastest": "الأسرع أولًا. كل خانة دقيقة واحدة.",
+  "today": "رمز اليوم",
+  "todayShort": "اليوم",
+  "h5": "5 ساعات",
+  "week": "هذا الأسبوع",
+  "limH5": "5 ساعات",
+  "limWeekly": "أسبوعيا",
+  "burning": "يستهلك الآن",
+  "aMin": "في الدقيقة",
+  "quiet": "هادئ الآن:",
+  "noneBurning": "لا يستهلك أي وكيل رموزًا الآن.",
+  "rowTip": "{{name}}: {{rate}} رمز في الدقيقة الآن، و{{today}} اليوم",
+  "axisFrom": "قبل 14 دقيقة",
+  "axisNow": "الآن",
+  "active": "النشطون الآن",
+  "noneWorking": "لا يعمل أي وكيل الآن.",
+  "top": "المهام",
+  "topSub": "قيد العمل، الأحدث لمسًا أولًا",
+  "noTasks": "لا مهمة قيد العمل.",
+  "asks": "اسألني",
+  "newestFirst": "الأحدث أولًا",
+  "noAsks": "لا شيء ينتظرك.",
+  "answerTo": "جوابك إلى {{name}}",
+  "answer": "إجابة",
+  "decline": "رفض",
+  "answered": "تمت الإجابة",
+  "answeredWords": "وصل جوابك إلى {{name}}.",
+  "declined": "مرفوض",
+  "declineNeedsReason": "اكتب سببًا في المربع للرفض.",
+  "goneWords": "تغيّر هذا السؤال أو أُغلق. لم يُرسل شيء.",
+  "notSent": "لم يُرسل. حاول مرة أخرى.",
+  "resetsMin_one": "يُعاد ضبطه بعد {{count}} دقيقة",
+  "resetsMin_other": "يُعاد ضبطه بعد {{count}} دقيقة",
+  "resetsHours": "يُعاد ضبطه بعد {{h}} س {{m}} د",
+  "comma": "، ",
+  "ageNow": "الآن",
+  "ageMin_one": "منذ {{count}} دقيقة",
+  "ageMin_other": "منذ {{count}} دقيقة",
+  "ageHour_one": "منذ {{count}} ساعة",
+  "ageHour_other": "منذ {{count}} ساعة",
+  "ageDay_one": "منذ {{count}} يوم",
+  "ageDay_other": "منذ {{count}} أيام",
+  "st_working": "يعمل",
+  "st_thinking": "يفكر",
+  "st_compacting": "يضغط",
+  "st_looping": "يدور",
+  "task_doing": "قيد التنفيذ",
+  "task_blocked": "متوقفة",
+  "st_blocked": "بحاجة إليك",
+  "st_waiting": "ينتظر",
+  "st_idle": "خامل",
+  "st_success": "تم",
+  "st_ghost": "غادر",
+  "st_typing": "مسودتك",
+  "live": "مباشر",
+  "notWorking": "لا يعمل:",
+  "needsYou_one": "يحتاج إليك",
+  "needsYou_other": "يحتاجون إليك",
+  "waiting_one": "ينتظر",
+  "waiting_other": "ينتظرون",
+  "idle_one": "خامل",
+  "idle_other": "خاملون",
+  "topSubBlocked": "قيد العمل والمتوقفة، الأحدث لمسًا أولًا",
+  "showFrom": "عرض منذ",
+  "nowLabel": "الآن",
+  "win_today": "اليوم",
+  "win_24h": "24 س",
+  "win_48h": "48 س",
+  "win_7d": "7 أيام",
+  "win_all": "الكل",
+  "stripLabel": "{{name}}، رموز العمل في كل دقيقة من آخر 14 دقيقة، الأقدم أولًا: {{counts}}",
+  "cellTip_one": "من {{from}} إلى {{to}}: {{n}} رمز",
+  "cellTip_other": "من {{from}} إلى {{to}}: {{n}} رمز",
+  "noReading": "من {{from}} إلى {{to}}: لا قراءة",
+  "noAsksHere_one": "لا شيء في هذه المدة. {{count}} سؤال أقدم تحت الكل.",
+  "noAsksHere_other": "لا شيء في هذه المدة. {{count}} أسئلة أقدم تحت الكل.",
+  "boxWords_one": "{{count}} رسالة تنتظر {{name}}. تُكتب حين يتفرغ {{name}}.",
+  "boxWords_other": "{{count}} رسائل تنتظر {{name}}. تُكتب حين يتفرغ {{name}}.",
+  "keyWords": "يحتاج {{label}} إلى مفتاح.",
+  "aConnection": "اتصال",
+  "declinedWords": "أُبلغ {{name}} مع سببك: «{{reason}}»",
+  "theAgent": "الوكيل",
+  "held_text": "بالانتظار: في مربع {{name}} نص. تُكتب هذه الرسالة حين يفرغ المربع.",
+  "held_unread": "بالانتظار: لا يرى المكتب إن كان مربع {{name}} فارغًا. تُكتب هذه الرسالة بعد الرسالة التالية المرسلة هناك.",
+  "held_unknown": "بالانتظار: لا يعرف المكتب بعد ما يفعله {{name}}. تُكتب هذه الرسالة بعد خطوته التالية.",
+  "held_paused": "بالانتظار: التسليم إلى {{name}} متوقف.",
+  "held_question": "في الانتظار: لدى {{name}} سؤال مفتوح على شاشته. تُكتب هذه الرسالة عند الإجابة عنه.",
+  "held_menu": "في الانتظار: قائمة مفتوحة على شاشة {{name}}. تُكتب هذه الرسالة عند إغلاقها.",
+  "held_codexScreen": "في الانتظار: تعرض شاشة {{name}} لوحة من Codex وليس خانة الكتابة. تُكتب هذه الرسالة عند عودة الخانة.",
+  "held_moment": "لحظة من فضلك: تُكتب هذه الرسالة إلى {{name}} بعد قليل.",
+  "held_notTaken": "غير مؤكد: كُتبت هذه الرسالة إلى {{name}} دون ما يدل على أنها استُلمت. لا تُكتب مرة أخرى من تلقاء نفسها، و«أرسل على أي حال» يكتبها مرة أخرى.",
+  "plan": "أقرب حد للخطة:"
+ },
+ "zh-CN": {
+  "tokens": "令牌",
+  "fastest": "最快的在前。每格为一分钟。",
+  "today": "今日令牌",
+  "todayShort": "今日",
+  "h5": "5 小时",
+  "week": "本周",
+  "limH5": "5 小时",
+  "limWeekly": "每周",
+  "burning": "正在消耗",
+  "aMin": "每分钟",
+  "quiet": "当前空闲：",
+  "noneBurning": "当前没有智能体在使用令牌。",
+  "rowTip": "{{name}}：当前每分钟 {{rate}} 令牌，今日 {{today}}",
+  "axisFrom": "14 分钟前",
+  "axisNow": "现在",
+  "active": "正在工作",
+  "noneWorking": "当前没有智能体在工作。",
+  "top": "任务",
+  "topSub": "进行中，最近处理的在前",
+  "noTasks": "没有进行中的任务。",
+  "asks": "问我",
+  "newestFirst": "最新的在前",
+  "noAsks": "没有等你处理的事。",
+  "answerTo": "你给 {{name}} 的回答",
+  "answer": "回答",
+  "decline": "拒绝",
+  "answered": "已回答",
+  "answeredWords": "{{name}} 已收到你的回答。",
+  "declined": "已拒绝",
+  "declineNeedsReason": "在框中写下理由才能拒绝。",
+  "goneWords": "这个问题已更改或关闭。未发送任何内容。",
+  "notSent": "未发送。请重试。",
+  "resetsMin_one": "{{count}} 分钟后重置",
+  "resetsMin_other": "{{count}} 分钟后重置",
+  "resetsHours": "{{h}} 小时 {{m}} 分钟后重置",
+  "comma": "，",
+  "ageNow": "刚刚",
+  "ageMin_one": "{{count}} 分钟前",
+  "ageMin_other": "{{count}} 分钟前",
+  "ageHour_one": "{{count}} 小时前",
+  "ageHour_other": "{{count}} 小时前",
+  "ageDay_one": "{{count}} 天前",
+  "ageDay_other": "{{count}} 天前",
+  "st_working": "工作中",
+  "st_thinking": "思考中",
+  "st_compacting": "压缩中",
+  "st_looping": "循环中",
+  "task_doing": "进行中",
+  "task_blocked": "受阻",
+  "st_blocked": "需要你",
+  "st_waiting": "等待中",
+  "st_idle": "空闲",
+  "st_success": "完成",
+  "st_ghost": "已退出",
+  "st_typing": "你的草稿",
+  "live": "实时",
+  "notWorking": "未在工作：",
+  "needsYou_one": "需要你",
+  "needsYou_other": "需要你",
+  "waiting_one": "等待中",
+  "waiting_other": "等待中",
+  "idle_one": "空闲",
+  "idle_other": "空闲",
+  "topSubBlocked": "进行中和受阻，最近处理的在前",
+  "showFrom": "显示范围",
+  "nowLabel": "当前",
+  "win_today": "今天",
+  "win_24h": "24 小时",
+  "win_48h": "48 小时",
+  "win_7d": "7 天",
+  "win_all": "全部",
+  "stripLabel": "{{name}}，最近 14 分钟每分钟的工作令牌，最早的在前：{{counts}}",
+  "cellTip_one": "{{from}} 至 {{to}}：{{n}} 令牌",
+  "cellTip_other": "{{from}} 至 {{to}}：{{n}} 令牌",
+  "noReading": "{{from}} 至 {{to}}：无读数",
+  "noAsksHere_one": "这段时间内没有。全部中有 {{count}} 个更早的问题。",
+  "noAsksHere_other": "这段时间内没有。全部中有 {{count}} 个更早的问题。",
+  "boxWords_one": "{{count}} 条消息在等 {{name}}。{{name}} 空闲时会输入。",
+  "boxWords_other": "{{count}} 条消息在等 {{name}}。{{name}} 空闲时会输入。",
+  "keyWords": "{{label}} 需要一个密钥。",
+  "aConnection": "一个连接",
+  "declinedWords": "已告知 {{name}}，附上你的理由：“{{reason}}”",
+  "theAgent": "该智能体",
+  "held_text": "等待中：{{name}} 的输入框里有文字。输入框清空后会输入这条消息。",
+  "held_unread": "等待中：办公室看不到 {{name}} 的输入框是否为空。会在那里发出下一条消息后输入这条消息。",
+  "held_unknown": "等待中：办公室还不知道 {{name}} 在做什么。会在它的下一步之后输入这条消息。",
+  "held_paused": "等待中：发给 {{name}} 的投递已关闭。",
+  "held_question": "等待中：{{name}} 的屏幕上有一个未回答的问题。回答后会输入这条消息。",
+  "held_menu": "等待中：{{name}} 的屏幕上打开了一个菜单。菜单关闭后会输入这条消息。",
+  "held_codexScreen": "等待中：{{name}} 的屏幕显示的是 Codex 面板，而不是输入框。输入框恢复后会输入这条消息。",
+  "held_moment": "稍等片刻：这条消息很快会输入给 {{name}}。",
+  "held_notTaken": "未确认：这条消息已输入给 {{name}}，但没有迹象表明它已接收。不会自动重新输入，点“仍然发送”会再输入一次。",
+  "plan": "最接近的套餐限额："
+ }
+};
+/* WORDS:END */
+const HEAT = [2000, 5000, 10000];                 // Pam's shading steps
+const BUSY = new Set(['working', 'thinking', 'compacting', 'looping']);
+const STATUS = { working: 'c-mint', thinking: 'c-sky', compacting: 'c-lilac', looping: 'c-amber', blocked: 'c-amber', waiting: 'c-grey', idle: 'c-idle' };
+const HUES = ['sky', 'mint', 'lilac', 'lemon', 'sand'];
+const WINS = ['today', '24h', '48h', '7d', 'all'];
+const LINGER_MS = 2600;                           // an answered ask stays in view this long
+const PLAN_NEAR_PCT = 80;
+const MIN = 60000;
+const HELD = { 'text-in-box': 'held_text', 'box-unread': 'held_unread', 'state-unknown': 'held_unknown', 'deliveries-off': 'held_paused', 'question-open': 'held_question', 'menu-open': 'held_menu', 'codex-screen': 'held_codexScreen', moment: 'held_moment', unconfirmed: 'held_notTaken' };
+let state = null;
+let W = WORDS.en || {};
+let askWin = 'all';
+const done = new Map();                           // ask token -> { label, words, ok, until }
+const drafts = new Map();                         // ask token -> what the person typed, kept across redraws
+
+function langOf(tag) {
+  if (typeof tag !== 'string') return 'en';
+  if (Object.prototype.hasOwnProperty.call(WORDS, tag)) return tag;
+  const base = tag.split('-')[0].toLowerCase();
+  return Object.keys(WORDS).find((k) => k.split('-')[0].toLowerCase() === base) || 'en';
+}
+function w(key, vars) {
+  vars = vars || {};
+  const k = typeof vars.count === 'number' ? key + (vars.count === 1 ? '_one' : '_other') : key;
+  const s = Object.prototype.hasOwnProperty.call(W, k) ? W[k] : ((WORDS.en || {})[k] || k);
+  return s.replace(/\{\{(\w+)\}\}/g, (_, v) => (vars[v] == null ? '' : String(vars[v])));
+}
+
+const $ = (id) => document.getElementById(id);
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = String(text); return e; }
+const tk = (n) => (!(n > 0) ? '0' : n >= 1e6 ? `${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(Math.round(n)));
+const tkh = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : tk(n));
+const perMin = (n) => (n >= 100000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n || 0)));
+const heat = (v) => (v <= 0 ? 0 : v < HEAT[0] ? 1 : v < HEAT[1] ? 2 : v < HEAT[2] ? 3 : 4);
+const hhmm = (t) => new Date(t).toLocaleTimeString(state ? state.look.lang : [], { hour: '2-digit', minute: '2-digit' });
+const num = (n) => Math.round(n).toLocaleString(state ? state.look.lang : 'en');
+function ago(ms) {
+  if (ms == null || !state) return '';
+  const m = Math.floor((state.at - ms) / MIN);
+  if (m < 1) return w('ageNow');
+  if (m < 60) return w('ageMin', { count: m });
+  const h = Math.floor(m / 60);
+  return h < 48 ? w('ageHour', { count: h }) : w('ageDay', { count: Math.floor(h / 24) });
+}
+function since(win) {
+  if (win === 'all') return -Infinity;
+  if (win === 'today') { const d = new Date(state.at); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  return state.at - { '24h': 24, '48h': 48, '7d': 168 }[win] * 3600000;
+}
+const inWin = (at, win) => win === 'all' || (at != null && at >= since(win));
+const agentOf = (token) => (state && token ? state.agents.find((a) => a.token === token) || null : null);
+function hueOf(name) { let h = 0; for (const c of String(name)) h = (h * 31 + c.codePointAt(0)) >>> 0; return HUES[h % HUES.length]; }
+function av(a, sm) { const s = el('span', `av${sm ? ' sm' : ''} h-${a ? hueOf(a.name) : 'sand'}`, a ? Array.from(a.name)[0] || '?' : '?'); s.setAttribute('aria-hidden', 'true'); return s; }
+function chip(st, extra) { const c = el('span', `chip ${STATUS[st] || 'c-grey'}${extra ? ' ' + extra : ''}`); c.append(el('i'), w('st_' + st)); return c; }
+function openAgent(token) { if (token) window.md.ask({ kind: 'openAgent', agent: token }); }
+function openTask(token) { if (token) window.md.ask({ kind: 'openTask', task: token }); }
+function agentLink(a, cls) { const b = el('button', 'lnk' + (cls ? ' ' + cls : ''), a ? a.name : w('theAgent')); b.type = 'button'; if (a) b.addEventListener('click', () => openAgent(a.token)); return b; }
+function sep() { return el('span', 'ds', '·'); }
+
+window.md.onData((s) => {
+  if (!s || s.v !== 1) return;
+  state = s;
+  const lang = langOf(s.look.lang);
+  W = WORDS[lang] || WORDS.en || {};
+  const root = document.documentElement;
+  root.lang = lang;
+  root.dir = s.look.dir === 'rtl' || s.look.dir === 'ltr' ? s.look.dir : (lang === 'ar' ? 'rtl' : 'ltr');
+  root.dataset.scheme = s.look.scheme === 'dark' ? 'dark' : 'light';
+  root.dataset.motion = s.look.reducedMotion ? 'reduce' : '';
+  draw();
+});
+
+/** Redraw a section, keeping its scroll and the answer box the person is typing in. */
+function paint(section, build) {
+  const sb = section.querySelector('.sb, .prows'); const top = sb ? sb.scrollTop : 0;
+  const f = document.activeElement; const mine = f && section.contains(f) && f.dataset && f.dataset.ask ? { id: f.dataset.ask, a: f.selectionStart, b: f.selectionEnd } : null;
+  section.replaceChildren(...build());
+  const nb = section.querySelector('.sb, .prows'); if (nb) nb.scrollTop = top;
+  if (mine) { const t = section.querySelector(`textarea[data-ask="${CSS.escape(mine.id)}"]`); if (t) { t.focus(); t.setSelectionRange(mine.a, mine.b); } }
+}
+function header(title, count, countCls, sub, extra) {
+  const h = el('header', 'sh'); h.append(el('h2', null, title));
+  if (count != null) h.append(el('span', `chip ${countCls}`, count));
+  if (sub) h.append(el('span', 'muted sm sub', sub));
+  h.append(el('span', 'sp'));
+  if (extra) h.append(extra);
+  return h;
+}
+
+function draw() {
+  if (!state) return;
+  const now = Date.now();
+  for (const [tok, d] of done) if (d.until <= now) done.delete(tok);
+  paint($('s-active'), active);
+  paint($('s-asks'), asks);
+  paint($('s-top'), tasks);
+  paint($('s-limits'), tokens);
+}
+
+/* The line names a limit "<engine>, <window>" in the app's English window words: the window in the app's own word here */
+function limitName(n) {
+  const i = n.lastIndexOf(', ');
+  if (i < 0) return n;
+  const win = n.slice(i + 2);
+  const word = win === '5 hour' ? w('limH5') : win === 'weekly' ? w('limWeekly') : win;
+  return n.slice(0, i) + w('comma') + word;
+}
+
+function openAsks() { return state.asks.filter((q) => !done.has(q.token)); }
+
+/* 1. ACTIVE NOW */
+function active() {
+  const list = state.agents.filter((a) => BUSY.has(a.status))
+    .sort((x, y) => (y.role === 'lead' ? 1 : 0) - (x.role === 'lead' ? 1 : 0) || (y.statusSince || 0) - (x.statusSince || 0));
+  const live = el('span', 'live', w('live')); live.prepend(el('i'));
+  const out = [header(w('active'), list.length, 'c-mint', null, live)];
+  const sb = el('div', 'sb');
+  for (const a of list) {
+    const row = el('div', 'arow');
+    const am = el('div', 'am');
+    const l1 = el('div', 'l1'); l1.append(agentLink(a));
+    if (a.taskTitle) {
+      const t = el(a.ticket ? 'button' : 'span', a.ticket ? 'lnk ttl' : 'ttl', a.taskTitle); t.title = a.taskTitle; t.dir = 'auto';
+      if (a.ticket) { t.type = 'button'; t.addEventListener('click', () => openTask(a.ticket)); }
+      l1.append(t);
+    }
+    const l2 = el('div', 'l2');
+    const step = el('span', 'step', a.tool || ''); step.dir = 'auto'; if (a.tool) step.title = a.tool;
+    l2.append(step, el('span', 'when', ago(a.statusSince)), el('span', 'sp'), chip(a.status));
+    am.append(l1, l2); row.append(av(a), am); sb.append(row);
+  }
+  if (!list.length) sb.append(el('div', 'empty', w('noneWorking')));
+  out.push(sb);
+  const rest = state.agents.filter((a) => !BUSY.has(a.status));
+  const bits = [['blocked', 'needsYou'], ['waiting', 'waiting'], ['idle', 'idle']].map(([st, key]) => {
+    const who = rest.filter((a) => a.status === st);
+    if (!who.length) return null;
+    const span = el('span');
+    who.forEach((a, i) => { if (i) span.append(w('comma')); span.append(agentLink(a)); });
+    span.append(' ' + w(key, { count: who.length }));
+    return span;
+  }).filter(Boolean);
+  if (bits.length) {
+    const f = el('footer', 'sf', w('notWorking') + ' ');
+    bits.forEach((b, i) => { if (i) f.append(' · '); f.append(b); });
+    out.push(f);
+  }
+  return out;
+}
+
+/* 2. ASK ME: a card per ask, newest first, under the time filter */
+function askWords(q, a) {
+  const name = a ? a.name : w('theAgent');
+  if (q.kind === 'question') return q.text;
+  if (q.kind === 'held') return w(HELD[q.text] || 'held_moment', { name });
+  if (q.kind === 'box') return w('boxWords', { count: q.count || 1, name });
+  return w('keyWords', { label: q.text || w('aConnection') });
+}
+function asks() {
+  const open = openAsks();
+  const shown = open.filter((q) => inWin(q.askedAt, askWin)).sort((x, y) => (y.askedAt || 0) - (x.askedAt || 0));
+  const out = [header(w('asks'), shown.length, shown.length ? 'c-amber' : 'c-out', w('newestFirst'))];
+  const bar = el('div', 'fbar'); const seg = el('span', 'seg mini win'); seg.setAttribute('role', 'group'); seg.setAttribute('aria-label', w('showFrom'));
+  for (const k of WINS) {
+    const b = el('button', null, w('win_' + k)); b.type = 'button'; b.setAttribute('aria-pressed', String(askWin === k));
+    b.append(el('b', 'n', open.filter((q) => inWin(q.askedAt, k)).length));
+    b.addEventListener('click', () => { askWin = k; draw(); });
+    seg.append(b);
+  }
+  bar.append(seg); out.push(bar);
+  const sb = el('div', 'sb');
+  const cards = [...[...done.entries()].map(([tok, d]) => doneCard(tok, d)), ...shown.map(askCard)];
+  if (cards.length) { const g = el('div', 'asks'); g.append(...cards); sb.append(g); }
+  else if (open.length) sb.append(el('div', 'empty', w('noAsksHere', { count: open.length })));
+  else sb.append(el('div', 'empty', w('noAsks')));
+  out.push(sb);
+  return out;
+}
+function doneCard(tok, d) {
+  const c = el('div', 'ask done'); c.setAttribute('role', 'status'); c.dataset.askid = tok;
+  const q = el('span', 'qd', d.words); q.title = d.words;
+  c.append(el('span', `chip ${d.ok ? 'c-mint' : 'c-out'}`, d.label), q);
+  return c;
+}
+function askCard(q) {
+  const a = agentOf(q.agent);
+  const c = el('div', `ask k-${q.kind}`); c.dataset.askid = q.token;
+  const text = askWords(q, a);
+  const p = el('p', 'qt', text); p.title = text; p.dir = 'auto';
+  c.append(p);
+  const err = el('div', 'qerr'); err.hidden = true;
+  const meta = el('span', 'qm'); meta.append(av(a, true), agentLink(a), sep(), el('span', 'when', ago(q.askedAt)));
+  const qf = el('div', 'qf'); qf.append(meta);
+  if (q.canAnswer) {
+    const who = a ? a.name : w('theAgent');
+    const box = el('textarea', 'answer-box'); box.rows = 2; box.dataset.ask = q.token; box.dir = 'auto';
+    box.placeholder = w('answerTo', { name: who }); box.setAttribute('aria-label', box.placeholder);
+    box.value = drafts.get(q.token) || '';
+    box.addEventListener('input', () => { drafts.set(q.token, box.value); box.style.height = 'auto'; box.style.height = `${Math.min(Math.max(box.scrollHeight + 2, 40), 112)}px`; });
+    c.append(box);
+    if (q.options.length) {
+      const row = el('div', 'qa-row');
+      q.options.forEach((label, i) => { const b = el('button', 'btn sm', label); b.type = 'button'; b.addEventListener('click', () => act(q, { kind: 'answerAsk', ask: q.token, option: i }, w('answered'), `${w('answered')}${w('comma')}${label}`, true, err)); row.append(b); });
+      c.append(row);
+    }
+    const qx = el('span', 'qx');
+    const dec = el('button', 'btn sm', w('decline')); dec.type = 'button';
+    dec.addEventListener('click', () => {
+      const reason = box.value.trim();
+      if (!reason) { err.textContent = w('declineNeedsReason'); err.hidden = false; box.focus(); return; }
+      act(q, { kind: 'declineAsk', ask: q.token, reason: reason.slice(0, 500) }, w('declined'), w('declinedWords', { name: who, reason }), false, err);
+    });
+    const ans = el('button', 'btn sm primary', w('answer')); ans.type = 'button';
+    ans.addEventListener('click', () => {
+      const t = box.value.trim();
+      if (!t) { box.focus(); return; }
+      act(q, { kind: 'answerAsk', ask: q.token, text: t.slice(0, 2000) }, w('answered'), w('answeredWords', { name: who }), true, err);
+    });
+    qx.append(dec, ans); qf.append(qx);
+  }
+  c.append(qf, err);
+  return c;
+}
+/** One action. The app answers: done, or refused (cancelled when the person closed the app's own sheet). */
+function act(q, action, label, words, ok, err) {
+  err.hidden = true;
+  const said = window.md.ask(action);
+  if (!said || typeof said.then !== 'function') return;
+  said.then((out) => {
+    if (!out) return;
+    if (out.status === 'done') { done.set(q.token, { label, words, ok, until: Date.now() + LINGER_MS }); drafts.delete(q.token); setTimeout(draw, LINGER_MS + 50); draw(); }
+    else if (out.status === 'refused' && out.reason !== 'cancelled') { err.textContent = w(out.reason === 'token' ? 'goneWords' : 'notSent'); err.hidden = false; }
+  });
+}
+
+/* 3. TASKS: every Doing card (and Blocked, when the app lists them), last touched first */
+function tasks() {
+  const list = state.tasks;
+  const blocked = list.some((t) => t.status === 'blocked');
+  const out = [header(w('top'), list.length, 'c-out', w(blocked ? 'topSubBlocked' : 'topSub'))];
+  const sb = el('div', 'sb');
+  for (const t of list) {
+    const a = agentOf(t.agent);
+    const row = el('div', 'trow');
+    const st = el('span', `chip ${t.status === 'blocked' ? 'c-amber' : 'c-mint'}`, w(t.status === 'blocked' ? 'task_blocked' : 'task_doing'));
+    const title = el('button', 'lnk ttl', t.title); title.type = 'button'; title.title = t.title; title.dir = 'auto'; title.addEventListener('click', () => openTask(t.token));
+    const own = el('span', 'own'); own.append(av(a, true), agentLink(a));
+    row.append(st, title, own);
+    if (a) row.append(chip(a.status, 'st'));
+    sb.append(row);
+  }
+  if (!list.length) sb.append(el('div', 'empty', w('noTasks')));
+  out.push(sb);
+  return out;
+}
+
+/* 4. TOKENS: today's total is the headline; under it every agent burning tokens now, fastest first, with a strip of
+   its last 14 minutes (one cell a minute). Hover a cell for its minute and its count. */
+function cells(a) { const c = a.spark.slice(-14); while (c.length < 14) c.unshift(null); return c; }
+function cellRange(k) { const from = (Math.floor(state.at / MIN) - 13 + k) * MIN; return [hhmm(from), hhmm(from + MIN)]; }
+function strip(a) {
+  const s = el('span', 'hs'); s.setAttribute('role', 'img');
+  const c = cells(a);
+  s.setAttribute('aria-label', w('stripLabel', { name: a.name, counts: c.map((v) => (v == null ? '-' : num(v))).join(w('comma')) }));
+  c.forEach((v, k) => { const i = el('i', v == null ? 'nr' : `l${heat(v)}`); i.dataset.k = String(k); i.dataset.v = v == null ? '' : String(v); s.append(i); });
+  return s;
+}
+function tokens() {
+  const t = state.telemetry;
+  const out = [header(w('tokens'), null, null, w('fastest'))];
+  const band = el('div', 'tband');
+  const tl = el('div', 'tl');
+  const head = el('div', 'tk-head');
+  const big = el('div', 'tk-big'); big.append(el('b', null, tkh(t.today.used)), el('span', null, w('today')));
+  const sub = el('div', 'tk-sub');
+  const s1 = el('span', null, w('h5') + ' '); s1.append(el('b', null, tk(t.fiveHour.used)));
+  const s2 = el('span', null, w('week') + ' '); s2.append(el('b', null, tk(t.week.used)));
+  const s3 = el('span', null, w('nowLabel') + ' '); s3.append(el('b', null, perMin(t.rate)), ' ' + w('aMin'));
+  sub.append(s1, s2, s3); head.append(big, sub); tl.append(head);
+  const quiet = state.agents.filter((a) => !(a.rate > 0)).sort((x, y) => y.today.used - x.today.used);
+  if (quiet.length) {
+    const q = el('div', 'tk-quiet', w('quiet') + ' ');
+    quiet.forEach((a, i) => { if (i) q.append(w('comma')); q.append(agentLink(a), ' ' + tk(a.today.used)); });
+    tl.append(q);
+  }
+  const tr = el('div', 'tr');
+  const list = state.agents.filter((a) => a.rate > 0).sort((x, y) => y.rate - x.rate);
+  if (list.length) {
+    const rows = el('div', 'prows');
+    const ax = el('span', 'ax'); ax.setAttribute('aria-hidden', 'true'); ax.append(el('span', null, w('axisFrom')), el('span', null, w('axisNow')));
+    const ph = el('div', 'prow ph'); ph.append(el('span', null, w('burning')), ax, el('span', 'pr', w('aMin')), el('span', 'pt', w('todayShort')));
+    rows.append(ph);
+    for (const a of list) {
+      const r = el('div', 'prow'); r.tabIndex = 0; r.setAttribute('role', 'button');
+      r.setAttribute('aria-label', w('rowTip', { name: a.name, rate: perMin(a.rate), today: tk(a.today.used) }));
+      r.addEventListener('click', () => openAgent(a.token));
+      r.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgent(a.token); } });
+      r.append(el('span', 'pn', a.name), strip(a), el('span', 'pr', perMin(a.rate)), el('span', 'pt', tk(a.today.used)));
+      rows.append(r);
+    }
+    tr.append(rows);
+  } else tr.append(el('div', 'empty', w('noneBurning')));
+  const near = t.engineLimits.slice().sort((x, y) => y.usedPercent - x.usedPercent)[0];
+  if (near) {
+    const p = el('div', 'tk-plan', `${w('plan')} ${limitName(near.name)} `);
+    p.append(el('b', near.usedPercent >= PLAN_NEAR_PCT ? 'near' : null, `${Math.round(near.usedPercent)}%`));
+    if (near.resetsInMs != null) {
+      const m = Math.round(near.resetsInMs / MIN);
+      p.append(w('comma') + (m < 60 ? w('resetsMin', { count: m }) : w('resetsHours', { h: Math.floor(m / 60), m: m % 60 })));
+    }
+    tr.append(p);
+  }
+  band.append(tl, tr); out.push(band);
+  return out;
+}
+
+/* The hover tip on a strip cell: its minute and its exact count. */
+document.addEventListener('mouseover', (e) => {
+  const tip = $('tip');
+  const i = e.target instanceof Element ? e.target.closest('.hs i') : null;
+  if (!i || !state) { tip.classList.remove('on'); return; }
+  const [from, to] = cellRange(Number(i.dataset.k));
+  tip.textContent = i.dataset.v === '' ? w('noReading', { from, to }) : w('cellTip', { count: Number(i.dataset.v), from, to, n: num(Number(i.dataset.v)) });
+  const r = i.getBoundingClientRect();
+  tip.classList.add('on');
+  const tw = tip.offsetWidth;
+  tip.style.transform = `translate(${Math.max(4, Math.min(window.innerWidth - tw - 4, r.left + r.width / 2 - tw / 2))}px, ${Math.max(4, r.top - tip.offsetHeight - 6)}px)`;
+});
+</script>
+</body>
+</html>

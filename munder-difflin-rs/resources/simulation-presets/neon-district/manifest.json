@@ -1,0 +1,1076 @@
+{
+  "format": 2,
+  "id": "neon-district",
+  "label": "Neon District",
+  "base": "own",
+  "inspiredBy": "Cyberpunk futuristic city life",
+  "detail": "rich",
+  "scene": {
+    "cell": 16,
+    "width": 64,
+    "height": 32
+  },
+  "tiles": [
+    {
+      "file": "art/floor.png",
+      "cell": 16
+    }
+  ],
+  "rooms": [
+    {
+      "name": "Office",
+      "kind": "desks",
+      "x": 1,
+      "y": 5,
+      "w": 62,
+      "h": 26
+    }
+  ],
+  "seats": [
+    {
+      "name": "Lead seat",
+      "x": 29,
+      "y": 14,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 1",
+      "x": 33,
+      "y": 14,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 2",
+      "x": 29,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 3",
+      "x": 32,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 4",
+      "x": 27,
+      "y": 17,
+      "facing": "right",
+      "room": "Office"
+    },
+    {
+      "name": "Station 5",
+      "x": 35,
+      "y": 17,
+      "facing": "left",
+      "room": "Office"
+    },
+    {
+      "name": "Station 6",
+      "x": 16,
+      "y": 9,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 7",
+      "x": 21,
+      "y": 9,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 8",
+      "x": 7,
+      "y": 18,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 9",
+      "x": 12,
+      "y": 18,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 10",
+      "x": 14,
+      "y": 18,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 11",
+      "x": 8,
+      "y": 25,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 12",
+      "x": 13,
+      "y": 25,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 13",
+      "x": 18,
+      "y": 25,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 14",
+      "x": 8,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 15",
+      "x": 13,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 16",
+      "x": 18,
+      "y": 29,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 17",
+      "x": 51,
+      "y": 14,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 18",
+      "x": 53,
+      "y": 14,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 19",
+      "x": 56,
+      "y": 14,
+      "facing": "down",
+      "room": "Office"
+    },
+    {
+      "name": "Station 20",
+      "x": 51,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 21",
+      "x": 53,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 22",
+      "x": 56,
+      "y": 19,
+      "facing": "up",
+      "room": "Office"
+    },
+    {
+      "name": "Station 23",
+      "x": 49,
+      "y": 17,
+      "facing": "right",
+      "room": "Office"
+    },
+    {
+      "name": "Station 24",
+      "x": 58,
+      "y": 17,
+      "facing": "left",
+      "room": "Office"
+    }
+  ],
+  "activities": [
+    {
+      "kind": "work",
+      "at": "Office",
+      "weight": 10
+    },
+    {
+      "kind": "chat",
+      "at": "Lounge",
+      "weight": 3,
+      "pose": "talk",
+      "secs": 14
+    },
+    {
+      "kind": "chat",
+      "at": "Lounge table",
+      "weight": 2,
+      "pose": "talk",
+      "secs": 14
+    },
+    {
+      "kind": "coffee",
+      "at": "Vending kiosk",
+      "weight": 4,
+      "pose": "drink",
+      "effect": "steam",
+      "secs": 12
+    },
+    {
+      "kind": "snack",
+      "at": "Kiosk side",
+      "weight": 2,
+      "pose": "drink",
+      "effect": "hearts",
+      "secs": 10
+    },
+    {
+      "kind": "sofa",
+      "at": "Lounge sofa",
+      "weight": 2,
+      "pose": "nap",
+      "effect": "zzz",
+      "secs": 30
+    },
+    {
+      "kind": "sofa",
+      "at": "Sofa end",
+      "weight": 1,
+      "pose": "nap",
+      "effect": "zzz",
+      "secs": 30
+    },
+    {
+      "kind": "sofa",
+      "at": "Corner sofa",
+      "weight": 1,
+      "pose": "nap",
+      "effect": "zzz",
+      "secs": 30
+    },
+    {
+      "kind": "read",
+      "at": "Tool cart",
+      "weight": 2,
+      "pose": "read",
+      "effect": "pages",
+      "secs": 16
+    },
+    {
+      "kind": "read",
+      "at": "Lounge table",
+      "weight": 1,
+      "pose": "read",
+      "effect": "pages",
+      "secs": 16
+    },
+    {
+      "kind": "plant",
+      "at": "Crate plant",
+      "weight": 1,
+      "pose": "stand",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Rack plant",
+      "weight": 1,
+      "pose": "stand",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Corner plant",
+      "weight": 1,
+      "pose": "stand",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "plant",
+      "at": "Lounge plant",
+      "weight": 1,
+      "pose": "stand",
+      "effect": "splash",
+      "secs": 8
+    },
+    {
+      "kind": "stretch",
+      "at": "Main aisle",
+      "weight": 1,
+      "pose": "stretch",
+      "secs": 8
+    },
+    {
+      "kind": "stretch",
+      "at": "East aisle",
+      "weight": 1,
+      "pose": "stretch",
+      "secs": 8
+    },
+    {
+      "kind": "look",
+      "at": "Skyline west",
+      "weight": 2,
+      "pose": "stand",
+      "secs": 14
+    },
+    {
+      "kind": "look",
+      "at": "Skyline east",
+      "weight": 2,
+      "pose": "stand",
+      "secs": 14
+    },
+    {
+      "kind": "tuneBike",
+      "at": "Bike bay",
+      "weight": 2,
+      "secs": 14
+    },
+    {
+      "kind": "tuneBike",
+      "at": "Bike tail",
+      "weight": 1,
+      "secs": 14
+    },
+    {
+      "kind": "rackServer",
+      "at": "Server rack west",
+      "weight": 2,
+      "secs": 12
+    },
+    {
+      "kind": "rackServer",
+      "at": "Server rack east",
+      "weight": 1,
+      "secs": 12
+    },
+    {
+      "kind": "rackServer",
+      "at": "Floor rack",
+      "weight": 1,
+      "secs": 12
+    },
+    {
+      "kind": "jackIn",
+      "at": "Wall terminal",
+      "weight": 2,
+      "secs": 12
+    },
+    {
+      "kind": "jackIn",
+      "at": "Net panels",
+      "weight": 2,
+      "secs": 12
+    },
+    {
+      "kind": "checkCryo",
+      "at": "Cryo tanks",
+      "weight": 2,
+      "secs": 12
+    },
+    {
+      "kind": "checkCryo",
+      "at": "Cryo east",
+      "weight": 1,
+      "secs": 12
+    },
+    {
+      "kind": "stockCrates",
+      "at": "Supply lockers",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "stockCrates",
+      "at": "Crate stack",
+      "weight": 1,
+      "secs": 10
+    },
+    {
+      "kind": "patchCable",
+      "at": "Cable run",
+      "weight": 2,
+      "secs": 12
+    }
+  ],
+  "dataShown": {
+    "tag": [
+      "name",
+      "status"
+    ],
+    "desk": [
+      "tool"
+    ],
+    "card": [
+      "role",
+      "engine",
+      "context",
+      "tokens"
+    ]
+  },
+  "colors": {
+    "background": "#18222D"
+  },
+  "inboxThinking": {
+    "fill": "#F1E9D5",
+    "ink": "#26313B",
+    "outline": "#26313B",
+    "shape": "panel",
+    "motion": "dots"
+  },
+  "cover": "art/cover.png",
+  "cast": {
+    "sheet": "art/cast.png",
+    "frameWidth": 48,
+    "frameHeight": 48,
+    "frames": 4,
+    "rows": [
+      "down",
+      "up",
+      "left",
+      "right",
+      "sitDown",
+      "sitUp",
+      "sitLeft",
+      "sitRight",
+      "workDown",
+      "workUp",
+      "workLeft",
+      "workRight",
+      "carryDown",
+      "carryUp",
+      "carryLeft",
+      "carryRight",
+      "stretch",
+      "drink",
+      "read",
+      "use",
+      "talk",
+      "cheer",
+      "nap",
+      "crouch",
+      "reach"
+    ],
+    "scale": 1.18,
+    "characters": [
+      {
+        "name": "Johnny Silvercode",
+        "column": 0,
+        "avatar": "art/avatars/c0.png",
+        "headshot": "art/headshots/c0.png"
+      },
+      {
+        "name": "Vee Byte",
+        "column": 4,
+        "avatar": "art/avatars/c1.png",
+        "headshot": "art/headshots/c1.png"
+      },
+      {
+        "name": "Judy Alvaresistor",
+        "column": 8,
+        "avatar": "art/avatars/c2.png",
+        "headshot": "art/headshots/c2.png"
+      },
+      {
+        "name": "Goro Takemerge",
+        "column": 12,
+        "avatar": "art/avatars/c3.png",
+        "headshot": "art/headshots/c3.png"
+      },
+      {
+        "name": "Delamainframe",
+        "column": 16,
+        "avatar": "art/avatars/c4.png",
+        "headshot": "art/headshots/c4.png"
+      },
+      {
+        "name": "Panam Palmerge",
+        "column": 20,
+        "avatar": "art/avatars/c5.png",
+        "headshot": "art/headshots/c5.png"
+      },
+      {
+        "name": "Kerry Eurobyte",
+        "column": 24,
+        "avatar": "art/avatars/c6.png",
+        "headshot": "art/headshots/c6.png"
+      },
+      {
+        "name": "Adam Smashware",
+        "column": 28,
+        "avatar": "art/avatars/c7.png",
+        "headshot": "art/headshots/c7.png"
+      },
+      {
+        "name": "Viktor Vector",
+        "column": 32,
+        "avatar": "art/avatars/c8.png",
+        "headshot": "art/headshots/c8.png"
+      },
+      {
+        "name": "Misty OlszewskiFi",
+        "column": 36,
+        "avatar": "art/avatars/c9.png",
+        "headshot": "art/headshots/c9.png"
+      }
+    ]
+  },
+  "orchestrator": {
+    "character": 0,
+    "seat": 0
+  },
+  "props": [
+    {
+      "name": "Chair 0",
+      "file": "art/chair-0.png",
+      "x": 466,
+      "y": 221,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 1",
+      "file": "art/chair-1.png",
+      "x": 526,
+      "y": 221,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 2",
+      "file": "art/chair-2.png",
+      "x": 467,
+      "y": 300,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 3",
+      "file": "art/chair-3.png",
+      "x": 517,
+      "y": 300,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 4",
+      "file": "art/chair-4.png",
+      "x": 430,
+      "y": 258,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 5",
+      "file": "art/chair-5.png",
+      "x": 557,
+      "y": 258,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 6",
+      "file": "art/chair-6.png",
+      "x": 260,
+      "y": 136,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 7",
+      "file": "art/chair-7.png",
+      "x": 332,
+      "y": 136,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 8",
+      "file": "art/chair-8.png",
+      "x": 116,
+      "y": 281,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 9",
+      "file": "art/chair-9.png",
+      "x": 183,
+      "y": 281,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 10",
+      "file": "art/chair-10.png",
+      "x": 228,
+      "y": 281,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 11",
+      "file": "art/chair-11.png",
+      "x": 124,
+      "y": 388,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 12",
+      "file": "art/chair-12.png",
+      "x": 202,
+      "y": 388,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 13",
+      "file": "art/chair-13.png",
+      "x": 278,
+      "y": 388,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 14",
+      "file": "art/chair-14.png",
+      "x": 124,
+      "y": 453,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 15",
+      "file": "art/chair-15.png",
+      "x": 202,
+      "y": 453,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 16",
+      "file": "art/chair-16.png",
+      "x": 278,
+      "y": 453,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 17",
+      "file": "art/chair-17.png",
+      "x": 808,
+      "y": 221,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 18",
+      "file": "art/chair-18.png",
+      "x": 848,
+      "y": 221,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 19",
+      "file": "art/chair-19.png",
+      "x": 888,
+      "y": 221,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 20",
+      "file": "art/chair-20.png",
+      "x": 808,
+      "y": 291,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 21",
+      "file": "art/chair-21.png",
+      "x": 848,
+      "y": 291,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 22",
+      "file": "art/chair-22.png",
+      "x": 888,
+      "y": 291,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 23",
+      "file": "art/chair-23.png",
+      "x": 779,
+      "y": 254,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Chair 24",
+      "file": "art/chair-24.png",
+      "x": 922,
+      "y": 254,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 0",
+      "file": "art/desk-0.png",
+      "x": 449,
+      "y": 246,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 1",
+      "file": "art/desk-1.png",
+      "x": 243,
+      "y": 119,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 2",
+      "file": "art/desk-2.png",
+      "x": 313,
+      "y": 119,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 3",
+      "file": "art/desk-3.png",
+      "x": 108,
+      "y": 254,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 4",
+      "file": "art/desk-4.png",
+      "x": 102,
+      "y": 368,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 5",
+      "file": "art/desk-5.png",
+      "x": 181,
+      "y": 368,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 6",
+      "file": "art/desk-6.png",
+      "x": 259,
+      "y": 368,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 7",
+      "file": "art/desk-7.png",
+      "x": 102,
+      "y": 432,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 8",
+      "file": "art/desk-8.png",
+      "x": 181,
+      "y": 432,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 9",
+      "file": "art/desk-9.png",
+      "x": 259,
+      "y": 432,
+      "depth": "sort",
+      "solid": false
+    },
+    {
+      "name": "Desk 10",
+      "file": "art/desk-10.png",
+      "x": 797,
+      "y": 246,
+      "depth": "sort",
+      "solid": false
+    }
+  ],
+  "stops": [
+    {
+      "name": "Skyline west",
+      "x": 12,
+      "y": 5,
+      "facing": "up"
+    },
+    {
+      "name": "Skyline east",
+      "x": 36,
+      "y": 5,
+      "facing": "up"
+    },
+    {
+      "name": "Crate plant",
+      "x": 14,
+      "y": 8,
+      "facing": "left"
+    },
+    {
+      "name": "Rack plant",
+      "x": 37,
+      "y": 7,
+      "facing": "right"
+    },
+    {
+      "name": "Corner plant",
+      "x": 5,
+      "y": 26,
+      "facing": "left"
+    },
+    {
+      "name": "Lounge plant",
+      "x": 58,
+      "y": 23,
+      "facing": "right"
+    },
+    {
+      "name": "Cryo tanks",
+      "x": 5,
+      "y": 10,
+      "facing": "up"
+    },
+    {
+      "name": "Cryo east",
+      "x": 8,
+      "y": 10,
+      "facing": "up"
+    },
+    {
+      "name": "Server rack west",
+      "x": 26,
+      "y": 9,
+      "facing": "up"
+    },
+    {
+      "name": "Server rack east",
+      "x": 34,
+      "y": 9,
+      "facing": "up"
+    },
+    {
+      "name": "Floor rack",
+      "x": 26,
+      "y": 25,
+      "facing": "left"
+    },
+    {
+      "name": "Cable run",
+      "x": 31,
+      "y": 10,
+      "facing": "down"
+    },
+    {
+      "name": "Bike bay",
+      "x": 47,
+      "y": 10,
+      "facing": "up"
+    },
+    {
+      "name": "Bike tail",
+      "x": 51,
+      "y": 11,
+      "facing": "up"
+    },
+    {
+      "name": "Tool cart",
+      "x": 45,
+      "y": 10,
+      "facing": "left"
+    },
+    {
+      "name": "Supply lockers",
+      "x": 56,
+      "y": 12,
+      "facing": "up"
+    },
+    {
+      "name": "Crate stack",
+      "x": 60,
+      "y": 12,
+      "facing": "up"
+    },
+    {
+      "name": "Wall terminal",
+      "x": 4,
+      "y": 15,
+      "facing": "left"
+    },
+    {
+      "name": "Net panels",
+      "x": 42,
+      "y": 18,
+      "facing": "up"
+    },
+    {
+      "name": "Vending kiosk",
+      "x": 38,
+      "y": 18,
+      "facing": "up"
+    },
+    {
+      "name": "Kiosk side",
+      "x": 39,
+      "y": 16,
+      "facing": "left"
+    },
+    {
+      "name": "Main aisle",
+      "x": 22,
+      "y": 20,
+      "facing": "down"
+    },
+    {
+      "name": "East aisle",
+      "x": 46,
+      "y": 21,
+      "facing": "down"
+    },
+    {
+      "name": "Lounge",
+      "x": 52,
+      "y": 27,
+      "facing": "right"
+    },
+    {
+      "name": "Lounge table",
+      "x": 55,
+      "y": 29,
+      "facing": "up"
+    },
+    {
+      "name": "Lounge sofa",
+      "x": 54,
+      "y": 25,
+      "facing": "down"
+    },
+    {
+      "name": "Sofa end",
+      "x": 56,
+      "y": 25,
+      "facing": "down"
+    },
+    {
+      "name": "Corner sofa",
+      "x": 59,
+      "y": 27,
+      "facing": "left"
+    }
+  ],
+  "moves": [
+    {
+      "id": "tuneBike",
+      "pose": "crouch",
+      "effect": "sparkle"
+    },
+    {
+      "id": "rackServer",
+      "pose": "reach",
+      "effect": "sparkle"
+    },
+    {
+      "id": "jackIn",
+      "pose": "use",
+      "effect": "sparkle"
+    },
+    {
+      "id": "checkCryo",
+      "pose": "read",
+      "effect": "bubbles"
+    },
+    {
+      "id": "stockCrates",
+      "pose": "reach"
+    },
+    {
+      "id": "patchCable",
+      "pose": "crouch",
+      "effect": "sparkle"
+    }
+  ],
+  "hangout": "Lounge",
+  "board": {
+    "x": 410,
+    "y": 84,
+    "w": 117,
+    "h": 13,
+    "askMe": {
+      "x": 538,
+      "y": 84,
+      "w": 34,
+      "h": 13
+    },
+    "stand": {
+      "x": 29,
+      "y": 9
+    }
+  },
+  "oneOnOne": {
+    "x": 46,
+    "y": 26,
+    "facing": "up"
+  },
+  "waitAt": {
+    "x": 34,
+    "y": 26,
+    "facing": "down"
+  },
+  "reportTo": {
+    "x": 27,
+    "y": 14
+  },
+  "work": {
+    "effect": "scroll",
+    "color": "#5EF2FF"
+  },
+  "burst": {
+    "kind": "sparks",
+    "colors": [
+      "#FF3EA5",
+      "#3FF0FF",
+      "#F7E04B",
+      "#B26BFF"
+    ]
+  }
+}

@@ -527,6 +527,16 @@ impl PtyManager {
         Ok(())
     }
 
+    pub fn kill_all(&self) {
+        let sessions: Vec<_> = {
+            let mut guard = self.inner.lock().unwrap();
+            guard.sessions.drain().map(|(_, s)| s).collect()
+        };
+        for mut session in sessions {
+            let _ = session.killer.kill();
+        }
+    }
+
     pub fn list(&self) -> Vec<PtyListEntry> {
         let guard = self.inner.lock().unwrap();
         guard

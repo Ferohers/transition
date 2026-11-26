@@ -110,6 +110,55 @@
   }
 
   let notificationsEnabled = false;
+  const agentNames = new Map();
+  let agentNamesRefresh = null;
+
+  function recordAgentEntry(entry) {
+    if (!entry || typeof entry !== 'object') return;
+    const rawId = typeof entry.id === 'string' && entry.id.trim() ? entry.id.trim() : '';
+    const name = typeof entry.name === 'string' && entry.name.trim() ? entry.name.trim() : '';
+    if (rawId && name) agentNames.set(rawId, name);
+  }
+
+  function recordAgentSnapshot(snap) {
+    if (!snap || typeof snap !== 'object') return;
+    for (const key of ['agents', 'active', 'archived', 'restorable']) {
+      const val = snap[key];
+      if (Array.isArray(val)) {
+        for (const entry of val) recordAgentEntry(entry);
+      } else if (val && typeof val === 'object') {
+        for (const [id, entry] of Object.entries(val)) {
+          if (entry && typeof entry === 'object') {
+            recordAgentEntry({ id, ...entry });
+          }
+        }
+      }
+    }
+  }
+
+  function refreshAgentNames() {
+    if (agentNamesRefresh) return agentNamesRefresh;
+    agentNamesRefresh = Promise.all([
+      req('/api/v1/roster').then(recordAgentSnapshot).catch(() => {}),
+      req('/api/v1/hive/registry').then(recordAgentSnapshot).catch(() => {}),
+    ]).finally(() => {
+      agentNamesRefresh = null;
+    });
+    return agentNamesRefresh;
+  }
+
+  async function resolveAgentName(id, explicitName) {
+    if (typeof explicitName === 'string' && explicitName.trim()) return explicitName.trim();
+    if (typeof id !== 'string' || !id.trim()) return null;
+    const trimmed = id.trim();
+    const cached = agentNames.get(trimmed);
+    if (cached) return cached;
+    await refreshAgentNames();
+    const refreshed = agentNames.get(trimmed);
+    if (refreshed) return refreshed;
+    return trimmed === 'god' ? 'Orchestrator' : trimmed;
+  }
+
   function refreshNotificationSetting(cfg) {
     if (cfg && typeof cfg === 'object' && 'notifications' in cfg) {
       notificationsEnabled = cfg.notifications === true;
@@ -138,27 +187,32 @@
     } catch {}
   }
 
-  function dispatchUserNotification(channel, payload) {
+  async function dispatchUserNotification(channel, payload) {
     if (!notificationsEnabled || !payload) return;
     let title = null;
     let body = '';
     if (channel === 'hive:message' && (payload.to === 'human' || payload.needsHuman)) {
-      title = `Message from ${payload.from || 'agent'}`;
+      const who = await resolveAgentName(payload.from, payload.fromName);
+      title = `Message from ${who || 'agent'}`;
       body = payload.subject || payload.body || 'Needs your input';
     } else if (channel === 'control:approvalRequest') {
-      title = `Approval needed (${payload.agentId || 'agent'})`;
+      const who = await resolveAgentName(payload.agentId, payload.agentName);
+      title = `Approval needed (${who || 'agent'})`;
       body = payload.reason || payload.tool || 'Tool execution requires attention';
     } else if (channel === 'control:breakerState' && (payload.level === 'constrained' || payload.level === 'stopped')) {
-      title = `Circuit breaker ${payload.level}: ${payload.agentId || 'agent'}`;
+      const who = await resolveAgentName(payload.agentId, payload.agentName);
+      title = `Circuit breaker ${payload.level}: ${who || 'agent'}`;
       body = payload.reason || 'Agent paused by circuit breaker';
     } else if (channel === 'hive:hookEvent' && payload.event === 'Notification') {
       const msg = String(payload.message || '').toLowerCase();
       if (msg.includes('permission') || msg.includes('approve') || msg.includes('confirm') || msg.includes('needs your')) {
-        title = `${payload.agentId || 'Agent'} needs input`;
+        const who = await resolveAgentName(payload.agentId, payload.agentName);
+        title = `${who || 'Agent'} needs input`;
         body = String(payload.message || '');
       }
     } else if (channel === 'hive:agentExited' && (payload.exitCode !== 0 || String(payload.agentId || '').startsWith('worker-'))) {
-      title = `${payload.agentId || 'Agent'} finished (exit ${payload.exitCode ?? 0})`;
+      const who = await resolveAgentName(payload.agentId, payload.agentName);
+      title = `${who || 'Agent'} finished (exit ${payload.exitCode ?? 0})`;
       body = payload.exitCode === 0 ? 'Task completed' : 'Exited with non-zero status';
     } else if (channel === 'triggers:inbound' && payload.pending) {
       title = 'Webhook trigger awaiting approval';
@@ -168,7 +222,7 @@
     playAlertTone();
     if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
       try {
-        const n = new Notification(title, { body: String(body).slice(0, 180), tag: `${channel}:${payload.agentId || payload.id || ''}` });
+        const n = new Notification(title, { body: String(body).slice(0, 180), tag: `${channel}:${payload.agentId || payload.from || payload.id || ''}` });
         n.onclick = () => { try { window.focus(); n.close(); } catch {} };
       } catch {}
     }
@@ -182,7 +236,7 @@
         const msg = JSON.parse(ev.data);
         if (msg && msg.channel) {
           if (msg.channel === 'config:changed') refreshNotificationSetting(msg.payload);
-          dispatchUserNotification(msg.channel, msg.payload);
+          void dispatchUserNotification(msg.channel, msg.payload);
           // PTY data/exit events are delivered exclusively by the ordered per-PTY
           // socket (/ws/pty/:id) so chunks are never written to xterm.js twice.
           if (msg.channel.startsWith('pty:data:') || msg.channel.startsWith('pty:exit:')) return;
@@ -207,6 +261,7 @@
   }
   connectEventsWs();
   req('/api/v1/config').then(refreshNotificationSetting).catch(() => {});
+  void refreshAgentNames();
 
   function ensurePtySocket(id) {
     if (!id || ptySockets.has(id)) return;
@@ -351,13 +406,17 @@
     ensureHarnessHome: (path) => req('/api/v1/config/ensure-home', { method: 'POST', body: JSON.stringify({ path }) }).then((r) => r || { ok: false, error: 'request failed' }),
     integrityIssues: () => req('/api/v1/integrity/issues').then((r) => (Array.isArray(r) ? r : [])),
     rosterReadSync: () => syncGetJson('/api/v1/roster', null),
-    rosterWrite: (snap) => req('/api/v1/roster', { method: 'PUT', body: JSON.stringify(snap) }).then((r) => r || { ok: false, error: 'request failed' }),
+    rosterWrite: (snap) => {
+      recordAgentSnapshot(snap);
+      return req('/api/v1/roster', { method: 'PUT', body: JSON.stringify(snap) }).then((r) => r || { ok: false, error: 'request failed' });
+    },
     historyAdd: (entry) => req('/api/v1/history', { method: 'POST', body: JSON.stringify(entry) }).then((r) => r || { ok: false }),
     historyList: (agentId, limit) => req(`/api/v1/history?${new URLSearchParams({ ...(agentId ? { agentId } : {}), ...(limit ? { limit: String(limit) } : {}) })}`).then((r) => (Array.isArray(r) ? r : [])),
     historySearch: (q, limit) => req(`/api/v1/history?${new URLSearchParams({ q, ...(limit ? { limit: String(limit) } : {}) })}`).then((r) => (Array.isArray(r) ? r : [])),
 
     // PTY
     spawnPty: async (opts) => {
+      if (opts?.hive) recordAgentEntry(opts.hive);
       const res = await req('/api/v1/pty/spawn', { method: 'POST', body: JSON.stringify(opts) });
       return res || { ok: false, error: 'spawn failed' };
     },
@@ -423,6 +482,7 @@
     hiveTicketPrefix: () => req('/api/v1/config').then((c) => (typeof c?.ticketPrefix === 'string' ? c.ticketPrefix : '')).catch(() => ''),
     getContextTrigger: () => req('/api/v1/context-trigger').then((r) => (r && typeof r === 'object' ? r : {})),
     setContextTrigger: (cfg) => req('/api/v1/context-trigger', { method: 'POST', body: JSON.stringify(cfg || {}) }).then((r) => r || { ok: false }),
+    onContextTrigger: (fn) => addListener('context:trigger', fn),
     historyPage: async (arg = {}) => {
       const params = new URLSearchParams();
       if (typeof arg === 'string') params.set('agentId', arg);
@@ -461,7 +521,17 @@
     // FS & Git
     listDir: (root, rel = '') => req('/api/v1/fs/list', { method: 'POST', body: JSON.stringify({ root, rel }) }),
     readFile: (root, rel) => req('/api/v1/fs/read', { method: 'POST', body: JSON.stringify({ root, rel }) }),
-    readBinary: (root, rel) => req('/api/v1/fs/read-binary', { method: 'POST', body: JSON.stringify({ root, rel }) }),
+    readBinary: async (root, rel) => {
+      const r = await req('/api/v1/fs/read-binary', { method: 'POST', body: JSON.stringify({ root, rel }) });
+      if (!r || !r.ok) return r || { ok: false, error: 'read failed' };
+      if (typeof r.base64 === 'string' && !(r.bytes instanceof Uint8Array)) {
+        const bin = atob(r.base64);
+        const bytes = new Uint8Array(bin.length);
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+        return { ...r, bytes };
+      }
+      return r;
+    },
     writeFile: (root, rel, content) => req('/api/v1/fs/write', { method: 'POST', body: JSON.stringify({ root, rel, content }) }),
     searchFiles: (root, query, opts) => req('/api/v1/fs/search', { method: 'POST', body: JSON.stringify({ root, query, opts }) }),
     makeDir: (root, rel) => req('/api/v1/fs/mkdir', { method: 'POST', body: JSON.stringify({ root, rel }) }),
@@ -740,6 +810,8 @@
     kgGet: (id) => req(`/api/v1/kg/docs/${encodeURIComponent(id)}`),
     kgRemove: (id) => req(`/api/v1/kg/docs/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     agentTemplates: () => req('/api/v1/templates/pro').then((r) => (Array.isArray(r) ? r : [])),
+    projectsList: () => req('/api/v1/projects/list').then((r) => (r && Array.isArray(r.projects) ? r : { projects: [] })),
+    onProjectsChanged: (fn) => addListener('projects:changed', fn),
     agentTemplateRead: (id) => req(`/api/v1/templates/pro/${encodeURIComponent(id)}`).then((r) => r || { ok: false, error: 'not found' }),
     agentFilePlan: (arg1, arg2) => {
       const payload = (arg1 && typeof arg1 === 'object' && 'file' in arg1 && arg2 === undefined)
@@ -831,7 +903,9 @@
     },
     attachToOffice: async () => baseApi.attachFiles(),
     importHireFiles: async () => baseApi.attachFiles(),
-    hireRequestDone: () => Promise.resolve({ ok: true }),
+    hireRunnerReady: () => req('/api/v1/hive/hire-runner-ready', { method: 'POST' }).then((r) => r || { ok: false }),
+    onHireRequest: (fn) => addListener('hire:request', fn),
+    hireRequestDone: (reqId, answer) => req('/api/v1/hive/hire-done', { method: 'POST', body: JSON.stringify({ reqId, answer }) }).then((r) => r || { ok: false }),
     changeHome: () => Promise.resolve({ ok: false, error: 'Changing workspace home is desktop-only' }),
 
     resetAll: async () => {

@@ -30,8 +30,20 @@ pub struct HookEngine {
     pub breaker: Arc<Mutex<CircuitBreaker>>,
     pub context_by_id: Arc<Mutex<HashMap<String, ContextSnapshot>>>,
     pub model_by_id: Arc<Mutex<HashMap<String, String>>>,
+    pub session_by_id: Arc<Mutex<HashMap<String, String>>>,
     pub transcript_paths: Arc<Mutex<HashMap<String, String>>>,
     pub http_token: String,
+}
+
+pub fn normalize_hook_event(raw: &str) -> &str {
+    match raw {
+        "BeforeAgent" => "UserPromptSubmit",
+        "BeforeTool" => "PreToolUse",
+        "AfterTool" => "PostToolUse",
+        "AfterAgent" => "Stop",
+        "PreCompress" => "PreCompact",
+        other => other,
+    }
 }
 
 impl HookEngine {
@@ -46,9 +58,18 @@ impl HookEngine {
             breaker,
             context_by_id: Arc::new(Mutex::new(HashMap::new())),
             model_by_id: Arc::new(Mutex::new(HashMap::new())),
+            session_by_id: Arc::new(Mutex::new(HashMap::new())),
             transcript_paths: Arc::new(Mutex::new(HashMap::new())),
             http_token,
         }
+    }
+
+    pub fn clear_all(&self) {
+        *self.proof.lock().unwrap() = HookProofRecord::new();
+        self.context_by_id.lock().unwrap().clear();
+        self.model_by_id.lock().unwrap().clear();
+        self.session_by_id.lock().unwrap().clear();
+        self.transcript_paths.lock().unwrap().clear();
     }
 
     pub fn token_valid(&self, auth_header: Option<&str>) -> bool {
@@ -74,10 +95,12 @@ impl HookEngine {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .unwrap_or(url_agent_id);
-        let event = payload
-            .get("hook_event_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Unknown");
+        let event = normalize_hook_event(
+            payload
+                .get("hook_event_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Unknown"),
+        );
         let prompt = payload.get("prompt").and_then(|v| v.as_str());
         let source = payload.get("source").and_then(|v| v.as_str());
         let notification_type = payload.get("notification_type").and_then(|v| v.as_str());
@@ -98,6 +121,14 @@ impl HookEngine {
                 .lock()
                 .unwrap()
                 .insert(agent_id.to_string(), tp.to_string());
+        }
+        if let Some(sid) = payload.get("session_id").and_then(|v| v.as_str())
+            && !sid.is_empty()
+        {
+            self.session_by_id
+                .lock()
+                .unwrap()
+                .insert(agent_id.to_string(), sid.to_string());
         }
 
         if let Some(model) = payload.get("model").and_then(|v| v.as_str())

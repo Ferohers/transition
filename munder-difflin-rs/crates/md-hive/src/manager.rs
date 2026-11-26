@@ -45,6 +45,8 @@ impl HiveManager {
             .root()
             .ok_or_else(|| CoreError::InvalidPath("no harnessHome configured".to_string()))?;
         fs::create_dir_all(root.join("agents"))?;
+        fs::create_dir_all(root.join("projects"))?;
+        fs::create_dir_all(root.join("bin"))?;
         let board = root.join("board.md");
         if !board.exists() {
             fs::write(
@@ -52,6 +54,7 @@ impl HiveManager {
                 "# Hive board\n\n_Shared plans live here. The god agent is the scribe._\n",
             )?;
         }
+        ensure_hive_gitignore(&root);
         Ok(root)
     }
 
@@ -113,12 +116,25 @@ impl HiveManager {
                     continue;
                 };
                 present.insert(id.to_string());
+                let is_god = obj.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || id == "god";
                 if let Some(existing) = agents_map.get_mut(id).and_then(|v| v.as_object_mut()) {
                     for k in ["name", "provider", "cwd", "isGod", "sleeping", "status", "onHold"] {
                         if let Some(v) = obj.get(k).cloned()
                             && existing.get(k) != Some(&v)
                         {
                             existing.insert(k.to_string(), v);
+                            changed = true;
+                        }
+                    }
+                    if is_god {
+                        let desc = obj.get("description").and_then(|v| v.as_str());
+                        let existing_role = existing.get("role").and_then(|v| v.as_str());
+                        if existing_role.is_none_or(|s| s.trim().is_empty() || Some(s) == desc) {
+                            existing.insert(
+                                "role".to_string(),
+                                Value::String("orchestrator (god)".to_string()),
+                            );
                             changed = true;
                         }
                     }
@@ -133,7 +149,15 @@ impl HiveManager {
                 if let Some(name) = obj.get("name").cloned() {
                     entry.insert("name".to_string(), name);
                 }
-                if let Some(role) = obj.get("role").or_else(|| obj.get("description")).cloned() {
+                if is_god {
+                    let role_val = obj
+                        .get("role")
+                        .filter(|v| v.as_str().is_some_and(|s| !s.trim().is_empty()))
+                        .cloned()
+                        .unwrap_or_else(|| Value::String("orchestrator (god)".to_string()));
+                    entry.insert("role".to_string(), role_val);
+                } else if let Some(role) = obj.get("role").or_else(|| obj.get("description")).cloned()
+                {
                     entry.insert("role".to_string(), role);
                 }
                 for k in ["provider", "cwd", "isGod", "sleeping", "status"] {
@@ -208,9 +232,123 @@ impl HiveManager {
         };
         let path = root.join("tasks.json");
         match self.damage.read(&path, JsonShape::Tasks) {
-            ReadOutcome::Ok(v) => v,
+            ReadOutcome::Ok(mut v) => {
+                if self.auto_key_tasks(&root, &mut v) > 0
+                    && atomic_write_json(&path, &v).is_ok()
+                {
+                    self.damage.mark_wrote(&path);
+                }
+                v
+            }
             _ => serde_json::json!({ "tasks": [] }),
         }
+    }
+
+    fn default_ticket_prefix(&self, root: &Path) -> String {
+        let base = root
+            .parent()
+            .and_then(|h| h.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        let mut letters: String = base
+            .split(|c: char| !c.is_alphanumeric())
+            .filter_map(|part| part.chars().next())
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_uppercase())
+            .collect();
+        if letters.len() < 2 {
+            letters = base
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(3)
+                .map(|c| c.to_ascii_uppercase())
+                .collect();
+        }
+        if letters.len() >= 2 {
+            letters.truncate(4);
+            letters
+        } else {
+            "MD".to_string()
+        }
+    }
+
+    fn auto_key_tasks(&self, root: &Path, ledger: &mut Value) -> usize {
+        let fallback_prefix = self.default_ticket_prefix(root);
+        let Some(obj) = ledger.as_object_mut() else {
+            return 0;
+        };
+        let Some(tasks_arr) = obj.get("tasks").and_then(|v| v.as_array()) else {
+            return 0;
+        };
+        let needs_key = tasks_arr.iter().any(|t| {
+            t.get("id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("")
+                .is_empty()
+        });
+        if !needs_key {
+            return 0;
+        }
+        let mut prefix = obj
+            .get("ticket")
+            .and_then(|t| t.get("prefix"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&fallback_prefix)
+            .to_string();
+        if prefix.is_empty() {
+            prefix = "MD".to_string();
+        }
+        let mut next_num = obj
+            .get("ticket")
+            .and_then(|t| t.get("next"))
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n >= 1)
+            .unwrap_or(1);
+        let existing_ids: std::collections::HashSet<String> = tasks_arr
+            .iter()
+            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(ToString::to_string))
+            .collect();
+        let mut assigned = 0usize;
+        if let Some(list) = obj.get_mut("tasks").and_then(|v| v.as_array_mut()) {
+            for card in list {
+                let Some(card_obj) = card.as_object_mut() else {
+                    continue;
+                };
+                let missing = card_obj
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .unwrap_or("")
+                    .is_empty();
+                if missing {
+                    let mut candidate = format!("{prefix}-{next_num}");
+                    while existing_ids.contains(&candidate) {
+                        next_num += 1;
+                        candidate = format!("{prefix}-{next_num}");
+                    }
+                    card_obj.insert("id".to_string(), Value::String(candidate));
+                    next_num += 1;
+                    assigned += 1;
+                }
+            }
+        }
+        if assigned > 0 {
+            let ticket = obj
+                .entry("ticket".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(t_obj) = ticket.as_object_mut() {
+                t_obj.insert("prefix".to_string(), Value::String(prefix));
+                t_obj.insert("next".to_string(), Value::Number(next_num.into()));
+            }
+            self.append_log(&serde_json::json!({
+                "kind": "tasks-keyed",
+                "count": assigned,
+            }));
+        }
+        assigned
     }
 
     pub fn tasks_archive(&self) -> Value {
@@ -802,6 +940,134 @@ fn is_safe_id(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
+pub const HIVE_IGNORE_LINES: &[&str] = &[
+    "fleet.json",
+    "/projects/",
+    "runs.json",
+    "hooks.sock",
+    ".floor-lock",
+    "cost-ledger.jsonl",
+    "log.jsonl",
+    ".DS_Store",
+    "crashes/",
+    "node_modules/",
+    ".npm-cache/",
+    ".yarn/cache/",
+    ".pnpm-store/",
+    ".venv/",
+    "__pycache__/",
+    ".pytest_cache/",
+    ".turbo/",
+    ".next/",
+    ".gradle/",
+    ".remotion/",
+    "/agents/*/memory.md",
+    "/agents/*/memory-archive.md",
+    "/agents/*/memory-archive-raw*.md",
+    "/agents/*/memory-archive-laptop.md",
+    "/agents/*/memory-archive-cloud.md",
+    "/agents/*/**/.sync-*.tmp",
+    "/sync.git/",
+    "/agents/*/handoff.md",
+    "/agents/*/codex-memory.md",
+    "/backups/",
+    "/bin/runtime/md-hook-*.cmd",
+    "facts.db-shm",
+    "facts.db-wal",
+    "/mtime-test-*/",
+    "/.palace-stage/",
+    "/token-usage.json",
+];
+
+pub fn ensure_hive_gitignore(hive_root: &Path) {
+    let path = hive_root.join(".gitignore");
+    let existing = fs::read_to_string(&path).unwrap_or_default();
+    let have: HashSet<&str> = existing.lines().map(str::trim).collect();
+    let missing: Vec<&str> = HIVE_IGNORE_LINES
+        .iter()
+        .copied()
+        .filter(|line| !have.contains(line))
+        .collect();
+    if missing.is_empty() {
+        return;
+    }
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push('\n');
+    }
+    for line in missing {
+        next.push_str(line);
+        next.push('\n');
+    }
+    let _ = fs::write(&path, next);
+}
+
+fn real_with_tail(p: &Path) -> Option<PathBuf> {
+    if !p.is_absolute() {
+        return None;
+    }
+    let mut probe = md_core::repo_fs::normalize_lexical(p);
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(mut out) = fs::canonicalize(&probe) {
+            for comp in rest.into_iter().rev() {
+                out.push(comp);
+            }
+            return Some(out);
+        }
+        if fs::symlink_metadata(&probe).is_ok_and(|m| m.file_type().is_symlink()) {
+            return None;
+        }
+        let name = probe.file_name()?.to_os_string();
+        rest.push(name);
+        probe = probe.parent()?.to_path_buf();
+    }
+}
+
+/// Returns true iff `folder` is an absolute path strictly inside `<hive_root>/projects`
+/// (with symlink traversal checks, matching `src/core/hiveProjects.ts`).
+pub fn in_hive_projects(hive_root: &Path, folder: &Path) -> bool {
+    let Some(base) = real_with_tail(&hive_root.join("projects")) else {
+        return false;
+    };
+    let Some(real) = real_with_tail(folder) else {
+        return false;
+    };
+    real != base && real.starts_with(&base)
+}
+
+/// Top-level project directory (`<hive_root>/projects/<first_component>`) for `folder`.
+pub fn hive_project_top_of(hive_root: &Path, folder: &Path) -> Option<PathBuf> {
+    let base = real_with_tail(&hive_root.join("projects"))?;
+    let real = real_with_tail(folder)?;
+    let rel = real.strip_prefix(&base).ok()?;
+    let first = rel.components().next()?;
+    Some(base.join(first))
+}
+
+/// Sanitizes an agent id or name into a lowercase project folder slug (`<= 64` chars).
+pub fn project_folder_name(name: &str) -> String {
+    let mapped: String = name
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = mapped.trim_matches(['-', '.']);
+    let capped: String = trimmed.chars().take(64).collect();
+    let clean = capped.trim_end_matches(['-', '.']);
+    if clean.is_empty() {
+        "project".to_string()
+    } else {
+        clean.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,13 +1103,29 @@ mod tests {
 
         assert!(mgr.delete_task("MD-1").unwrap());
 
-        let active = vec![serde_json::json!({
-            "id": "eng-1",
-            "name": "Engineer",
-            "description": "Writes Rust",
-            "provider": "claude"
-        })];
+        let active = vec![
+            serde_json::json!({
+                "id": "god",
+                "name": "Michael",
+                "isGod": true,
+                "description": "Runs the office, sorts requests.",
+                "provider": "opencode"
+            }),
+            serde_json::json!({
+                "id": "eng-1",
+                "name": "Engineer",
+                "description": "Writes Rust",
+                "provider": "claude"
+            }),
+        ];
         mgr.sync_roster(&active, &[]).unwrap();
+        assert_eq!(mgr.registry()["agents"]["god"]["role"], "orchestrator (god)");
+        assert!(mgr
+            .patch_agent_field("god", "startedAt", Some(Value::Number(12345.into())))
+            .unwrap());
+        mgr.sync_roster(&active, &[]).unwrap();
+        assert_eq!(mgr.registry()["agents"]["god"]["role"], "orchestrator (god)");
+        assert_eq!(mgr.registry()["agents"]["god"]["startedAt"], 12345);
         assert!(mgr
             .patch_agent_field("eng-1", "role", Some(Value::String("Builder".to_string())))
             .unwrap());
@@ -888,6 +1170,34 @@ mod tests {
         mgr.sync_roster(&[], &[]).unwrap();
         let reg2 = mgr.registry();
         assert_eq!(reg2["agents"]["eng-1"]["archived"], true);
+
+        let gi = fs::read_to_string(dir.join("hive/.gitignore")).unwrap();
+        assert!(gi.contains("/projects/"));
+        assert!(gi.contains("fleet.json"));
+        assert!(in_hive_projects(&dir.join("hive"), &dir.join("hive/projects/anvil-gtm")));
+        assert!(!in_hive_projects(&dir.join("hive"), &dir.join("hive/projects")));
+        assert!(!in_hive_projects(&dir.join("hive"), &dir.join("hive/agents")));
+        assert_eq!(project_folder_name("Worker ACME 1!"), "worker-acme-1");
+
+        // Unkeyed tasks written directly to tasks.json are auto-keyed from home initials.
+        let tasks_path = dir.join("hive/tasks.json");
+        fs::write(
+            &tasks_path,
+            serde_json::json!({
+                "tasks": [
+                    { "title": "First card", "status": "todo" },
+                    { "id": "CUSTOM-9", "title": "Pre-keyed", "status": "doing" },
+                    { "title": "Third card", "status": "blocked" }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let keyed = mgr.tasks();
+        let arr = keyed["tasks"].as_array().unwrap();
+        assert_eq!(arr[0]["id"].as_str().unwrap(), &format!("{}-1", mgr.default_ticket_prefix(&dir.join("hive"))));
+        assert_eq!(arr[1]["id"], "CUSTOM-9");
+        assert_eq!(arr[2]["id"].as_str().unwrap(), &format!("{}-2", mgr.default_ticket_prefix(&dir.join("hive"))));
 
         fs::remove_dir_all(&dir).ok();
     }

@@ -32,10 +32,7 @@ use md_hive::{
     hooks::HookEngine,
     manager::HiveManager,
     roster::{RosterSnapshot, RosterStore, RosterWriteResult},
-    switch_clear::{
-        CodexSizeClear, SwitchClear, TypedKind, oldest_waking_work, switch_clear_command,
-        typed_kind,
-    },
+    switch_clear::{AskedCompact, CodexSizeClear, SwitchClear},
     wake_filing::WakeFiling,
 };
 use md_pty::{
@@ -53,16 +50,15 @@ use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use tower_http::services::ServeDir;
 
-fn spawn_pty_event_forwarder(
-    pty: &PtyManager,
-    workers: Arc<Mutex<Vec<state::WorkerRecord>>>,
-    wake_filing: Arc<Mutex<WakeFiling>>,
-    switch_clear: Arc<Mutex<SwitchClear>>,
-    codex_size: Arc<Mutex<CodexSizeClear>>,
-    ended_agents: Arc<Mutex<HashMap<String, EndedAgentRecord>>>,
-    events_tx: broadcast::Sender<ServerEvent>,
-) {
-    let mut rx = pty.subscribe();
+fn spawn_pty_event_forwarder(state: &AppState) {
+    let mut rx = state.pty.subscribe();
+    let workers = state.workers.clone();
+    let wake_filing = state.wake_filing.clone();
+    let switch_clear = state.switch_clear.clone();
+    let codex_size = state.codex_size.clone();
+    let asked_compact = state.asked_compact.clone();
+    let ended_agents = state.ended_agents.clone();
+    let events_tx = state.events_tx.clone();
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -90,6 +86,7 @@ fn spawn_pty_event_forwarder(
                     wake_filing.lock().unwrap().forget(&agent_id);
                     switch_clear.lock().unwrap().forget(&agent_id);
                     codex_size.lock().unwrap().forget(&agent_id);
+                    asked_compact.lock().unwrap().forget(&agent_id);
                     if !is_worker {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -208,31 +205,12 @@ async fn health() -> Json<serde_json::Value> {
 async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
     let data_dir = state.data_dir.clone();
 
-    // Clear in-memory config, SQLite tables, and registries.
-    {
-        let mut store = state.config.lock().unwrap();
-        *store = md_core::config::ConfigStore::new(&data_dir);
-    }
-    let _ = state.db.lock().unwrap().clear_all();
-    state.secrets.lock().unwrap().clear_all();
-    state.broker.lock().unwrap().clear_all();
-    state.webhooks.lock().unwrap().clear_all();
-    state.file_share.lock().unwrap().stop_all();
-    state.workers.lock().unwrap().clear();
-    state.workers_history.lock().unwrap().clear();
-    state.ended_agents.lock().unwrap().clear();
-    state.integrations_activity.lock().unwrap().clear();
-    state.control.lock().unwrap().clear_all();
-    state.breaker.lock().unwrap().clear_all();
-    state.sync_hive_home();
-    {
-        let mut ide = state.ide.lock().unwrap();
-        ide.unsaved_count = 0;
-        ide.open_files.clear();
-    }
+    // Kill every live PTY (including `pty-god`) first so post-reset onboarding
+    // does not see stale PTYs and skip spawning the new god agent.
+    state.pty.kill_all();
 
-    // Wipe config/state files in the data dir while preserving the encryption master key
-    // and the live SQLite database files (already cleared via clear_all()).
+    // Wipe config/state files in the data dir before re-creating `ConfigStore`
+    // while preserving the encryption master key and SQLite database files.
     if let Ok(entries) = std::fs::read_dir(&data_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name();
@@ -245,6 +223,44 @@ async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
                 let _ = std::fs::remove_file(&path);
             }
         }
+    }
+
+    // Reset in-memory config, SQLite tables, hive/hooks runtime state, and registries.
+    let fresh_cfg = {
+        let mut store = state.config.lock().unwrap();
+        *store = md_core::config::ConfigStore::new(&data_dir);
+        store.read()
+    };
+    let _ = state.db.lock().unwrap().clear_all();
+    state.secrets.lock().unwrap().clear_all();
+    state.broker.lock().unwrap().clear_all();
+    state.webhooks.lock().unwrap().clear_all();
+    state.file_share.lock().unwrap().stop_all();
+    state.workers.lock().unwrap().clear();
+    state.workers_history.lock().unwrap().clear();
+    state.ended_agents.lock().unwrap().clear();
+    state.integrations_activity.lock().unwrap().clear();
+    state.control.lock().unwrap().clear_all();
+    state.breaker.lock().unwrap().clear_all();
+    state.hooks.clear_all();
+    *state.wake_filing.lock().unwrap() = md_hive::wake_filing::WakeFiling::new();
+    *state.switch_clear.lock().unwrap() = md_hive::switch_clear::SwitchClear::new();
+    *state.codex_size.lock().unwrap() = md_hive::switch_clear::CodexSizeClear::new();
+    *state.asked_compact.lock().unwrap() = md_hive::switch_clear::AskedCompact::new();
+    *state.hire_inflight.lock().unwrap() = None;
+    state
+        .hire_runner_ready
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    *state.roster.lock().unwrap() = RosterStore::new();
+    *state.hive.lock().unwrap() = md_hive::manager::HiveManager::new(None);
+    state.sync_hive_home();
+    {
+        let mut ide = state.ide.lock().unwrap();
+        ide.unsaved_count = 0;
+        ide.open_files.clear();
+    }
+    if let Ok(val) = serde_json::to_value(&fresh_cfg) {
+        state.emit("config:changed", val);
     }
 
     Json(serde_json::json!({ "ok": true }))
@@ -265,9 +281,16 @@ async fn floor_box(Query(q): Query<FloorBoxQuery>) -> Json<HomeBox> {
     Json(out)
 }
 
+fn with_merged_context_trigger(mut cfg: HarnessConfig) -> HarnessConfig {
+    let merged =
+        crate::routes_catalog::merged_context_trigger(cfg.extra.get("contextTrigger"));
+    cfg.extra.insert("contextTrigger".to_string(), merged);
+    cfg
+}
+
 async fn config_get(State(state): State<AppState>) -> Json<HarnessConfig> {
     let mut store = state.config.lock().unwrap();
-    Json(store.read())
+    Json(with_merged_context_trigger(store.read()))
 }
 
 async fn config_update(
@@ -283,6 +306,7 @@ async fn config_update(
             state.sync_hive_home();
             state.sync_config_runtime(&cfg);
             crate::hive_bootstrap::sync_fleet_json(&state);
+            let cfg = with_merged_context_trigger(cfg);
             if let Ok(val) = serde_json::to_value(&cfg) {
                 state.emit("config:changed", val);
             }
@@ -406,10 +430,16 @@ async fn pty_spawn(
     // On web, allow creating new workspace subfolders inside configured `harnessHome`
     // (e.g. `<harnessHome>/Projects`) when adding an agent.
     if let Some(home) = state.harness_home() {
+        let hive_root = home.join("hive");
         let cwd_path = md_core::config::expand_tilde(&opts.cwd);
         let canon_h = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
         if !cwd_path.is_dir() && (cwd_path.starts_with(&home) || cwd_path.starts_with(&canon_h)) {
             let _ = std::fs::create_dir_all(&cwd_path);
+        }
+        if md_hive::manager::in_hive_projects(&hive_root, &cwd_path)
+            && let Some(top) = md_hive::manager::hive_project_top_of(&hive_root, &cwd_path)
+        {
+            let _ = md_git::init_repo_sync(&top, Some("Project folder made by Munder Difflin"));
         }
     }
 
@@ -561,51 +591,15 @@ async fn pty_submit(
     {
         Ok(res) => {
             if let Some(ref aid) = eff_agent_id {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                let to_file = state.wake_filing.lock().unwrap().note_typed(
+                routes_hive::note_agent_prompt_submitted(
+                    &state,
                     aid,
                     &text,
                     &res.outcome,
                     res.ms,
                     press_only,
-                    now,
+                    Some(&provider),
                 );
-                if !to_file.is_empty() {
-                    state.sync_hive_home();
-                    let _ = state.hive.lock().unwrap().file_inbox_messages(aid, &to_file);
-                }
-                let kind = typed_kind(&text, switch_clear_command(&provider));
-                let wake_work = if kind == TypedKind::Wake {
-                    state.sync_hive_home();
-                    let inbox = state.hive.lock().unwrap().inbox(aid);
-                    oldest_waking_work(&inbox)
-                } else {
-                    None
-                };
-                state.switch_clear.lock().unwrap().note_typed(
-                    Some(aid),
-                    kind,
-                    &res.outcome,
-                    press_only,
-                    wake_work,
-                    now,
-                );
-                if let Some(rotated_bytes) = state.codex_size.lock().unwrap().note_typed(
-                    Some(aid),
-                    kind,
-                    &res.outcome,
-                    press_only,
-                ) {
-                    state.sync_hive_home();
-                    state.hive.lock().unwrap().append_log(&serde_json::json!({
-                        "kind": "codex-session-rotated",
-                        "agentId": aid,
-                        "bytes": rotated_bytes,
-                    }));
-                }
             }
             Json(serde_json::json!({
                 "ok": true,
@@ -967,36 +961,24 @@ async fn main() -> anyhow::Result<()> {
     let wake_filing = Arc::new(Mutex::new(WakeFiling::new()));
     let switch_clear = Arc::new(Mutex::new(SwitchClear::new()));
     let codex_size = Arc::new(Mutex::new(CodexSizeClear::new()));
+    let asked_compact = Arc::new(Mutex::new(AskedCompact::new()));
     let hook_token = uuid::Uuid::new_v4().to_string();
     let hooks = HookEngine::new(control.clone(), breaker.clone(), hook_token);
     let (events_tx, _) = broadcast::channel(256);
     let workers = Arc::new(Mutex::new(Vec::new()));
     let ended_agents = Arc::new(Mutex::new(HashMap::new()));
-    spawn_pty_event_forwarder(
-        &pty,
-        workers.clone(),
-        wake_filing.clone(),
-        switch_clear.clone(),
-        codex_size.clone(),
-        ended_agents.clone(),
-        events_tx.clone(),
-    );
-
     let secrets = md_integrations::secrets::SecretStore::open(&data_dir)
         .map_err(|e| anyhow::anyhow!(e))?;
     let webhooks = md_integrations::webhooks::WebhookRegistry::open(Some(&data_dir));
-
     let workers_history_path = data_dir.join("workers-history.json");
     let workers_history: Vec<serde_json::Value> = std::fs::read_to_string(&workers_history_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default();
-
     let port: u16 = std::env::var("MD_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(3110);
-
     let state = AppState {
         port,
         data_dir: data_dir.clone(),
@@ -1009,6 +991,7 @@ async fn main() -> anyhow::Result<()> {
         wake_filing,
         switch_clear,
         codex_size,
+        asked_compact,
         hooks,
         pty,
         submitter,
@@ -1025,8 +1008,11 @@ async fn main() -> anyhow::Result<()> {
         workers_history: Arc::new(Mutex::new(workers_history)),
         ended_agents,
         integrations_activity: Arc::new(Mutex::new(Vec::new())),
+        hire_runner_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        hire_inflight: Arc::new(Mutex::new(None)),
         events_tx,
     };
+    spawn_pty_event_forwarder(&state);
     {
         let init_cfg = state.config.lock().unwrap().read();
         state.sync_config_runtime(&init_cfg);
@@ -1070,6 +1056,7 @@ mod tests {
         let wake_filing = Arc::new(Mutex::new(WakeFiling::new()));
         let switch_clear = Arc::new(Mutex::new(SwitchClear::new()));
         let codex_size = Arc::new(Mutex::new(CodexSizeClear::new()));
+        let asked_compact = Arc::new(Mutex::new(AskedCompact::new()));
         let hooks = HookEngine::new(control.clone(), breaker.clone(), "test-hook-token".into());
         let (events_tx, _) = broadcast::channel(32);
         AppState {
@@ -1084,6 +1071,7 @@ mod tests {
             wake_filing,
             switch_clear,
             codex_size,
+            asked_compact,
             hooks,
             pty,
             submitter,
@@ -1100,6 +1088,8 @@ mod tests {
             workers_history: Arc::new(Mutex::new(Vec::new())),
             ended_agents: Arc::new(Mutex::new(HashMap::new())),
             integrations_activity: Arc::new(Mutex::new(Vec::new())),
+            hire_runner_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hire_inflight: Arc::new(Mutex::new(None)),
             events_tx,
         }
     }
@@ -2542,6 +2532,92 @@ mod tests {
             .iter()
             .any(|r| r["workerId"] == "worker-test-worker"));
 
+        // Archived/ended temp worker cannot be resurrected via hive_wake
+        let wake_arch = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hive/wake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agentId":"worker-test-worker"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let wake_arch_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(wake_arch.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(wake_arch_json["ok"], false);
+        assert_eq!(wake_arch_json["skipped"], "archived");
+
+        // Projects list discovers hive/projects/* subfolders
+        std::fs::create_dir_all(hive_root.join("projects/acme-demo")).unwrap();
+        let proj_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/projects/list").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let proj_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(proj_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(proj_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "acme-demo" && p["local"]["path"].is_string()));
+
+        // Hook updates registry status (`working` on PreToolUse -> `idle` on Stop)
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hook/god")
+                    .header("authorization", "Bearer test-hook-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"hook_event_name":"PreToolUse","tool_name":"bash"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.hive.lock().unwrap().registry()["agents"]["god"]["status"], "working");
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hook/god")
+                    .header("authorization", "Bearer test-hook-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"hook_event_name":"Stop"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(state.hive.lock().unwrap().registry()["agents"]["god"]["status"], "idle");
+
+        // /api/v1/config always merges default contextTrigger rules so auto-compact fires without manual setup
+        let cfg_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let cfg_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(cfg_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg_json["contextTrigger"]["compact"]["enabled"], true);
+        assert_eq!(cfg_json["contextTrigger"]["compact"]["minContextPct"], 50);
+
         let _ = state.pty.kill("pty-god");
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2947,6 +3023,609 @@ mod tests {
         .unwrap();
         assert!(size_val.is_null());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn projects_worktrees_and_asked_compact_work() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-parity-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home_dir = dir.join("home");
+        let state = test_state(&dir);
+        let app = build_router(state.clone());
+
+        let cfg_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "harnessHome": home_dir.to_string_lossy(),
+                            "orchestratorMaySpawn": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cfg_res.status(), StatusCode::OK);
+
+        // Spawn request without `cwd` defaults to `<hive>/projects/<worker_id>`, initializes git repo + commit,
+        // adds `/projects/` to `hive/.gitignore`, and creates an isolated git worktree under `<home>/worktrees/`.
+        let sr_dir = home_dir.join("hive/spawn-requests");
+        std::fs::create_dir_all(&sr_dir).unwrap();
+        std::fs::write(
+            sr_dir.join("anvil-research.json"),
+            serde_json::json!({
+                "name": "Anvil Research",
+                "objective": "Verify isolated worktree spawn",
+                "command": "/bin/sh -c true"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        routes_hive::process_spawn_requests(&state);
+
+        assert!(sr_dir.join(".done/anvil-research.json").is_file());
+        let default_proj = home_dir.join("hive/projects/worker-anvil-research");
+        assert!(default_proj.join(".git").exists());
+        assert!(md_git::is_repo_sync(&default_proj));
+        let expected_wt = home_dir.join("worktrees/worker-anvil-research");
+        assert!(expected_wt.is_dir());
+        assert!(md_git::is_repo_sync(&expected_wt));
+        let hive_gi = std::fs::read_to_string(home_dir.join("hive/.gitignore")).unwrap();
+        assert!(hive_gi.contains("/projects/"));
+
+        // `/api/v1/projects/list` includes `local.git: true`
+        let proj_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/projects/list").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let proj_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(proj_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(proj_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["name"] == "worker-anvil-research" && p["local"]["git"] == true));
+
+        // workspaces/ensure inside `<hive>/projects/<name>` also initializes its git repo
+        let launcher_proj = home_dir.join("hive/projects/launcher-proj");
+        let ens_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/workspaces/ensure")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "path": launcher_proj.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ens_res.status(), StatusCode::OK);
+        assert!(md_git::is_repo_sync(&launcher_proj));
+
+        // compact-requests enforces AskedCompact: accepts live registered agent, rejects second within cooldown,
+        // and clears waiting list once `/compact` goes through `note_agent_prompt_submitted`.
+        state.sync_hive_home();
+        state
+            .hive
+            .lock()
+            .unwrap()
+            .register_worker(
+                "god",
+                serde_json::json!({
+                    "id": "god",
+                    "name": "Michael",
+                    "provider": "opencode",
+                    "isGod": true,
+                    "archived": false
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            )
+            .unwrap();
+        let _ = state.pty.spawn(md_pty::manager::SpawnOptions {
+            id: "pty-god".into(),
+            cwd: home_dir.to_string_lossy().into_owned(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 2".into()],
+            cols: Some(80),
+            rows: Some(24),
+            env: Default::default(),
+            shell_script: None,
+            provider: Some("opencode".into()),
+            resume: None,
+            hive: None,
+        });
+
+        let cr_dir = home_dir.join("hive/compact-requests");
+        std::fs::create_dir_all(&cr_dir).unwrap();
+        std::fs::write(
+            cr_dir.join("ask1.json"),
+            r#"{"agent":"god","reason":"high ctx"}"#,
+        )
+        .unwrap();
+        routes_hive::run_compact_and_clear_requests(&state);
+        assert!(cr_dir.join(".done/ask1.json").is_file());
+        assert_eq!(state.asked_compact.lock().unwrap().waiting(), vec!["god".to_string()]);
+
+        // Duplicate while waiting -> moved to .failed
+        std::fs::write(
+            cr_dir.join("ask2.json"),
+            r#"{"agent":"god","reason":"dup"}"#,
+        )
+        .unwrap();
+        routes_hive::run_compact_and_clear_requests(&state);
+        assert!(cr_dir.join(".failed/ask2.json").is_file());
+
+        // Delivering `/compact` clears AskedCompact waiting state
+        routes_hive::note_agent_prompt_submitted(
+            &state,
+            "god",
+            "/compact",
+            "submitted",
+            10,
+            false,
+            Some("opencode"),
+        );
+        assert!(state.asked_compact.lock().unwrap().waiting().is_empty());
+
+        // Gemini & Pi isolated hook injection + event normalization (`BeforeAgent`/`AfterAgent`)
+        let mut gemini_opts = md_pty::manager::SpawnOptions {
+            id: "pty-gem-1".into(),
+            cwd: home_dir.to_string_lossy().into_owned(),
+            command: "gemini".into(),
+            args: vec![],
+            cols: None,
+            rows: None,
+            env: Default::default(),
+            shell_script: None,
+            provider: Some("gemini".into()),
+            resume: None,
+            hive: None,
+        };
+        crate::hive_bootstrap::prepare_agent_spawn(
+            &state,
+            &mut gemini_opts,
+            "gem1",
+            "Gemini",
+            "gemini",
+            false,
+            None,
+        );
+        assert!(gemini_opts.env.contains_key("GEMINI_CLI_SYSTEM_SETTINGS_PATH"));
+        assert!(home_dir
+            .join("hive/agents/gem1/.gemini-hive/system-settings.json")
+            .is_file());
+
+        let mut pi_opts = gemini_opts.clone();
+        pi_opts.id = "pty-pi-1".into();
+        pi_opts.provider = Some("pi".into());
+        crate::hive_bootstrap::prepare_agent_spawn(
+            &state,
+            &mut pi_opts,
+            "pi1",
+            "Pi",
+            "pi",
+            false,
+            None,
+        );
+        assert!(pi_opts.env.contains_key("PI_CODING_AGENT_DIR"));
+        assert!(home_dir
+            .join("hive/agents/pi1/.pi-agent/extensions/hive-bridge.js")
+            .is_file());
+
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hook/god")
+                    .header("authorization", "Bearer test-hook-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"hook_event_name":"BeforeAgent","prompt":"ship gemini fix"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            state.hive.lock().unwrap().registry()["agents"]["god"]["status"],
+            "working"
+        );
+        assert!(state
+            .hooks
+            .proof
+            .lock()
+            .unwrap()
+            .prompt_seen("god", 0, "shipgeminifix"));
+
+        // Durable hire-requests flow: respects orchestratorMayAddLasting + hireRunnerReady + creates project repo + files .done
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"orchestratorMayAddLasting":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hive/hire-runner-ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let mut hire_rx = state.events_tx.subscribe();
+        let hr_dir = home_dir.join("hive/hire-requests");
+        std::fs::create_dir_all(&hr_dir).unwrap();
+        std::fs::write(
+            hr_dir.join("add-designer.json"),
+            r#"{"name":"Designer","configs":{"role":"Visual designer","provider":"opencode"}}"#,
+        )
+        .unwrap();
+        routes_hive::process_hire_requests(&state);
+        assert!(hr_dir.join(".inflight-add-designer.json").is_file());
+        assert!(md_git::is_repo_sync(&home_dir.join("hive/projects/designer")));
+        let mut saw_hire_ev = false;
+        while let Ok(ev) = hire_rx.try_recv() {
+            if ev.channel == "hire:request" && ev.payload["agentId"] == "designer" {
+                saw_hire_ev = true;
+            }
+        }
+        assert!(saw_hire_ev);
+
+        let hd_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hive/hire-done")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"reqId":"add-designer","answer":{"ok":true,"provider":"opencode"}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hd_res.status(), StatusCode::OK);
+        assert!(hr_dir.join(".done/add-designer.json").is_file());
+        assert!(state
+            .hive
+            .lock()
+            .unwrap()
+            .inbox("god")
+            .iter()
+            .any(|m| m["subject"].as_str().unwrap_or("").contains("Designer")));
+
+        let _ = state.pty.kill("pty-god");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn reset_all_kills_ptys_and_clears_state() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-reset-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home_dir = dir.join("home");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let state = test_state(&dir);
+        let app = build_router(state.clone());
+
+        // 1. Configure harnessHome + save roster + record hook/compact state + spawn pty-god.
+        let cfg_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "harnessHome": home_dir.to_string_lossy(),
+                            "onboardingComplete": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cfg_res.status(), StatusCode::OK);
+
+        let roster_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/roster")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "agents": [{ "id": "god", "name": "Michael", "ptyId": "pty-god", "status": "idle" }],
+                            "archived": [],
+                            "restorable": []
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(roster_res.status(), StatusCode::OK);
+
+        state.hooks.handle_hook(
+            "god",
+            &serde_json::json!({ "hook_event_name": "SessionStart", "session_id": "sess-1", "model": "opus" }),
+            None,
+            None,
+            None,
+            None,
+        );
+        state.asked_compact.lock().unwrap().ask("god", 100);
+        state
+            .hire_runner_ready
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let spawn_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/pty/spawn")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "id": "pty-god",
+                            "cwd": home_dir.to_string_lossy(),
+                            "command": "/bin/sh",
+                            "args": ["-c", "sleep 30"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spawn_res.status(), StatusCode::OK);
+        assert_eq!(state.pty.list().len(), 1);
+
+        // 2. Call POST /api/v1/reset.
+        let reset_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/reset")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(reset_res.status(), StatusCode::OK);
+
+        // 3. Assert live PTYs are gone, config.json was wiped, and runtime state was cleared.
+        let list_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/pty/list").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let list_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(list_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(list_json, serde_json::json!([]));
+
+        let cfg_after_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/config").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let cfg_after: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(cfg_after_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg_after["onboardingComplete"], false);
+        assert!(cfg_after["harnessHome"].is_null());
+
+        let roster_after_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/roster").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let roster_after: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(roster_after_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(roster_after.is_null());
+        assert!(state.hooks.session_by_id.lock().unwrap().is_empty());
+        assert!(state.hooks.model_by_id.lock().unwrap().is_empty());
+        assert!(state.asked_compact.lock().unwrap().waiting().is_empty());
+        assert!(!state
+            .hire_runner_ready
+            .load(std::sync::atomic::Ordering::Relaxed));
+
+        // 4. Re-spawning `pty-god` after reset succeeds immediately (not blocked by stale pty-god).
+        let spawn2_res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/pty/spawn")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "id": "pty-god",
+                            "cwd": home_dir.to_string_lossy(),
+                            "command": "/bin/sh",
+                            "args": ["-c", "sleep 30"]
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(spawn2_res.status(), StatusCode::OK);
+        let spawn2_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(spawn2_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(spawn2_json["ok"], true);
+
+        state.pty.kill_all();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn worker_release_cleans_worktree_logs_unread_mail_and_seeds_artifacts() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-rel-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home_dir = dir.join("HarnessReleaseTest");
+        std::fs::create_dir_all(&home_dir).unwrap();
+        let state = test_state(&dir);
+        let app = build_router(state.clone());
+
+        let cfg_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/config")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "harnessHome": home_dir.to_string_lossy(),
+                            "orchestratorMaySpawn": true
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(cfg_res.status(), StatusCode::OK);
+        let cfg_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(cfg_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg_json["orchestratorMayAddLasting"], true);
+        assert_eq!(cfg_json["maxConcurrentWorkers"], 4);
+
+        // Spawn temp into a project folder under hive/projects/acme
+        let sr_dir = home_dir.join("hive/spawn-requests");
+        std::fs::create_dir_all(&sr_dir).unwrap();
+        std::fs::write(
+            sr_dir.join("poster-task.json"),
+            serde_json::json!({
+                "name": "Poster Temp",
+                "objective": "Very long objective text that should stay out of registry role",
+                "provider": "opencode",
+                "command": "/bin/sh -c 'sleep 30'"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        routes_hive::process_spawn_requests(&state);
+
+        // Verify role is "temp", startedAt is recorded, identity.md / handoff.md / tui.json / hive/bin exist.
+        let reg = state.hive.lock().unwrap().registry();
+        assert_eq!(reg["agents"]["worker-poster-task"]["role"], "temp");
+        assert!(reg["agents"]["worker-poster-task"]["startedAt"].is_u64());
+        assert!(home_dir.join("hive/agents/worker-poster-task/identity.md").is_file());
+        assert!(home_dir.join("hive/agents/worker-poster-task/handoff.md").is_file());
+        assert!(home_dir.join("hive/agents/worker-poster-task/.opencode/tui.json").is_file());
+        assert!(home_dir.join("hive/bin/md-models").is_file());
+        assert!(home_dir.join("hive/bin/md-limits").is_file());
+        let wt_dir = home_dir.join("worktrees/worker-poster-task");
+        assert!(wt_dir.is_dir());
+
+        // Add an extra unread message to worker's inbox so release triggers `[worker released — mail filed unread]`
+        let _ = state.hive.lock().unwrap().send_message(
+            serde_json::json!({
+                "to": "worker-poster-task",
+                "act": "request",
+                "subject": "QA defect",
+                "body": "Fix glyph",
+            }),
+            "god",
+        );
+
+        // Worker writes a file in its worktree and signals done via outbox.
+        std::fs::write(wt_dir.join("poster.txt"), "done").unwrap();
+        let outbox = home_dir.join("hive/agents/worker-poster-task/outbox");
+        std::fs::write(
+            outbox.join("done.json"),
+            r#"{"to":"god","act":"done","subject":"Poster complete","body":"All done"}"#,
+        )
+        .unwrap();
+        routes_hive::process_outboxes_tick(&state);
+
+        // Worktree directory is cleaned up after release, while commit remains in main repo branch,
+        // unread mail was settled, and god received `[worker released — mail filed unread]`.
+        assert!(!wt_dir.exists());
+        let proj_dir = home_dir.join("hive/projects/worker-poster-task");
+        let log_raw = std::fs::read_to_string(home_dir.join("hive/log.jsonl")).unwrap();
+        assert!(log_raw.contains("\"kind\":\"inbox-settled\""));
+        assert!(log_raw.contains("\"kind\":\"archive\""));
+        assert!(md_git::is_repo_sync(&proj_dir));
+        let god_inbox = state.hive.lock().unwrap().inbox("god");
+        assert!(god_inbox.iter().any(|m| {
+            m["from"] == "temps"
+                && m["subject"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("[worker released — mail filed unread] worker-poster-task")
+        }));
+
+        state.pty.kill_all();
         std::fs::remove_dir_all(&dir).ok();
     }
 }

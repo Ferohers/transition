@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-fn resources_root() -> Option<PathBuf> {
+pub(crate) fn resources_root() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("MD_RESOURCES_DIR") {
         let p = PathBuf::from(explicit.trim());
         if p.is_dir() {
@@ -538,8 +538,13 @@ async fn context_trigger_set(
         .unwrap()
         .update(json!({ "contextTrigger": next }))
     {
-        Ok(cfg) => {
+        Ok(mut cfg) => {
             let effective = merged_context_trigger(cfg.extra.get("contextTrigger"));
+            cfg.extra
+                .insert("contextTrigger".to_string(), effective.clone());
+            if let Ok(val) = serde_json::to_value(&cfg) {
+                state.emit("config:changed", val);
+            }
             state.emit("context:triggerUpdated", effective.clone());
             Json(json!({ "ok": true, "contextTrigger": effective }))
         }

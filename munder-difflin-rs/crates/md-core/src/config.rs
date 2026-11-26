@@ -97,6 +97,48 @@ fn sanitize_config(cfg: &mut HarnessConfig) {
         true
     });
     cfg.extra
+        .entry("orchestratorMayAddLasting".to_string())
+        .or_insert(Value::Bool(true));
+    cfg.extra
+        .entry("maxConcurrentWorkers".to_string())
+        .or_insert_with(|| Value::Number(4.into()));
+    cfg.extra
+        .entry("maxTempsPerAgent".to_string())
+        .or_insert_with(|| Value::Number(2.into()));
+    cfg.extra
+        .entry("workerIdleTimeoutMinutes".to_string())
+        .or_insert_with(|| Value::Number(20.into()));
+    cfg.extra
+        .entry("semanticMemory".to_string())
+        .or_insert(Value::Bool(true));
+    cfg.extra
+        .entry("reflectEnabled".to_string())
+        .or_insert(Value::Bool(true));
+    cfg.extra
+        .entry("mcpDefaults".to_string())
+        .or_insert_with(|| {
+            serde_json::json!({
+                "sequential-thinking": { "enabled": true },
+                "time": { "enabled": true },
+                "fetch": { "enabled": true },
+                "context7": { "enabled": true }
+            })
+        });
+    cfg.extra
+        .entry("responseStyle".to_string())
+        .or_insert_with(|| {
+            Value::String(
+                "Answer in the house style, on every message:\n\
+                 Stay on the subject you were asked about, and answer the question that was actually asked.\n\
+                 Be factual. Say what you checked and what you found. If you do not know, say that you do not know.\n\
+                 Be short and crisp. Lead with the answer, then add only the detail that changes it.\n\
+                 Use plain language anyone on the team can read. Spell a term out the first time you use it.\n\
+                 Cut filler. No preamble, no flattery, no repeating the question back.\n\
+                 When something is genuinely long, break it into short labelled parts instead of one block."
+                    .to_string(),
+            )
+        });
+    cfg.extra
         .insert("autoUpdate".to_string(), Value::Bool(false));
     cfg.extra
         .insert("telemetryEnabled".to_string(), Value::Bool(false));

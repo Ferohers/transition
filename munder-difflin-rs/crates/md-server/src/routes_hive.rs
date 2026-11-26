@@ -8,8 +8,10 @@ use axum::{
 use md_core::config::expand_tilde;
 use md_hive::{
     breaker::BreakerState,
+    manager::{hive_project_top_of, in_hive_projects, project_folder_name},
     switch_clear::{
-        ClearGate, HookFacts, SwitchClearRule, WakeFacts, WakeStep, handoff_request_text,
+        ClearGate, HookFacts, SwitchClearRule, WakeFacts, WakeStep, clear_command_for_provider,
+        compaction_command_for_provider, handoff_request_text, is_compaction_command,
         oldest_waking_work, size_handoff_request_text, switch_clear_command, typed_kind,
         with_cleared_lead,
     },
@@ -100,10 +102,12 @@ async fn handle_hook(
         .filter(|s| !s.is_empty())
         .unwrap_or(&agent_id)
         .to_string();
-    let event_name = payload
-        .get("hook_event_name")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Unknown");
+    let event_name = md_hive::hooks::normalize_hook_event(
+        payload
+            .get("hook_event_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Unknown"),
+    );
     let (goal, style, identity, roster_ctx) =
         crate::hive_bootstrap::build_hook_context_for_agent(&state, &eff_agent_id);
 
@@ -163,6 +167,7 @@ async fn handle_hook(
             .file_inbox_messages(&eff_agent_id, &to_file);
     }
 
+    let mut stop_blocked = false;
     if matches!(event_name, "Stop" | "SubagentStop") && reply.get("continue").is_none() {
         state.sync_hive_home();
         let (unread, supports_blocking_stop) = {
@@ -180,6 +185,7 @@ async fn handle_hook(
             )
         };
         if supports_blocking_stop && !unread.is_empty() {
+            stop_blocked = true;
             let inbox_dir = state
                 .harness_home()
                 .map(|h| {
@@ -209,12 +215,35 @@ async fn handle_hook(
         }
     }
 
+    let next_reg_status = match event_name {
+        "PreToolUse" | "PostToolUse" | "UserPromptSubmit" | "PreCompact" | "PostCompact" => {
+            Some("working")
+        }
+        "Stop" | "PostInvocation" if !stop_blocked => Some("idle"),
+        _ => None,
+    };
+    if let Some(st) = next_reg_status {
+        let mut hive = state.hive.lock().unwrap();
+        let _ = hive.patch_agent_field(&eff_agent_id, "status", Some(Value::String(st.to_string())));
+    }
+
     for (ch, ev) in side.events {
         state.emit(&ch, ev);
     }
     if matches!(
         event_name,
-        "SessionStart" | "Stop" | "Status" | "PostToolUse" | "UserPromptSubmit"
+        "SessionStart" | "Stop" | "PreCompact" | "PostCompact" | "UserPromptSubmit"
+    ) {
+        state.sync_hive_home();
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "hook-seen",
+            "event": event_name,
+            "agentId": eff_agent_id,
+        }));
+    }
+    if matches!(
+        event_name,
+        "SessionStart" | "Stop" | "Status" | "PostToolUse" | "PreToolUse" | "UserPromptSubmit"
     ) {
         crate::hive_bootstrap::sync_fleet_json(&state);
     }
@@ -467,6 +496,27 @@ fn deliver_or_enqueue_inner(
     provider_hint: Option<&str>,
     from_inbox: bool,
 ) {
+    let is_archived = target_id != "god"
+        && (state.ended_agents.lock().unwrap().contains_key(target_id)
+            || state
+                .hive
+                .lock()
+                .unwrap()
+                .registry()
+                .get("agents")
+                .and_then(|a| a.get(target_id))
+                .and_then(|info| info.get("archived"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false));
+    if is_archived {
+        state.sync_hive_home();
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "archived-recipient",
+            "to": target_id,
+            "fromInbox": from_inbox,
+        }));
+        return;
+    }
     let payload = if from_inbox {
         serde_json::json!({ "targetId": target_id, "text": text, "fromInbox": true })
     } else {
@@ -509,25 +559,112 @@ fn deliver_or_enqueue_inner(
                     )
                     .await
                 {
-                    let to_file = st_done.wake_filing.lock().unwrap().note_typed(
+                    note_agent_prompt_submitted(
+                        &st_done,
                         &tid_done,
                         &text_done,
                         &res.outcome,
                         res.ms,
                         false,
-                        now_ms(),
+                        None,
                     );
-                    if !to_file.is_empty() {
-                        st_done.sync_hive_home();
-                        let _ = st_done
-                            .hive
-                            .lock()
-                            .unwrap()
-                            .file_inbox_messages(&tid_done, &to_file);
-                    }
                 }
             });
         }
+    }
+}
+
+pub(crate) fn note_agent_prompt_submitted(
+    state: &AppState,
+    agent_id: &str,
+    text: &str,
+    outcome: &str,
+    elapsed_ms: u64,
+    press_only: bool,
+    provider_hint: Option<&str>,
+) {
+    let now = now_ms();
+    let to_file = state.wake_filing.lock().unwrap().note_typed(
+        agent_id,
+        text,
+        outcome,
+        elapsed_ms,
+        press_only,
+        now,
+    );
+    if !to_file.is_empty() {
+        state.sync_hive_home();
+        let _ = state
+            .hive
+            .lock()
+            .unwrap()
+            .file_inbox_messages(agent_id, &to_file);
+    }
+    if state.asked_compact.lock().unwrap().note_typed(
+        Some(agent_id),
+        is_compaction_command(text),
+        outcome,
+        press_only,
+    ) {
+        state.sync_hive_home();
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "compact-request-done",
+            "agentId": agent_id,
+        }));
+    }
+    let provider = provider_hint
+        .filter(|s| !s.is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| {
+            let reg = state.hive.lock().unwrap().registry();
+            reg.get("agents")
+                .and_then(|a| a.get(agent_id))
+                .and_then(|v| v.get("provider"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("claude")
+                .to_string()
+        });
+    if state.harness_home().is_some() {
+        state.sync_hive_home();
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "pty-submit",
+            "agentId": agent_id,
+            "provider": provider,
+            "chars": text.len(),
+            "pressOnly": press_only,
+            "outcome": outcome,
+            "ms": elapsed_ms,
+        }));
+    }
+    let kind = typed_kind(text, switch_clear_command(&provider));
+    let wake_work = if kind == md_hive::switch_clear::TypedKind::Wake {
+        state.sync_hive_home();
+        let inbox = state.hive.lock().unwrap().inbox(agent_id);
+        oldest_waking_work(&inbox)
+    } else {
+        None
+    };
+    state.switch_clear.lock().unwrap().note_typed(
+        Some(agent_id),
+        kind,
+        outcome,
+        press_only,
+        wake_work,
+        now,
+    );
+    if let Some(rotated_bytes) =
+        state
+            .codex_size
+            .lock()
+            .unwrap()
+            .note_typed(Some(agent_id), kind, outcome, press_only)
+    {
+        state.sync_hive_home();
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "codex-session-rotated",
+            "agentId": agent_id,
+            "bytes": rotated_bytes,
+        }));
     }
 }
 
@@ -591,8 +728,49 @@ async fn hive_search(State(state): State<AppState>, Query(q): Query<SearchQuery>
 }
 
 async fn hive_context(Path(id): Path<String>, State(state): State<AppState>) -> Json<Value> {
-    let ctx = state.hooks.context_by_id.lock().unwrap().get(&id).cloned();
-    let model = state.hooks.model_by_id.lock().unwrap().get(&id).cloned();
+    let mut ctx = state.hooks.context_by_id.lock().unwrap().get(&id).cloned();
+    let mut model = state.hooks.model_by_id.lock().unwrap().get(&id).cloned();
+    if ctx.is_none() {
+        state.sync_hive_home();
+        let reg = state.hive.lock().unwrap().registry();
+        if let Some(info) = reg.get("agents").and_then(|v| v.get(&id))
+            && info.get("provider").and_then(|v| v.as_str()) == Some("opencode")
+        {
+            let cwd_str = info.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            let expanded = if cwd_str.is_empty() {
+                String::new()
+            } else {
+                expand_tilde(cwd_str).to_string_lossy().into_owned()
+            };
+            let hook_sid = state.hooks.session_by_id.lock().unwrap().get(&id).cloned();
+            let started_at = info.get("startedAt").and_then(|v| v.as_u64());
+            let sleeping = info.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false);
+            if (!expanded.is_empty() || hook_sid.is_some())
+                && let Some((oc_u, Some(tok))) = crate::routes_usage_memory_kg::read_opencode_usage_for_since(
+                    &expanded,
+                    hook_sid.as_deref(),
+                    !sleeping,
+                    started_at,
+                )
+            {
+                let m = model
+                    .clone()
+                    .or(oc_u.model)
+                    .or_else(|| info.get("model").and_then(|v| v.as_str()).map(ToString::to_string));
+                let limit = crate::routes_usage_memory_kg::opencode_model_context_limit(
+                    None,
+                    m.as_deref().unwrap_or(""),
+                );
+                model = m;
+                ctx = Some(md_hive::hooks::ContextSnapshot {
+                    agent_id: id,
+                    tokens: tok,
+                    limit,
+                    ts: now_ms(),
+                });
+            }
+        }
+    }
     Json(serde_json::json!({ "context": ctx, "model": model }))
 }
 
@@ -799,6 +977,27 @@ fn finish_worker_record(state: &AppState, w: WorkerRecord, result: &str, kill_pt
     if kill_pty {
         let _ = state.pty.kill(&w.pty_id);
     }
+    state.asked_compact.lock().unwrap().forget(&w.worker_id);
+    if let Some(ref wt_path) = w.worktree {
+        let p = std::path::Path::new(wt_path);
+        if p.is_dir() {
+            if md_git::is_repo_sync(p) {
+                let _ = md_git::commit_all_sync(p, &format!("Temp {} ({result})", w.worker_id));
+                if let Some(main_repo) = md_git::main_repo_sync(p)
+                    && main_repo != p
+                {
+                    md_git::remove_worktree_sync(&main_repo, p);
+                }
+            }
+            if p.exists()
+                && state
+                    .harness_home()
+                    .is_some_and(|h| p.starts_with(h.join("worktrees")))
+            {
+                let _ = std::fs::remove_dir_all(p);
+            }
+        }
+    }
     let now = now_ms();
     {
         let mut history = state.workers_history.lock().unwrap();
@@ -810,16 +1009,32 @@ fn finish_worker_record(state: &AppState, w: WorkerRecord, result: &str, kill_pt
         persist_workers_history(state, &history);
     }
     state.sync_hive_home();
-    {
+    let unread_notice_lines: Vec<String> = {
         let mut hive = state.hive.lock().unwrap();
+        let mut extra_unread = Vec::new();
         if result == "done" {
-            let ids: Vec<String> = hive
-                .inbox(&w.worker_id)
+            let inbox_items = hive.inbox(&w.worker_id);
+            let ids: Vec<String> = inbox_items
                 .iter()
                 .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(ToString::to_string))
                 .collect();
             if !ids.is_empty() {
+                for m in &inbox_items {
+                    let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+                    let act = m.get("act").and_then(|v| v.as_str()).unwrap_or("message");
+                    let from = m.get("from").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let mid = m.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    if subj != "Temp objective" && from != "temps" {
+                        extra_unread.push(format!("- {act} {mid} from {from}: \"{subj}\""));
+                    }
+                }
+                let count = ids.len();
                 let _ = hive.file_inbox_messages(&w.worker_id, &ids);
+                hive.append_log(&serde_json::json!({
+                    "kind": "inbox-settled",
+                    "agentId": w.worker_id,
+                    "count": count,
+                }));
             }
         }
         let _ = hive.patch_agent_field(&w.worker_id, "sleeping", Some(Value::Bool(false)));
@@ -830,8 +1045,54 @@ fn finish_worker_record(state: &AppState, w: WorkerRecord, result: &str, kill_pt
             "status",
             Some(Value::String(result.to_string())),
         );
+        hive.append_log(&serde_json::json!({
+            "kind": "archive",
+            "agentId": w.worker_id,
+            "archived": true,
+        }));
+        extra_unread
+    };
+    if !unread_notice_lines.is_empty() {
+        let recipient = if w.requested_by.is_empty() {
+            "god"
+        } else {
+            w.requested_by.as_str()
+        };
+        let body = format!(
+            "Worker {} signaled done and was released. These messages were still unread in its inbox and were filed under inbox/.done without an answer:\n{}\nIf one of them is not the order it just completed, nobody is working on it: resend it to another agent or re-hire the worker.",
+            w.worker_id,
+            unread_notice_lines.join("\n")
+        );
+        let subj = format!("[worker released — mail filed unread] {}", w.worker_id);
+        let sent_ok = state
+            .hive
+            .lock()
+            .unwrap()
+            .send_message(
+                serde_json::json!({
+                    "to": recipient,
+                    "act": "inform",
+                    "subject": subj,
+                    "body": body,
+                }),
+                "temps",
+            )
+            .is_ok();
+        if sent_ok {
+            deliver_or_enqueue_inner(
+                state,
+                recipient,
+                format!("[HIVE inform from temps] {subj}\n{body}"),
+                None,
+                true,
+            );
+        }
     }
     state.emit("hive:agentArchived", serde_json::json!({ "id": w.worker_id }));
+    state.emit(
+        "projects:changed",
+        crate::routes_fs_git::build_projects_payload(state),
+    );
 }
 
 pub(crate) fn prune_exited_workers(state: &AppState) {
@@ -1064,21 +1325,8 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .unwrap_or("");
-            let cwd_raw = req
-                .get("cwd")
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .unwrap_or("");
-            if objective.is_empty() || cwd_raw.is_empty() {
-                fail_file("missing required 'objective' or 'cwd'");
-                continue;
-            }
-            let cwd_path = expand_tilde(cwd_raw);
-            if cwd_path.starts_with(&projects_root) && !cwd_path.exists() {
-                let _ = std::fs::create_dir_all(&cwd_path);
-            }
-            if !cwd_path.is_dir() {
-                fail_file(&format!("cwd does not exist: {}", cwd_path.display()));
+            if objective.is_empty() {
+                fail_file("missing required 'objective'");
                 continue;
             }
             let base_slug: String = fname
@@ -1100,17 +1348,123 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                 .strip_prefix("worker-")
                 .unwrap_or(&worker_id)
                 .to_string();
+
+            let has_registered_repos = {
+                let mut cfg_store = state.config.lock().unwrap();
+                !cfg_store.read().registered_repos.is_empty()
+            };
+            let clone_of = req
+                .get("cloneOf")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let clone_meta = clone_of.and_then(|cid| {
+                let reg = state.hive.lock().unwrap().registry();
+                let obj = reg.get("agents").and_then(|a| a.get(cid))?;
+                let src_name = obj
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(cid)
+                    .to_string();
+                let src_provider = obj
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let src_model = obj
+                    .get("model")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string);
+                let src_cwd = obj
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .map(expand_tilde)
+                    .filter(|p| p.is_dir());
+                Some((cid.to_string(), src_name, src_provider, src_model, src_cwd))
+            });
+            let clone_cwd = clone_meta.as_ref().and_then(|(_, _, _, _, c)| c.clone());
+            let mut clone_folder: Option<PathBuf> = None;
+            if let Some(ref ccwd) = clone_cwd
+                && !md_git::is_repo_sync(ccwd)
+            {
+                let wt_dir = home.join("worktrees").join(project_folder_name(&worker_id));
+                if std::fs::create_dir_all(&wt_dir).is_ok() {
+                    clone_folder = Some(wt_dir);
+                }
+            }
+
+            let cwd_raw = req
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            let base_cwd = if let Some(ref cf) = clone_folder {
+                cf.clone()
+            } else if let Some(ref ccwd) = clone_cwd {
+                ccwd.clone()
+            } else if !cwd_raw.is_empty() {
+                expand_tilde(cwd_raw)
+            } else if !has_registered_repos {
+                projects_root.join(project_folder_name(&worker_id))
+            } else {
+                fail_file("missing required 'cwd'");
+                continue;
+            };
+            if in_hive_projects(&hive_root, &base_cwd) {
+                if !base_cwd.exists() && std::fs::create_dir_all(&base_cwd).is_err() {
+                    fail_file(&format!("could not create project folder: {}", base_cwd.display()));
+                    continue;
+                }
+                if let Some(top) = hive_project_top_of(&hive_root, &base_cwd) {
+                    let _ = md_git::init_repo_sync(&top, Some("Project folder made by Munder Difflin"));
+                }
+            }
+            if !base_cwd.is_dir() {
+                fail_file(&format!("cwd does not exist: {}", base_cwd.display()));
+                continue;
+            }
+
+            let isolate = clone_folder.is_none()
+                && (clone_cwd.is_some() || req.get("isolate").and_then(|v| v.as_bool()) != Some(false));
+            let explicit_wt = req
+                .get("worktree")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string);
+            let mut created_worktree: Option<PathBuf> = None;
+            let cwd_path = if isolate && explicit_wt.is_none() && md_git::is_repo_sync(&base_cwd) {
+                let wt_dir = home.join("worktrees").join(project_folder_name(&worker_id));
+                let branch = format!("temp/{worker_id}");
+                let base_br = req.get("baseBranch").and_then(|v| v.as_str());
+                if !wt_dir.exists()
+                    && md_git::add_worktree_sync(&base_cwd, &wt_dir, &branch, base_br).is_ok()
+                {
+                    created_worktree = Some(wt_dir.clone());
+                    wt_dir
+                } else {
+                    base_cwd.clone()
+                }
+            } else {
+                base_cwd.clone()
+            };
+            let worktree_val = explicit_wt.or_else(|| {
+                created_worktree
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned())
+            });
             let provider = req
                 .get("provider")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or(&default_provider)
-                .to_string();
+                .map(ToString::to_string)
+                .or_else(|| clone_meta.as_ref().and_then(|(_, _, p, _, _)| p.clone()))
+                .unwrap_or_else(|| default_provider.clone());
             let model_opt = req
                 .get("model")
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
+                .or_else(|| clone_meta.as_ref().and_then(|(_, _, _, m, _)| m.as_deref()))
                 .or(default_subagent_model.as_deref());
             let (cmd_bin, cmd_args, command_str) = match req
                 .get("command")
@@ -1138,8 +1492,9 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                 .get("name")
                 .and_then(|v| v.as_str())
                 .filter(|s| !s.is_empty())
-                .unwrap_or(&worker_id)
-                .to_string();
+                .map(ToString::to_string)
+                .or_else(|| clone_meta.as_ref().map(|(_, sname, _, _, _)| format!("{sname} (temp)")))
+                .unwrap_or_else(|| worker_id.clone());
 
             let mut spawn_opts = SpawnOptions {
                 id: pty_id.clone(),
@@ -1161,10 +1516,16 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                 &name,
                 &provider,
                 false,
-                Some(objective),
+                Some("temp"),
             );
             let spawn_res = state.pty.spawn(spawn_opts);
             if !spawn_res.ok {
+                if let Some(ref wt) = created_worktree {
+                    md_git::remove_worktree_sync(&base_cwd, wt);
+                }
+                if let Some(ref cf) = clone_folder {
+                    let _ = std::fs::remove_dir_all(cf);
+                }
                 fail_file(spawn_res.error.as_deref().unwrap_or("spawn failed"));
                 continue;
             }
@@ -1176,7 +1537,7 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
             let mut entry = Map::new();
             entry.insert("id".to_string(), Value::String(worker_id.clone()));
             entry.insert("name".to_string(), Value::String(name.clone()));
-            entry.insert("role".to_string(), Value::String(objective.to_string()));
+            entry.insert("role".to_string(), Value::String("temp".to_string()));
             entry.insert("provider".to_string(), Value::String(provider.clone()));
             entry.insert("cwd".to_string(), Value::String(cwd_path.to_string_lossy().into_owned()));
             entry.insert("isTemp".to_string(), Value::Bool(true));
@@ -1184,6 +1545,34 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
             entry.insert("sleeping".to_string(), Value::Bool(false));
             entry.insert("stopped".to_string(), Value::Bool(false));
             entry.insert("status".to_string(), Value::String("working".to_string()));
+            entry.insert("startedAt".to_string(), Value::Number(now_ms().into()));
+
+            let hr_str = hive_root.to_string_lossy().into_owned();
+            let cwd_disp = cwd_path.to_string_lossy().into_owned();
+            let clone_line = clone_meta
+                .as_ref()
+                .map(|(cid, sname, _, _, src_cwd)| {
+                    let mem = hive_root
+                        .join("agents")
+                        .join(cid)
+                        .join("memory.md")
+                        .to_string_lossy()
+                        .into_owned();
+                    let ro = if clone_folder.is_some() {
+                        src_cwd
+                            .as_ref()
+                            .map(|p| format!(" Read source repo `{}` without editing it.", p.display()))
+                            .unwrap_or_default()
+                    } else {
+                        String::new()
+                    };
+                    format!("[CLONE OF {sname} (`{cid}`)] Read source memory at `{mem}`.{ro}\n")
+                })
+                .unwrap_or_default();
+            let memory_ctx_line = format!(
+                "[CONTEXT] Before you start, read `{hr_str}/memory-index.md` and read the `memory.md` of any sibling whose role touches your task (read-only; write only your own).\n"
+            );
+            let full_objective = format!("{clone_line}{memory_ctx_line}{objective}");
 
             {
                 let mut hive = state.hive.lock().unwrap();
@@ -1193,7 +1582,7 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                         "to": worker_id,
                         "act": "request",
                         "subject": "Temp objective",
-                        "body": objective,
+                        "body": full_objective,
                     }),
                     &requester,
                 );
@@ -1225,10 +1614,7 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                 token_cap: req.get("tokenCap").and_then(|v| v.as_u64()),
                 has_slack: req.get("slack").is_some(),
                 releasing: false,
-                worktree: req
-                    .get("worktree")
-                    .and_then(|v| v.as_str())
-                    .map(ToString::to_string),
+                worktree: worktree_val,
                 effort: req
                     .get("effort")
                     .and_then(|v| v.as_str())
@@ -1237,6 +1623,10 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
             });
 
             crate::hive_bootstrap::sync_fleet_json(state);
+            state.emit(
+                "projects:changed",
+                crate::routes_fs_git::build_projects_payload(state),
+            );
             state.emit(
                 "hive:agentSpawned",
                 serde_json::json!({
@@ -1249,13 +1639,11 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                     "model": req.get("model").cloned().unwrap_or(Value::Null),
                     "character": req.get("character").cloned().unwrap_or(Value::Null),
                     "accent": req.get("accent").cloned().unwrap_or(Value::Null),
-                    "role": objective,
+                    "role": "temp",
                 }),
             );
-            let hr_str = hive_root.to_string_lossy().into_owned();
-            let cwd_disp = cwd_path.to_string_lossy().into_owned();
             let job_prompt = format!(
-                "[TEMP JOB from {requester}] {objective}\nYour workspace: `{cwd_disp}`\nYour AGENT_ID is `{worker_id}`. Read `{hr_str}/COMMANDS.md` if needed.\nWhen finished, write ONE JSON file to `{hr_str}/agents/{worker_id}/outbox/done-{worker_id}.json` containing:\n{{\"to\":\"{requester}\",\"act\":\"done\",\"subject\":\"Result\",\"body\":\"<concise summary of your findings/files written>\"}}"
+                "{clone_line}{memory_ctx_line}[TEMP JOB from {requester}] {objective}\nYour workspace: `{cwd_disp}`\nYour AGENT_ID is `{worker_id}`. Read `{hr_str}/COMMANDS.md` if needed.\nWhen finished, write ONE JSON file to `{hr_str}/agents/{worker_id}/outbox/done-{worker_id}.json` containing:\n{{\"to\":\"{requester}\",\"act\":\"done\",\"subject\":\"Result\",\"body\":\"<concise summary of your findings/files written>\"}}"
             );
             let st_delayed = state.clone();
             let tid_delayed = worker_id.clone();
@@ -1339,11 +1727,31 @@ fn evaluate_circuit_breaker_tick(state: &AppState) {
     }
 }
 
-fn run_compact_and_clear_requests(state: &AppState) {
+pub(crate) fn run_compact_and_clear_requests(state: &AppState) {
     let Some(home) = state.harness_home() else {
         return;
     };
     let hive_root = home.join("hive");
+    let now = now_ms();
+    let reg = state.hive.lock().unwrap().registry();
+    let agents_map = reg.get("agents").and_then(|v| v.as_object());
+    let (compact_focus, ct_clear_rule) = {
+        let mut store = state.config.lock().unwrap();
+        let cfg = store.read();
+        let ct = crate::routes_catalog::merged_context_trigger(cfg.extra.get("contextTrigger"));
+        let focus = ct
+            .get("compact")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let clear_rule = ct
+            .get("clear")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
+        (focus, clear_rule)
+    };
+
     for (dir_name, is_clear) in [("compact-requests", false), ("clear-requests", true)] {
         let dir = hive_root.join(dir_name);
         let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1383,11 +1791,57 @@ fn run_compact_and_clear_requests(state: &AppState) {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| fname.trim_end_matches(".json"));
+            let agent_info = agents_map.and_then(|m| m.get(agent_id));
+            let known = agent_info.is_some_and(|a| {
+                !a.get("archived").and_then(|x| x.as_bool()).unwrap_or(false)
+            });
+            let sleeping = agent_info
+                .and_then(|a| a.get("sleeping"))
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            let provider = agent_info
+                .and_then(|a| a.get("provider"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("claude");
             let pty_id = format!("pty-{agent_id}");
-            if state.pty.info(&pty_id).is_none() {
+            let live = state.pty.info(&pty_id).is_some();
+
+            if !is_clear {
+                if sleeping {
+                    fail("agent is sleeping; nothing to compact");
+                    continue;
+                }
+                if !live
+                    && known
+                    && let Some(info) = agent_info.and_then(|v| v.as_object())
+                    && !info.get("isTemp").and_then(|v| v.as_bool()).unwrap_or(false)
+                    && wake_agent_pty(state, agent_id, info)
+                {
+                    continue;
+                }
+                let can_compact = compaction_command_for_provider(provider, &compact_focus).is_some();
+                if let Some(reason) = state
+                    .asked_compact
+                    .lock()
+                    .unwrap()
+                    .refusal(agent_id, known, live, can_compact, now)
+                {
+                    fail(reason);
+                    continue;
+                }
+                state.asked_compact.lock().unwrap().ask(agent_id, now);
+            } else if !live {
+                if known
+                    && let Some(info) = agent_info.and_then(|v| v.as_object())
+                    && !info.get("isTemp").and_then(|v| v.as_bool()).unwrap_or(false)
+                    && wake_agent_pty(state, agent_id, info)
+                {
+                    continue;
+                }
                 fail("agent PTY is not live");
                 continue;
             }
+
             let done = dir.join(".done");
             let _ = std::fs::create_dir_all(&done);
             let _ = std::fs::rename(&path, done.join(&fname));
@@ -1398,33 +1852,33 @@ fn run_compact_and_clear_requests(state: &AppState) {
                 "reason": v.get("reason").and_then(|r| r.as_str()).unwrap_or(""),
             }));
             if is_clear {
-                let rule = crate::routes_catalog::merged_context_trigger(
-                    state
-                        .config
-                        .lock()
-                        .unwrap()
-                        .read()
-                        .extra
-                        .get("contextTrigger"),
-                )
-                .get("clear")
-                .cloned()
-                .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
                 state.emit(
                     "context:trigger",
-                    serde_json::json!({ "action": "clear", "rule": rule }),
+                    serde_json::json!({ "action": "clear", "rule": ct_clear_rule }),
                 );
-                if state.events_tx.receiver_count() == 0 {
-                    deliver_or_enqueue(state, agent_id, "/new".to_string(), None);
+                if state.events_tx.receiver_count() == 0
+                    && let Some(cmd) = clear_command_for_provider(provider)
+                {
+                    deliver_or_enqueue(state, agent_id, cmd.to_string(), Some(provider));
                 }
-            } else {
-                state.emit(
-                    "hive:compactAsked",
-                    serde_json::json!({ "agentId": agent_id }),
-                );
-                if state.events_tx.receiver_count() == 0 {
-                    deliver_or_enqueue(state, agent_id, "/compact".to_string(), None);
-                }
+            }
+        }
+    }
+
+    let waiting = state.asked_compact.lock().unwrap().waiting();
+    for agent_id in waiting {
+        state.emit(
+            "hive:compactAsked",
+            serde_json::json!({ "agentId": agent_id }),
+        );
+        if state.events_tx.receiver_count() == 0 {
+            let provider = agents_map
+                .and_then(|m| m.get(&agent_id))
+                .and_then(|a| a.get("provider"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("claude");
+            if let Some(cmd) = compaction_command_for_provider(provider, &compact_focus) {
+                deliver_or_enqueue(state, &agent_id, cmd, Some(provider));
             }
         }
     }
@@ -1592,11 +2046,25 @@ fn run_context_trigger_tick(
             .get("minContextPctLargeWindow")
             .and_then(|v| v.as_u64())
             .unwrap_or(30);
+        let focus_msg = compact_rule
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let reg = state.hive.lock().unwrap().registry();
+        let agents_map = reg.get("agents").and_then(|v| v.as_object());
         let contexts = state.hooks.context_by_id.lock().unwrap().clone();
         for (aid, snap) in contexts {
             if snap.limit == 0 || snap.tokens == 0 {
                 continue;
             }
+            let provider = agents_map
+                .and_then(|m| m.get(&aid))
+                .and_then(|a| a.get("provider"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("claude");
+            let Some(cmd) = compaction_command_for_provider(provider, focus_msg) else {
+                continue;
+            };
             let bar_pct = if snap.limit >= 600_000 { pct_large } else { pct_std };
             if bar_pct > 0 && snap.tokens.saturating_mul(100) >= snap.limit.saturating_mul(bar_pct) {
                 let prev_a = last_pressure_compact.get(&aid).copied().unwrap_or(0);
@@ -1607,7 +2075,7 @@ fn run_context_trigger_tick(
                         serde_json::json!({ "agentId": aid }),
                     );
                     if state.events_tx.receiver_count() == 0 {
-                        deliver_or_enqueue(state, &aid, "/compact".to_string(), None);
+                        deliver_or_enqueue(state, &aid, cmd, Some(provider));
                     }
                 }
             }
@@ -1979,8 +2447,7 @@ fn run_worker_wake_tick(state: &AppState, last_wake_by_agent: &mut HashMap<Strin
         last_wake_by_agent.insert(agent_id.clone(), now);
         let st_clone = state.clone();
         let aid = agent_id.clone();
-        let clear_cmd = switch_clear_command(&provider);
-        let wake_work = oldest_waking_work(&pending);
+        let prov_done = provider.clone();
         tokio::spawn(async move {
             if !probe_terminal_safe(&st_clone, &pty_id).await {
                 st_clone.switch_clear.lock().unwrap().abandon(&aid);
@@ -2011,34 +2478,52 @@ fn run_worker_wake_tick(state: &AppState, last_wake_by_agent: &mut HashMap<Strin
                 )
                 .await
             {
-                let done_at = now_ms();
-                let to_file = st_clone.wake_filing.lock().unwrap().note_typed(
+                note_agent_prompt_submitted(
+                    &st_clone,
                     &aid,
                     &wake_text,
                     &res.outcome,
                     res.ms,
                     false,
-                    done_at,
-                );
-                if !to_file.is_empty() {
-                    st_clone.sync_hive_home();
-                    let _ = st_clone
-                        .hive
-                        .lock()
-                        .unwrap()
-                        .file_inbox_messages(&aid, &to_file);
-                }
-                let kind = typed_kind(&wake_text, clear_cmd);
-                st_clone.switch_clear.lock().unwrap().note_typed(
-                    Some(&aid),
-                    kind,
-                    &res.outcome,
-                    false,
-                    wake_work,
-                    done_at,
+                    Some(&prov_done),
                 );
             }
         });
+    }
+}
+
+pub(crate) fn process_outboxes_tick(state: &AppState) {
+    state.sync_hive_home();
+    let routed = state.hive.lock().unwrap().drain_outboxes();
+    for msg in routed {
+        state.emit("hive:message", msg.clone());
+        let from = msg.get("from").and_then(|v| v.as_str()).unwrap_or("agent");
+        let act = msg.get("act").and_then(|v| v.as_str()).unwrap_or("inform");
+        let subject = msg.get("subject").and_then(|v| v.as_str()).unwrap_or("");
+        let body = msg.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(targets) = msg.get("targets").and_then(|v| v.as_array()) {
+            for t in targets {
+                if let Some(tid) = t.as_str() {
+                    let text = format!("[HIVE {act} from {from}] {subject}\n{body}")
+                        .trim()
+                        .to_string();
+                    deliver_or_enqueue_inner(state, tid, text, None, true);
+                }
+            }
+        }
+        if from.starts_with("worker-") && act == "done" {
+            let done_worker = {
+                let mut workers = state.workers.lock().unwrap();
+                workers
+                    .iter()
+                    .position(|w| w.worker_id == from)
+                    .map(|idx| workers.remove(idx))
+            };
+            if let Some(w) = done_worker {
+                finish_worker_record(state, w, "done", true);
+                crate::hive_bootstrap::sync_fleet_json(state);
+            }
+        }
     }
 }
 
@@ -2052,39 +2537,9 @@ pub fn spawn_hive_poller(state: AppState) {
         loop {
             interval.tick().await;
             ticks += 1;
-            state.sync_hive_home();
-            let routed = state.hive.lock().unwrap().drain_outboxes();
-            for msg in routed {
-                state.emit("hive:message", msg.clone());
-                let from = msg.get("from").and_then(|v| v.as_str()).unwrap_or("agent");
-                let act = msg.get("act").and_then(|v| v.as_str()).unwrap_or("inform");
-                let subject = msg.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-                let body = msg.get("body").and_then(|v| v.as_str()).unwrap_or("");
-                if let Some(targets) = msg.get("targets").and_then(|v| v.as_array()) {
-                    for t in targets {
-                        if let Some(tid) = t.as_str() {
-                            let text = format!("[HIVE {act} from {from}] {subject}\n{body}")
-                                .trim()
-                                .to_string();
-                            deliver_or_enqueue_inner(&state, tid, text, None, true);
-                        }
-                    }
-                }
-                if from.starts_with("worker-") && act == "done" {
-                    let done_worker = {
-                        let mut workers = state.workers.lock().unwrap();
-                        workers
-                            .iter()
-                            .position(|w| w.worker_id == from)
-                            .map(|idx| workers.remove(idx))
-                    };
-                    if let Some(w) = done_worker {
-                        finish_worker_record(&state, w, "done", true);
-                        crate::hive_bootstrap::sync_fleet_json(&state);
-                    }
-                }
-            }
+            process_outboxes_tick(&state);
             process_spawn_requests(&state);
+            process_hire_requests(&state);
             prune_exited_workers(&state);
             if ticks.is_multiple_of(4) {
                 run_wake_filing_quiet_tick(&state);
@@ -2122,105 +2577,154 @@ fn default_screen_lines() -> usize {
     40
 }
 
+fn wake_agent_pty(state: &AppState, agent_id: &str, info: &Map<String, Value>) -> bool {
+    let pty_id = format!("pty-{agent_id}");
+    if state.pty.info(&pty_id).is_some() {
+        return true;
+    }
+    let cwd = info
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(ToString::to_string)
+        .or_else(|| state.harness_home().map(|h| h.to_string_lossy().into_owned()))
+        .unwrap_or_default();
+    let provider = info
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .unwrap_or("opencode")
+        .to_string();
+    let model = info.get("model").and_then(|v| v.as_str());
+    let name = info
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(agent_id)
+        .to_string();
+    let role = info.get("role").and_then(|v| v.as_str());
+    let (cmd_bin, cmd_args) = provider_default_command(&provider, model);
+    let cmd_str = if cmd_args.is_empty() {
+        cmd_bin.clone()
+    } else {
+        format!("{cmd_bin} {}", cmd_args.join(" "))
+    };
+    let mut spawn_opts = SpawnOptions {
+        id: pty_id.clone(),
+        cwd: cwd.clone(),
+        command: cmd_bin,
+        args: cmd_args,
+        cols: Some(100),
+        rows: Some(30),
+        env: HashMap::new(),
+        shell_script: None,
+        provider: Some(provider.clone()),
+        resume: Some(false),
+        hive: None,
+    };
+    let is_god = info
+        .get("isGod")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || agent_id == "god";
+    let seed = crate::hive_bootstrap::prepare_agent_spawn(
+        state,
+        &mut spawn_opts,
+        agent_id,
+        &name,
+        &provider,
+        is_god,
+        role,
+    );
+    let res = state.pty.spawn(spawn_opts);
+    if !res.ok {
+        return false;
+    }
+    state.ended_agents.lock().unwrap().remove(agent_id);
+    state.emit(
+        "hive:agentSpawned",
+        serde_json::json!({
+            "id": agent_id,
+            "ptyId": pty_id,
+            "name": name,
+            "cwd": cwd,
+            "command": cmd_str,
+            "provider": provider,
+            "role": role,
+        }),
+    );
+    if let Some(s) = seed {
+        let st_clone = state.clone();
+        let aid = agent_id.to_string();
+        let prov = provider;
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            deliver_or_enqueue(&st_clone, &aid, s, Some(&prov));
+        });
+    }
+    true
+}
+
 async fn hive_wake(State(state): State<AppState>, Json(req): Json<WakeReq>) -> Json<Value> {
     state.sync_hive_home();
     let pty_id = format!("pty-{}", req.agent_id);
     let was_live = state.pty.info(&pty_id).is_some();
-    let agent_info = {
+
+    let (is_archived_or_ended, agent_info) = {
+        let home = state.harness_home();
+        let archived_in_roster = state
+            .roster
+            .lock()
+            .unwrap()
+            .read(home.as_deref())
+            .map(|snap| {
+                snap.archived
+                    .iter()
+                    .any(|a| a.get("id").and_then(|v| v.as_str()) == Some(req.agent_id.as_str()))
+                    || snap.agents.iter().any(|a| {
+                        a.get("id").and_then(|v| v.as_str()) == Some(req.agent_id.as_str())
+                            && a.get("archived").and_then(|v| v.as_bool()).unwrap_or(false)
+                    })
+            })
+            .unwrap_or(false);
+        let ended = state.ended_agents.lock().unwrap().contains_key(&req.agent_id);
+
         let mut hive = state.hive.lock().unwrap();
-        let _ = hive.patch_agent_field(&req.agent_id, "sleeping", Some(Value::Bool(false)));
-        let _ = hive.patch_agent_field(&req.agent_id, "stopped", Some(Value::Bool(false)));
-        let _ = hive.patch_agent_field(
-            &req.agent_id,
-            "status",
-            Some(Value::String("idle".to_string())),
-        );
-        hive.registry()
+        let reg = hive.registry();
+        let reg_entry = reg
             .get("agents")
             .and_then(|a| a.get(&req.agent_id))
             .and_then(|v| v.as_object())
-            .cloned()
+            .cloned();
+        let archived_in_reg = reg_entry
+            .as_ref()
+            .and_then(|o| o.get("archived"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let is_god = req.agent_id == "god"
+            || reg_entry
+                .as_ref()
+                .and_then(|o| o.get("isGod"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+        let blocked = !is_god && (archived_in_roster || archived_in_reg || ended);
+        if !blocked {
+            let _ = hive.patch_agent_field(&req.agent_id, "sleeping", Some(Value::Bool(false)));
+            let _ = hive.patch_agent_field(&req.agent_id, "stopped", Some(Value::Bool(false)));
+            let _ = hive.patch_agent_field(
+                &req.agent_id,
+                "status",
+                Some(Value::String("idle".to_string())),
+            );
+        }
+        (blocked, reg_entry)
     };
+
+    if is_archived_or_ended {
+        return Json(serde_json::json!({ "ok": false, "skipped": "archived" }));
+    }
 
     if !was_live
         && let Some(ref info) = agent_info
     {
-        let cwd = info
-            .get("cwd")
-            .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-            .or_else(|| state.harness_home().map(|h| h.to_string_lossy().into_owned()))
-            .unwrap_or_default();
-        let provider = info
-            .get("provider")
-            .and_then(|v| v.as_str())
-            .unwrap_or("opencode")
-            .to_string();
-        let model = info.get("model").and_then(|v| v.as_str());
-        let name = info
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or(&req.agent_id)
-            .to_string();
-        let role = info.get("role").and_then(|v| v.as_str());
-        let (cmd_bin, cmd_args) = provider_default_command(&provider, model);
-        let cmd_str = if cmd_args.is_empty() {
-            cmd_bin.clone()
-        } else {
-            format!("{cmd_bin} {}", cmd_args.join(" "))
-        };
-        let mut spawn_opts = SpawnOptions {
-            id: pty_id.clone(),
-            cwd: cwd.clone(),
-            command: cmd_bin,
-            args: cmd_args,
-            cols: Some(100),
-            rows: Some(30),
-            env: HashMap::new(),
-            shell_script: None,
-            provider: Some(provider.clone()),
-            resume: Some(false),
-            hive: None,
-        };
-        let is_god = info
-            .get("isGod")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-            || req.agent_id == "god";
-        let seed = crate::hive_bootstrap::prepare_agent_spawn(
-            &state,
-            &mut spawn_opts,
-            &req.agent_id,
-            &name,
-            &provider,
-            is_god,
-            role,
-        );
-        let res = state.pty.spawn(spawn_opts);
-        if res.ok {
-            state.ended_agents.lock().unwrap().remove(&req.agent_id);
-            state.emit(
-                "hive:agentSpawned",
-                serde_json::json!({
-                    "id": req.agent_id,
-                    "ptyId": pty_id,
-                    "name": name,
-                    "cwd": cwd,
-                    "command": cmd_str,
-                    "provider": provider,
-                    "role": role,
-                }),
-            );
-            if let Some(s) = seed {
-                let st_clone = state.clone();
-                let aid = req.agent_id.clone();
-                let prov = provider.clone();
-                tokio::spawn(async move {
-                    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-                    deliver_or_enqueue(&st_clone, &aid, s, Some(&prov));
-                });
-            }
-        }
+        wake_agent_pty(&state, &req.agent_id, info);
     }
 
     // When called by a connected UI (`enqueueMessage` calls `wakeAgent` unconditionally),
@@ -2365,6 +2869,375 @@ async fn pty_screen_lines(
     Json(serde_json::json!({ "ok": true, "lines": lines }))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct HireDoneReq {
+    req_id: String,
+    answer: Option<Value>,
+}
+
+fn file_hire_result(dir: &std::path::Path, src: &std::path::Path, sub: &str, name: &str, body: &Value) {
+    let target_dir = dir.join(sub);
+    let _ = std::fs::create_dir_all(&target_dir);
+    let _ = std::fs::write(
+        target_dir.join(name),
+        serde_json::to_string_pretty(body).unwrap_or_default(),
+    );
+    let _ = std::fs::remove_file(src);
+}
+
+fn inform_god_hire(state: &AppState, subject: &str, body: &str) {
+    state.sync_hive_home();
+    let msg = serde_json::json!({
+        "to": "god",
+        "act": "inform",
+        "subject": subject,
+        "body": body,
+    });
+    if let Ok(saved) = state.hive.lock().unwrap().send_message(msg, "app") {
+        state.emit("hive:message", saved);
+        let text = format!("[HIRE] {subject}\n{body}");
+        deliver_or_enqueue_inner(state, "god", text, None, true);
+    }
+}
+
+pub(crate) fn process_hire_requests(state: &AppState) {
+    let Some(home) = state.harness_home() else {
+        return;
+    };
+    let hive_root = home.join("hive");
+    let dir = hive_root.join("hire-requests");
+    if !dir.is_dir() {
+        return;
+    }
+
+    let now = now_ms();
+    // Clean expired or orphaned inflight requests
+    let inflight_timed_out = {
+        let mut guard = state.hire_inflight.lock().unwrap();
+        if let Some(ref cur) = *guard {
+            if now.saturating_sub(cur.started_at) >= 300_000 {
+                guard.take()
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+    if let Some(cur) = inflight_timed_out {
+        let raw_val: Value = std::fs::read_to_string(&cur.file_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or(Value::Null);
+        let err = "the app window did not add the agent in 5 minutes";
+        file_hire_result(
+            &dir,
+            &cur.file_path,
+            ".failed",
+            &format!("{}.json", cur.req_id),
+            &serde_json::json!({ "error": err, "request": raw_val }),
+        );
+        inform_god_hire(state, &format!("Hire request {} failed", cur.req_id), err);
+    }
+
+    if state.hire_inflight.lock().unwrap().is_none()
+        && let Ok(entries) = std::fs::read_dir(&dir)
+    {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let fname = entry.file_name().to_string_lossy().into_owned();
+            if fname.starts_with(".inflight-") && fname.ends_with(".json") && p.is_file() {
+                let req_id = fname
+                    .trim_start_matches(".inflight-")
+                    .trim_end_matches(".json")
+                    .to_string();
+                let raw_val: Value = std::fs::read_to_string(&p)
+                    .ok()
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or(Value::Null);
+                file_hire_result(
+                    &dir,
+                    &p,
+                    ".failed",
+                    &format!("{req_id}.json"),
+                    &serde_json::json!({
+                        "error": "the app stopped while this agent was being added",
+                        "request": raw_val
+                    }),
+                );
+            }
+        }
+    }
+
+    if state.hire_inflight.lock().unwrap().is_some() {
+        return;
+    }
+    let (may_add, registered_repos) = {
+        let mut cfg_store = state.config.lock().unwrap();
+        let cfg = cfg_store.read();
+        let may = cfg
+            .extra
+            .get("orchestratorMayAddLasting")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        (may, cfg.registered_repos)
+    };
+    if !may_add
+        || !state.hire_runner_ready.load(std::sync::atomic::Ordering::Relaxed)
+        || state.events_tx.receiver_count() == 0
+    {
+        return;
+    }
+
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.is_file()
+                && p.extension().and_then(|s| s.to_str()) == Some("json")
+                && !p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with('.'))
+        })
+        .collect();
+    files.sort();
+    let Some(file) = files.into_iter().next() else {
+        return;
+    };
+    let fname = file
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "hire.json".to_string());
+    let req_id = fname.trim_end_matches(".json").to_string();
+    let raw_text = match std::fs::read_to_string(&file) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let raw_val: Value = match serde_json::from_str(&raw_text) {
+        Ok(v) => v,
+        Err(_) => {
+            file_hire_result(
+                &dir,
+                &file,
+                ".failed",
+                &fname,
+                &serde_json::json!({ "error": "invalid JSON in hire request" }),
+            );
+            return;
+        }
+    };
+    if dir.join(".done").join(&fname).is_file() {
+        let err = "a request with this id was run before; give a new request a new file name";
+        file_hire_result(
+            &dir,
+            &file,
+            ".failed",
+            &fname,
+            &serde_json::json!({ "error": err, "request": raw_val }),
+        );
+        inform_god_hire(state, &format!("Hire request {req_id} rejected"), err);
+        return;
+    }
+    let name = raw_val
+        .get("name")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("");
+    if name.is_empty() {
+        let err = "the file names no agent";
+        file_hire_result(
+            &dir,
+            &file,
+            ".failed",
+            &fname,
+            &serde_json::json!({ "error": err, "request": raw_val }),
+        );
+        inform_god_hire(state, &format!("Hire request {req_id} rejected"), err);
+        return;
+    }
+
+    let reg = state.hive.lock().unwrap().registry();
+    let base_id = project_folder_name(name);
+    let mut agent_id = base_id.clone();
+    let mut n = 2usize;
+    while reg
+        .get("agents")
+        .and_then(|a| a.get(&agent_id))
+        .is_some()
+        || state.pty.info(&format!("pty-{agent_id}")).is_some()
+    {
+        agent_id = format!("{base_id}-{n}");
+        n += 1;
+    }
+
+    let cfg_obj = raw_val.get("configs");
+    let mut folder: Option<String> = None;
+    if let Some(cwd_str) = raw_val.get("cwd").and_then(|v| v.as_str()).map(str::trim)
+        && !cwd_str.is_empty()
+    {
+        let expanded = expand_tilde(cwd_str);
+        let allowed_registered = registered_repos.iter().any(|r| expand_tilde(r) == expanded);
+        let allowed_project = in_hive_projects(&hive_root, &expanded);
+        if !allowed_registered && !allowed_project {
+            let err = format!(
+                "the folder {cwd_str} is not in registeredRepos nor under hive/projects"
+            );
+            file_hire_result(
+                &dir,
+                &file,
+                ".failed",
+                &fname,
+                &serde_json::json!({ "error": err, "request": raw_val }),
+            );
+            inform_god_hire(state, &format!("Hire request {req_id} rejected"), &err);
+            return;
+        }
+        if allowed_project {
+            let _ = std::fs::create_dir_all(&expanded);
+            if let Some(top) = hive_project_top_of(&hive_root, &expanded) {
+                let _ = md_git::init_repo_sync(&top, Some("Project folder made by Munder Difflin"));
+            }
+        }
+        folder = Some(expanded.to_string_lossy().into_owned());
+    } else if registered_repos.is_empty() {
+        let default_dir = hive_root.join("projects").join(&agent_id);
+        let _ = std::fs::create_dir_all(&default_dir);
+        let _ = md_git::init_repo_sync(&default_dir, Some("Project folder made by Munder Difflin"));
+        folder = Some(default_dir.to_string_lossy().into_owned());
+    }
+
+    let claimed = dir.join(format!(".inflight-{fname}"));
+    if std::fs::rename(&file, &claimed).is_err() {
+        return;
+    }
+
+    let mut card = serde_json::Map::new();
+    card.insert("name".to_string(), Value::String(name.to_string()));
+    if let Some(c) = cfg_obj.and_then(|v| v.as_object()) {
+        for key in ["role", "goal", "character", "accent", "provider", "model", "commandFlags", "capabilities"] {
+            if let Some(val) = c.get(key)
+                && !val.is_null()
+            {
+                card.insert(key.to_string(), val.clone());
+            }
+        }
+        let isolate = c.get("isolate").and_then(|v| v.as_bool()).unwrap_or(true);
+        card.insert("isolate".to_string(), Value::Bool(isolate));
+    } else {
+        card.insert("isolate".to_string(), Value::Bool(true));
+    }
+
+    *state.hire_inflight.lock().unwrap() = Some(crate::state::HireInflight {
+        req_id: req_id.clone(),
+        file_path: claimed,
+        agent_id: agent_id.clone(),
+        name: name.to_string(),
+        started_at: now,
+    });
+    let mut job = serde_json::json!({
+        "reqId": req_id,
+        "agentId": agent_id,
+        "card": Value::Object(card),
+    });
+    if let Some(cwd_val) = folder {
+        job.as_object_mut()
+            .unwrap()
+            .insert("cwd".to_string(), Value::String(cwd_val));
+    }
+    state.emit("hire:request", job);
+}
+
+async fn hire_runner_ready(State(state): State<AppState>) -> Json<Value> {
+    state
+        .hire_runner_ready
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    Json(serde_json::json!({ "ok": true }))
+}
+
+async fn hire_request_done(
+    State(state): State<AppState>,
+    Json(req): Json<HireDoneReq>,
+) -> Json<Value> {
+    let inflight = {
+        let mut guard = state.hire_inflight.lock().unwrap();
+        if guard.as_ref().is_some_and(|c| c.req_id == req.req_id) {
+            guard.take()
+        } else {
+            None
+        }
+    };
+    let Some(cur) = inflight else {
+        return Json(serde_json::json!({ "ok": false, "error": "no matching inflight hire request" }));
+    };
+    let Some(home) = state.harness_home() else {
+        return Json(serde_json::json!({ "ok": false, "error": "no harnessHome" }));
+    };
+    let dir = home.join("hive").join("hire-requests");
+    let raw_val: Value = std::fs::read_to_string(&cur.file_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or(Value::Null);
+    let ok = req
+        .answer
+        .as_ref()
+        .and_then(|a| a.get("ok"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if ok {
+        file_hire_result(
+            &dir,
+            &cur.file_path,
+            ".done",
+            &format!("{}.json", cur.req_id),
+            &serde_json::json!({
+                "agentId": cur.agent_id,
+                "name": cur.name,
+                "request": raw_val,
+            }),
+        );
+        state.emit(
+            "projects:changed",
+            crate::routes_fs_git::build_projects_payload(&state),
+        );
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "hire-request-done",
+            "reqId": cur.req_id,
+            "agentId": cur.agent_id,
+            "name": cur.name,
+        }));
+        inform_god_hire(
+            &state,
+            &format!("Hired {} ({})", cur.name, cur.agent_id),
+            &format!("Agent `{}` (`{}`) has been added to the floor.", cur.name, cur.agent_id),
+        );
+    } else {
+        let err = req
+            .answer
+            .as_ref()
+            .and_then(|a| a.get("error"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("the start was refused");
+        file_hire_result(
+            &dir,
+            &cur.file_path,
+            ".failed",
+            &format!("{}.json", cur.req_id),
+            &serde_json::json!({
+                "error": err,
+                "request": raw_val,
+            }),
+        );
+        inform_god_hire(&state, &format!("Hire request {} failed", cur.req_id), err);
+    }
+    Json(serde_json::json!({ "ok": true }))
+}
+
 pub fn hive_router() -> Router<AppState> {
     Router::new()
         .route("/hook/{agent_id}", post(handle_hook))
@@ -2410,4 +3283,6 @@ pub fn hive_router() -> Router<AppState> {
         .route("/api/v1/workers", get(workers_list))
         .route("/api/v1/workers/history", get(workers_history))
         .route("/api/v1/workers/{id}/stop", post(worker_stop))
+        .route("/api/v1/hive/hire-runner-ready", post(hire_runner_ready))
+        .route("/api/v1/hive/hire-done", post(hire_request_done))
 }

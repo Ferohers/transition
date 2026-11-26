@@ -17,6 +17,97 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
+use std::time::SystemTime;
+
+type OcLimitsEntry = (PathBuf, Option<SystemTime>, HashMap<String, u64>);
+
+static OC_LIMITS_CACHE: Mutex<Option<OcLimitsEntry>> = Mutex::new(None);
+
+fn parse_opencode_models_json(raw: &str) -> HashMap<String, u64> {
+    let mut map = HashMap::new();
+    let Ok(Value::Object(providers)) = serde_json::from_str::<Value>(raw) else {
+        return map;
+    };
+    for (prov_id, prov_val) in &providers {
+        let Some(models) = prov_val.get("models").and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for (model_id, model_val) in models {
+            let Some(ctx_limit) = model_val
+                .get("limit")
+                .and_then(|l| l.get("context"))
+                .and_then(|v| v.as_u64())
+                .filter(|&n| n > 0)
+            else {
+                continue;
+            };
+            map.insert(format!("{prov_id}/{model_id}"), ctx_limit);
+            if prov_id == "opencode" || prov_id == "anthropic" || !map.contains_key(model_id) {
+                map.insert(model_id.clone(), ctx_limit);
+            }
+        }
+    }
+    map
+}
+
+pub(crate) fn opencode_model_context_limit_from_path(
+    models_path: &std::path::Path,
+    provider_id: Option<&str>,
+    model_id: &str,
+) -> u64 {
+    let mtime = std::fs::metadata(models_path).and_then(|m| m.modified()).ok();
+    let mut cache = OC_LIMITS_CACHE.lock().unwrap();
+    let stale = match cache.as_ref() {
+        Some((p, t, _)) => p != models_path || *t != mtime,
+        None => true,
+    };
+    if stale {
+        let parsed = std::fs::read_to_string(models_path)
+            .map(|s| parse_opencode_models_json(&s))
+            .unwrap_or_default();
+        *cache = Some((models_path.to_path_buf(), mtime, parsed));
+    }
+    let map = &cache.as_ref().unwrap().2;
+    let trimmed = model_id.trim();
+    if let Some(prov) = provider_id.map(str::trim).filter(|s| !s.is_empty())
+        && let Some(&limit) = map.get(&format!("{prov}/{trimmed}"))
+    {
+        return limit;
+    }
+    if let Some(&limit) = map.get(trimmed) {
+        return limit;
+    }
+    if let Some((_, short)) = trimmed.split_once('/')
+        && let Some(&limit) = map.get(short)
+    {
+        return limit;
+    }
+    if trimmed.to_ascii_lowercase().contains("1m") {
+        1_000_000
+    } else {
+        200_000
+    }
+}
+
+pub(crate) fn opencode_model_context_limit(provider_id: Option<&str>, model_id: &str) -> u64 {
+    let cache_base = std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|h| h.join(".cache")));
+    let Some(base) = cache_base else {
+        return if model_id.to_ascii_lowercase().contains("1m") {
+            1_000_000
+        } else {
+            200_000
+        };
+    };
+    opencode_model_context_limit_from_path(
+        &base.join("opencode").join("models.json"),
+        provider_id,
+        model_id,
+    )
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -251,23 +342,52 @@ fn resolve_kg_root(state: &AppState) -> (PathBuf, bool) {
     (root, enabled)
 }
 
-pub(crate) fn read_opencode_usage(
+pub(crate) fn read_opencode_usage_for_since(
     cwd: &str,
+    session_id: Option<&str>,
+    allow_cwd_fallback: bool,
+    min_updated_ms: Option<u64>,
 ) -> Option<(md_hive::usage::AgentUsage, Option<u64>)> {
     let home = dirs::home_dir()?;
     let db_path = home.join(".local").join("share").join("opencode").join("opencode.db");
+    read_opencode_usage_from_db(&db_path, cwd, session_id, allow_cwd_fallback, min_updated_ms)
+}
+
+fn read_opencode_usage_from_db(
+    db_path: &std::path::Path,
+    cwd: &str,
+    session_id: Option<&str>,
+    allow_cwd_fallback: bool,
+    min_updated_ms: Option<u64>,
+) -> Option<(md_hive::usage::AgentUsage, Option<u64>)> {
     if !db_path.is_file() {
         return None;
     }
     let flags =
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
-    let conn = rusqlite::Connection::open_with_flags(&db_path, flags).ok()?;
-    let mut stmt = conn
-        .prepare("SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1")
-        .ok()?;
-    let (ses_id, ses_updated): (String, i64) = stmt
-        .query_row([cwd], |r| Ok((r.get(0)?, r.get(1)?)))
-        .ok()?;
+    let conn = rusqlite::Connection::open_with_flags(db_path, flags).ok()?;
+    let (ses_id, ses_updated): (String, i64) = if let Some(sid) = session_id.filter(|s| !s.is_empty())
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, time_updated FROM session WHERE id = ?1 LIMIT 1")
+            .ok()?;
+        stmt.query_row([sid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?
+    } else if allow_cwd_fallback && !cwd.is_empty() {
+        if let Some(min_ms) = min_updated_ms {
+            let cutoff = i64::try_from(min_ms.saturating_sub(5_000)).unwrap_or(i64::MAX);
+            let mut stmt = conn
+                .prepare("SELECT id, time_updated FROM session WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 1")
+                .ok()?;
+            stmt.query_row(rusqlite::params![cwd, cutoff], |r| Ok((r.get(0)?, r.get(1)?))).ok()?
+        } else {
+            let mut stmt = conn
+                .prepare("SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1")
+                .ok()?;
+            stmt.query_row([cwd], |r| Ok((r.get(0)?, r.get(1)?))).ok()?
+        }
+    } else {
+        return None;
+    };
 
     let mut msg_stmt = conn
         .prepare("SELECT data, time_created FROM message WHERE session_id = ?1 ORDER BY time_created ASC")
@@ -315,22 +435,63 @@ pub(crate) fn read_opencode_usage(
             usage.output_tokens = usage.output_tokens.saturating_add(out);
             usage.cache_write_tokens = usage.cache_write_tokens.saturating_add(cw);
             usage.cache_read_tokens = usage.cache_read_tokens.saturating_add(cr);
-            if let Some(total) = t.get("total").and_then(|x| x.as_u64()) {
-                latest_context = Some(total);
-            } else {
-                latest_context = Some(inp.saturating_add(cr).saturating_add(out));
+            let step_done = v
+                .get("time")
+                .and_then(|tm| tm.get("completed"))
+                .is_some_and(|x| !x.is_null())
+                || v.get("finish").and_then(|x| x.as_str()).is_some_and(|s| !s.is_empty());
+            if step_done {
+                if let Some(total) = t.get("total").and_then(|x| x.as_u64()).filter(|&n| n > 0) {
+                    latest_context = Some(total);
+                } else {
+                    let sum = inp.saturating_add(cr).saturating_add(out).saturating_add(cw);
+                    if sum > 0 {
+                        latest_context = Some(sum);
+                    }
+                }
             }
         }
     }
     Some((usage, latest_context))
 }
 
-async fn usage_agent(Query(q): Query<UsageQuery>) -> Json<Value> {
+async fn usage_agent(State(state): State<AppState>, Query(q): Query<UsageQuery>) -> Json<Value> {
     let root = default_projects_root();
-    let res = read_agent_usage_in(&root, &q.cwd, q.session_id.as_deref());
+    let expanded_cwd = expand_tilde(&q.cwd).to_string_lossy().into_owned();
+    let (hook_sid, started_at): (Option<String>, Option<u64>) = {
+        let reg = state.hive.lock().unwrap().registry();
+        let sessions = state.hooks.session_by_id.lock().unwrap().clone();
+        let mut matched = (None, None);
+        if let Some(agents) = reg.get("agents").and_then(|v| v.as_object()) {
+            for (aid, info) in agents {
+                if info.get("archived").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    continue;
+                }
+                let acwd = info
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .map(expand_tilde)
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                if acwd == expanded_cwd {
+                    matched = (
+                        sessions.get(aid).cloned(),
+                        info.get("startedAt").and_then(|v| v.as_u64()),
+                    );
+                    if aid == "god" {
+                        break;
+                    }
+                }
+            }
+        }
+        matched
+    };
+    let eff_sid = q.session_id.as_deref().or(hook_sid.as_deref());
+    let res = read_agent_usage_in(&root, &q.cwd, eff_sid);
     let total = res.input_tokens + res.output_tokens + res.cache_read_tokens + res.cache_write_tokens;
     if total == 0
-        && let Some((oc, _)) = read_opencode_usage(&q.cwd)
+        && let Some((oc, _)) =
+            read_opencode_usage_for_since(&expanded_cwd, eff_sid, true, started_at)
     {
         return Json(serde_json::to_value(oc).unwrap_or(Value::Null));
     }
@@ -343,6 +504,7 @@ pub(crate) fn collect_agent_usage_rows(
     let home = state.harness_home();
     let root = default_projects_root();
     let snap = state.roster.lock().unwrap().read(home.as_deref());
+    let reg = state.hive.lock().unwrap().registry();
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
     if let Some(s) = snap {
@@ -364,14 +526,31 @@ pub(crate) fn collect_agent_usage_rows(
             }
             let provider = a.get("provider").and_then(|v| v.as_str()).unwrap_or("");
             let sid = a.get("sessionId").and_then(|v| v.as_str());
+            let sleeping = a.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false);
+            let hook_sid = state
+                .hooks
+                .session_by_id
+                .lock()
+                .unwrap()
+                .get(id)
+                .cloned();
+            let started_at = reg
+                .get("agents")
+                .and_then(|m| m.get(id))
+                .and_then(|info| info.get("startedAt"))
+                .and_then(|v| v.as_u64());
+            let eff_sid = sid.or(hook_sid.as_deref());
             let mut u = if provider == "opencode" {
-                read_opencode_usage(&cwd).map(|(oc, _)| oc).unwrap_or_default()
+                read_opencode_usage_for_since(&cwd, eff_sid, !sleeping, started_at)
+                    .map(|(oc, _)| oc)
+                    .unwrap_or_default()
             } else {
-                read_agent_usage_in(&root, &cwd, sid)
+                read_agent_usage_in(&root, &cwd, eff_sid)
             };
             if u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens == 0
                 && provider != "opencode"
-                && let Some((oc, _)) = read_opencode_usage(&cwd)
+                && !sleeping
+                && let Some((oc, _)) = read_opencode_usage_for_since(&cwd, eff_sid, true, started_at)
             {
                 u = oc;
             }
@@ -882,4 +1061,114 @@ pub fn usage_memory_kg_router() -> Router<AppState> {
             "/api/v1/kg/docs/{id}",
             get(kg_get_doc).delete(kg_delete_doc),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opencode_usage_respects_min_updated_ms_and_session_id() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-oc-usage-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("opencode.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, directory TEXT NOT NULL, time_updated INTEGER NOT NULL);
+             CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses-old", "/tmp/acme", 1_000_000i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "m-old",
+                "ses-old",
+                1_000_000i64,
+                r#"{"role":"assistant","modelID":"m1","cost":0.1,"finish":"stop","time":{"completed":1000500},"tokens":{"input":120000,"output":500,"cache":{"read":18000,"write":0},"total":138500}}"#
+            ],
+        )
+        .unwrap();
+
+        // Fallback without session_id is blocked when session predates agent launch (`min_updated_ms`).
+        assert!(read_opencode_usage_from_db(&db_path, "/tmp/acme", None, true, Some(2_000_000)).is_none());
+        // Exact session_id still resolves if explicitly provided.
+        let (u_exact, ctx_exact) =
+            read_opencode_usage_from_db(&db_path, "/tmp/acme", Some("ses-old"), true, Some(2_000_000))
+                .unwrap();
+        assert_eq!(u_exact.input_tokens, 120_000);
+        assert_eq!(ctx_exact, Some(138_500));
+
+        // New session updated after agent start is picked up normally.
+        conn.execute(
+            "INSERT INTO session (id, directory, time_updated) VALUES (?1, ?2, ?3)",
+            rusqlite::params!["ses-new", "/tmp/acme", 2_005_000i64],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "m-new",
+                "ses-new",
+                2_005_000i64,
+                r#"{"role":"assistant","modelID":"m2","cost":0.01,"finish":"stop","time":{"completed":2005500},"tokens":{"input":400,"output":50,"total":450}}"#
+            ],
+        )
+        .unwrap();
+        // Mid-stream incomplete step must not overwrite completed context tokens.
+        conn.execute(
+            "INSERT INTO message (id, session_id, time_created, data) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "m-streaming",
+                "ses-new",
+                2_006_000i64,
+                r#"{"role":"assistant","modelID":"m2","tokens":{"input":12,"output":0,"total":12}}"#
+            ],
+        )
+        .unwrap();
+        let (u_new, ctx_new) =
+            read_opencode_usage_from_db(&db_path, "/tmp/acme", None, true, Some(2_000_000))
+                .unwrap();
+        assert_eq!(u_new.input_tokens, 412);
+        assert_eq!(ctx_new, Some(450));
+
+        let models_path = dir.join("models.json");
+        std::fs::write(
+            &models_path,
+            serde_json::json!({
+                "opencode": {
+                    "models": {
+                        "hy4-flash-free": { "limit": { "context": 1_048_576, "output": 65_536 } },
+                        "kimi-k2.5-free": { "limit": { "context": 262_144, "output": 262_144 } }
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            opencode_model_context_limit_from_path(&models_path, Some("opencode"), "hy4-flash-free"),
+            1_048_576
+        );
+        assert_eq!(
+            opencode_model_context_limit_from_path(&models_path, None, "kimi-k2.5-free"),
+            262_144
+        );
+        assert_eq!(
+            opencode_model_context_limit_from_path(&models_path, None, "unknown-model"),
+            200_000
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -275,20 +275,143 @@ pub fn tail_matches(a: &str, b: &str) -> bool {
     !a.is_empty() && !b.is_empty() && (a == b || a.ends_with(b) || b.ends_with(a))
 }
 
+const CLAUDE_SUBMIT_KEY: &str = "\x1b[13u";
+const CLAUDE_PASTE_MAX_CHARS: usize = 700;
+const CLAUDE_PASTE_MAX_LINES: usize = 3;
+const PASTE_START: &str = "\x1b[200~";
+const PASTE_END: &str = "\x1b[201~";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmitEncoding {
+    pub payload: String,
+    pub key: &'static str,
+    pub bracketed: bool,
+    pub pastes: usize,
+    pub slash: bool,
+}
+
+fn strip_paste_markers(text: &str) -> String {
+    text.replace(PASTE_START, "").replace(PASTE_END, "")
+}
+
+fn split_pastes(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut cur_chars = 0usize;
+    let mut newlines = 0usize;
+    for ch in text.chars() {
+        let nl = usize::from(ch == '\n');
+        if !cur.is_empty()
+            && (cur_chars + 1 > max_chars || newlines + nl > max_lines.saturating_sub(1))
+        {
+            out.push(std::mem::take(&mut cur));
+            cur_chars = 0;
+            newlines = 0;
+        }
+        cur.push(ch);
+        cur_chars += 1;
+        newlines += nl;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 pub fn is_slash_command(text: &str) -> bool {
     let t = text.trim();
-    t.starts_with('/') && !t.contains('\n') && !t.contains('\r')
+    if t.contains('\n') || t.contains('\r') {
+        return false;
+    }
+    let Some(rest) = t.strip_prefix('/') else {
+        return false;
+    };
+    let mut token_len = 0usize;
+    for b in rest.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'_' | b':' | b'.' | b'-') {
+            token_len += 1;
+        } else if b.is_ascii_whitespace() {
+            return token_len > 0;
+        } else {
+            return false;
+        }
+    }
+    token_len > 0
+}
+
+pub fn submit_encoding_for(provider: &str, text: &str) -> SubmitEncoding {
+    let slash = is_slash_command(text);
+    let clean = strip_paste_markers(text);
+    if provider == "claude" {
+        if slash {
+            if clean.chars().count() <= CLAUDE_PASTE_MAX_CHARS {
+                return SubmitEncoding {
+                    payload: format!("{PASTE_START}{clean}{PASTE_END}"),
+                    key: CLAUDE_SUBMIT_KEY,
+                    bracketed: true,
+                    pastes: 1,
+                    slash: true,
+                };
+            }
+            return SubmitEncoding {
+                payload: clean,
+                key: CLAUDE_SUBMIT_KEY,
+                bracketed: false,
+                pastes: 0,
+                slash: true,
+            };
+        }
+        let normalized = clean.replace("\r\n", "\n").replace('\r', "\n");
+        let pieces = split_pastes(&normalized, CLAUDE_PASTE_MAX_CHARS, CLAUDE_PASTE_MAX_LINES);
+        let pastes = pieces.len();
+        let payload: String = pieces
+            .into_iter()
+            .map(|p| format!("{PASTE_START}{p}{PASTE_END}"))
+            .collect();
+        return SubmitEncoding {
+            payload,
+            key: CLAUDE_SUBMIT_KEY,
+            bracketed: pastes > 0,
+            pastes,
+            slash: false,
+        };
+    }
+    if provider == "antigravity" && text.trim() == "/clear" {
+        return SubmitEncoding {
+            payload: format!("{} ", text.trim_end()),
+            key: "\r",
+            bracketed: false,
+            pastes: 0,
+            slash: true,
+        };
+    }
+    let codex_line = provider == "codex" && !text.is_empty();
+    if provider == "antigravity" || (!codex_line && !text.contains('\n') && !text.contains('\r')) {
+        return SubmitEncoding {
+            payload: text.to_string(),
+            key: "\r",
+            bracketed: false,
+            pastes: 0,
+            slash,
+        };
+    }
+    SubmitEncoding {
+        payload: format!("{PASTE_START}{clean}{PASTE_END}"),
+        key: "\r",
+        bracketed: true,
+        pastes: 1,
+        slash,
+    }
 }
 
 pub fn command_proof_events(text: &str) -> &'static [&'static str] {
     let cmd = text
-        .trim()
         .split_whitespace()
         .next()
         .unwrap_or("")
         .to_ascii_lowercase();
     match cmd.as_str() {
-        "/compact" | "/compress" => &["PreCompact", "PostCompact"],
+        "/compact" | "/compress" => &["PreCompact", "PostCompact", "SessionStart"],
         "/clear" | "/new" | "/reset" => &["SessionStart"],
         _ => &[],
     }
@@ -636,6 +759,8 @@ impl PtySubmitter {
             tokio::time::sleep(Duration::from_millis(self.timings.ready_poll_ms)).await;
         }
 
+        let encoding = submit_encoding_for(&req.provider, &req.text);
+
         // Check earlier unproved send on this PTY before typing new content.
         if !req.press_only {
             let prev_unproved = self.unproved.lock().unwrap().get(&req.pty_id).cloned();
@@ -651,7 +776,7 @@ impl PtySubmitter {
                     && let Some(ref lines) = reply.lines
                     && submit_still_pending(lines, &prev.tail) == Some(true)
                 {
-                    let _ = self.pty.write(&req.pty_id, "\r");
+                    let _ = self.pty.write(&req.pty_id, encoding.key);
                     tokio::time::sleep(Duration::from_millis(self.timings.clear_settle_ms)).await;
                     if let Some(reply2) = p.probe(&req.pty_id).await
                         && let Some(ref lines2) = reply2.lines
@@ -707,17 +832,8 @@ impl PtySubmitter {
         let began_ms = unix_now_ms();
         on_began(req);
 
-        if !req.press_only && !req.text.is_empty() {
-            let bracketed = req.text.contains('\n')
-                || req.text.contains('\r')
-                || req.text.len() > 200
-                || req.provider == "claude";
-            let payload = if bracketed {
-                format!("\x1b[200~{}\x1b[201~", req.text)
-            } else {
-                req.text.clone()
-            };
-            self.pty.write(&req.pty_id, &payload)?;
+        if !req.press_only && !encoding.payload.is_empty() {
+            self.pty.write(&req.pty_id, &encoding.payload)?;
             tokio::time::sleep(Duration::from_millis(self.timings.submit_delay_ms)).await;
         }
 
@@ -734,7 +850,7 @@ impl PtySubmitter {
         }
 
         let tail = prompt_tail(&req.text);
-        let slash = !req.press_only && is_slash_command(&req.text);
+        let slash = !req.press_only && encoding.slash;
         let cmd_events = if slash {
             command_proof_events(&req.text)
         } else {
@@ -750,7 +866,7 @@ impl PtySubmitter {
         let mut gone_unpressed = false;
         let mut elsewhere = false;
 
-        if self.press_safe(req, probe).await? {
+        if self.press_safe(req, encoding.key, probe).await? {
             presses += 1;
         }
 
@@ -859,7 +975,8 @@ impl PtySubmitter {
                 break;
             }
 
-            if !elsewhere
+            if !slash
+                && !elsewhere
                 && idle
                 && presses > 0
                 && let Some(aid) = eff_agent
@@ -876,7 +993,7 @@ impl PtySubmitter {
                 if last_pending != Some(true) && !hook_channel {
                     break;
                 }
-                if last_pending != Some(false) && self.press_safe(req, probe).await? {
+                if last_pending != Some(false) && self.press_safe(req, encoding.key, probe).await? {
                     presses += 1;
                 }
                 attempts += 1;
@@ -923,24 +1040,25 @@ impl PtySubmitter {
             && submit_still_pending(lines, &req.text) == Some(true)
         {
             last_pending = Some(true);
-            if self.press_safe(req, probe).await? {
+            if self.press_safe(req, encoding.key, probe).await? {
                 presses += 1;
             }
             let until = Instant::now() + Duration::from_millis(self.timings.final_wait_ms);
             while Instant::now() < until {
                 tokio::time::sleep(Duration::from_millis(self.timings.proof_poll_ms)).await;
-                if let Some(aid) = eff_agent {
-                    if !tail.is_empty() && hooks.prompt_seen(aid, began_ms, &tail) {
-                        return Ok(make_res(
-                            "submitted",
-                            "hook",
-                            presses,
-                            None,
-                            false,
-                            false,
-                            false,
-                        ));
-                    }
+                if let Some(aid) = eff_agent
+                    && !tail.is_empty()
+                    && hooks.prompt_seen(aid, began_ms, &tail)
+                {
+                    return Ok(make_res(
+                        "submitted",
+                        "hook",
+                        presses,
+                        None,
+                        false,
+                        false,
+                        false,
+                    ));
                 }
                 if let Some(reply2) = p.probe(&req.pty_id).await
                     && let Some(ref lines2) = reply2.lines
@@ -996,6 +1114,7 @@ impl PtySubmitter {
     async fn press_safe(
         &self,
         req: &PtySubmitRequest,
+        submit_key: &str,
         probe: Option<&dyn ScreenProbe>,
     ) -> Result<bool> {
         if self.is_withdrawn(req.ref_id.as_deref()) {
@@ -1009,7 +1128,7 @@ impl PtySubmitter {
         {
             return Ok(false);
         }
-        self.pty.write(&req.pty_id, "\r")?;
+        self.pty.write(&req.pty_id, submit_key)?;
         Ok(true)
     }
 }
@@ -1262,5 +1381,72 @@ mod tests {
         assert_eq!(res.outcome, "held");
         assert!(res.behind);
         let _ = mgr.kill("pty-a2");
+    }
+
+    #[tokio::test]
+    async fn slash_compact_with_activity_never_flags_moved() {
+        let mgr = PtyManager::new();
+        let _ = mgr.spawn(SpawnOptions {
+            id: "pty-a3".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 2".into()],
+            cwd: "/tmp".into(),
+            cols: Some(80),
+            rows: Some(24),
+            env: HashMap::new(),
+            provider: Some("opencode".into()),
+            resume: None,
+            shell_script: None,
+            hive: None,
+        });
+        let submitter = PtySubmitter::with_timings(mgr.clone(), SubmitTimings::fast_for_test());
+        let hooks = MockHooks::new();
+        *hooks.activity_at.lock().unwrap() = u64::MAX;
+        let res = submitter
+            .submit_with_context(
+                PtySubmitRequest {
+                    pty_id: "pty-a3".into(),
+                    agent_id: Some("a3".into()),
+                    provider: "opencode".into(),
+                    text: "/compact".into(),
+                    source: "user".into(),
+                    settle_ms: None,
+                    press_only: false,
+                    idle: Some(true),
+                    ref_id: None,
+                },
+                None,
+                &hooks,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(!res.moved, "slash command must not be flagged as moved/not-confirmed: {res:?}");
+        assert_ne!(res.outcome, "held");
+        let _ = mgr.kill("pty-a3");
+    }
+
+    #[test]
+    fn slash_detection_and_provider_encoding_match_reference() {
+        assert!(is_slash_command("/compact"));
+        assert!(is_slash_command("/compact keep auth"));
+        assert!(!is_slash_command("/tmp/notes.txt"));
+        assert!(!is_slash_command("line1\n/compact"));
+        assert!(command_proof_events("/compact").contains(&"SessionStart"));
+        assert!(command_proof_events("/compact").contains(&"PreCompact"));
+
+        let claude = submit_encoding_for("claude", "a\nb\nc\nd");
+        assert_eq!(claude.key, "\x1b[13u");
+        assert!(claude.bracketed);
+        assert_eq!(claude.pastes, 2);
+
+        let codex = submit_encoding_for("codex", "hello");
+        assert_eq!(codex.key, "\r");
+        assert!(codex.bracketed);
+        assert_eq!(codex.pastes, 1);
+
+        let agy = submit_encoding_for("antigravity", "/clear");
+        assert_eq!(agy.payload, "/clear ");
+        assert!(agy.slash);
     }
 }

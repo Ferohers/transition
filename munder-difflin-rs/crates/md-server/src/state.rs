@@ -6,7 +6,7 @@ use md_hive::{
     hooks::HookEngine,
     manager::HiveManager,
     roster::RosterStore,
-    switch_clear::{CodexSizeClear, SwitchClear},
+    switch_clear::{AskedCompact, CodexSizeClear, SwitchClear},
     wake_filing::WakeFiling,
 };
 use md_integrations::{
@@ -21,8 +21,18 @@ use md_pty::{
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
+
+#[derive(Debug, Clone)]
+pub struct HireInflight {
+    pub req_id: String,
+    pub file_path: PathBuf,
+    pub agent_id: String,
+    pub name: String,
+    pub started_at: u64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -83,6 +93,7 @@ pub struct AppState {
     pub wake_filing: Arc<Mutex<WakeFiling>>,
     pub switch_clear: Arc<Mutex<SwitchClear>>,
     pub codex_size: Arc<Mutex<CodexSizeClear>>,
+    pub asked_compact: Arc<Mutex<AskedCompact>>,
     pub hooks: HookEngine,
     pub pty: PtyManager,
     pub submitter: PtySubmitter,
@@ -96,6 +107,8 @@ pub struct AppState {
     pub workers_history: Arc<Mutex<Vec<serde_json::Value>>>,
     pub ended_agents: Arc<Mutex<HashMap<String, EndedAgentRecord>>>,
     pub integrations_activity: Arc<Mutex<Vec<serde_json::Value>>>,
+    pub hire_runner_ready: Arc<AtomicBool>,
+    pub hire_inflight: Arc<Mutex<Option<HireInflight>>>,
     pub events_tx: broadcast::Sender<ServerEvent>,
 }
 

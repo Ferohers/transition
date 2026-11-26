@@ -407,6 +407,75 @@ async fn workspaces_list(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
+pub(crate) fn build_projects_payload(state: &AppState) -> Value {
+    let mut cfg_store = state.config.lock().unwrap();
+    let cfg = cfg_store.read();
+    let home = cfg
+        .harness_home
+        .as_deref()
+        .map(md_core::config::expand_tilde)
+        .filter(|p| !p.as_os_str().is_empty());
+
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut push_unique = |p: PathBuf| {
+        if p.is_dir() && !paths.contains(&p) {
+            paths.push(p);
+        }
+    };
+
+    for r in &cfg.registered_repos {
+        let exp = md_core::config::expand_tilde(r);
+        let resolved = md_git::main_repo_sync(&exp).unwrap_or(exp);
+        push_unique(resolved);
+    }
+    if let Some(ref h) = home {
+        for base in [h.join("projects"), h.join("hive").join("projects")] {
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                let mut children: Vec<PathBuf> = rd
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_dir()
+                            && !p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with('.'))
+                    })
+                    .collect();
+                children.sort();
+                for c in children {
+                    push_unique(c);
+                }
+            }
+        }
+    }
+
+    let projects: Vec<Value> = paths
+        .into_iter()
+        .map(|p| {
+            let p_str = p.to_string_lossy().into_owned();
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&p_str)
+                .to_string();
+            let is_git = md_git::is_repo_sync(&p);
+            json!({
+                "key": p_str,
+                "name": name,
+                "local": { "path": p_str, "git": is_git },
+                "cloud": Value::Null,
+            })
+        })
+        .collect();
+    json!({ "projects": projects })
+}
+
+async fn projects_list(State(state): State<AppState>) -> Json<Value> {
+    Json(build_projects_payload(&state))
+}
+
 async fn workspaces_ensure(
     State(state): State<AppState>,
     Json(req): Json<PathReq>,
@@ -451,11 +520,22 @@ async fn workspaces_ensure(
         }));
     }
     match std::fs::create_dir_all(&resolved) {
-        Ok(()) => Json(json!({
-            "ok": true,
-            "path": resolved.to_string_lossy(),
-            "created": true,
-        })),
+        Ok(()) => {
+            if let Some(ref h) = home {
+                let hive_root = h.join("hive");
+                if md_hive::manager::in_hive_projects(&hive_root, &resolved)
+                    && let Some(top) = md_hive::manager::hive_project_top_of(&hive_root, &resolved)
+                {
+                    let _ = md_git::init_repo_sync(&top, Some("Project folder made by Munder Difflin"));
+                }
+            }
+            state.emit("projects:changed", build_projects_payload(&state));
+            Json(json!({
+                "ok": true,
+                "path": resolved.to_string_lossy(),
+                "created": true,
+            }))
+        }
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }
 }
@@ -938,6 +1018,7 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/fs/stat-abs", post(fs_stat_abs))
         .route("/api/v1/workspaces/list", get(workspaces_list))
         .route("/api/v1/workspaces/ensure", post(workspaces_ensure))
+        .route("/api/v1/projects/list", get(projects_list))
         .route("/api/v1/fs/folder-state", post(fs_folder_state))
         .route("/api/v1/fs/upload", post(fs_upload))
         .route("/api/v1/fs/raw", get(fs_raw))

@@ -83,11 +83,163 @@ impl SwitchClearRule {
     }
 }
 
-pub fn clear_command_for_provider(provider: &str) -> Option<&'static str> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderContextCommands {
+    pub compact: Option<&'static str>,
+    pub clear: Option<&'static str>,
+    pub compact_takes_focus: bool,
+}
+
+const NO_CONTEXT_COMMANDS: ProviderContextCommands = ProviderContextCommands {
+    compact: None,
+    clear: None,
+    compact_takes_focus: false,
+};
+
+pub fn context_commands_for_provider(provider: &str) -> ProviderContextCommands {
     match provider {
-        "claude" | "codex" | "kimi" | "antigravity" | "gemini" | "qwen" => Some("/clear"),
-        "grok" | "opencode" | "pi" => Some("/new"),
-        _ => None,
+        "claude" => ProviderContextCommands {
+            compact: Some("/compact"),
+            clear: Some("/clear"),
+            compact_takes_focus: true,
+        },
+        "codex" => ProviderContextCommands {
+            compact: Some("/compact"),
+            clear: Some("/clear"),
+            compact_takes_focus: false,
+        },
+        "grok" => ProviderContextCommands {
+            compact: Some("/compact"),
+            clear: Some("/new"),
+            compact_takes_focus: false,
+        },
+        "kimi" => ProviderContextCommands {
+            compact: Some("/compact"),
+            clear: Some("/clear"),
+            compact_takes_focus: true,
+        },
+        "antigravity" => ProviderContextCommands {
+            compact: None,
+            clear: Some("/clear"),
+            compact_takes_focus: false,
+        },
+        "gemini" => ProviderContextCommands {
+            compact: Some("/compress"),
+            clear: Some("/clear"),
+            compact_takes_focus: false,
+        },
+        "qwen" => ProviderContextCommands {
+            compact: Some("/compress"),
+            clear: Some("/clear"),
+            compact_takes_focus: true,
+        },
+        "opencode" => ProviderContextCommands {
+            compact: Some("/compact"),
+            clear: Some("/new"),
+            compact_takes_focus: false,
+        },
+        "pi" => ProviderContextCommands {
+            compact: Some("/compact"),
+            clear: Some("/new"),
+            compact_takes_focus: true,
+        },
+        _ => NO_CONTEXT_COMMANDS,
+    }
+}
+
+pub fn compaction_command_for_provider(provider: &str, focus_message: &str) -> Option<String> {
+    let cmds = context_commands_for_provider(provider);
+    let verb = cmds.compact?;
+    let focus = focus_message.trim();
+    if cmds.compact_takes_focus && !focus.is_empty() {
+        Some(format!("{verb} {focus}"))
+    } else {
+        Some(verb.to_string())
+    }
+}
+
+pub fn is_compaction_command(text: &str) -> bool {
+    matches!(
+        text.split_whitespace().next(),
+        Some("/compact" | "/compress")
+    )
+}
+
+pub fn clear_command_for_provider(provider: &str) -> Option<&'static str> {
+    context_commands_for_provider(provider).clear
+}
+
+pub const ASKED_COMPACT_GAP_MS: u64 = 10 * 60_000;
+
+/// Tracks agent-initiated `compact-requests/` asks (`src/shared/askedCompact.ts`).
+#[derive(Debug, Default)]
+pub struct AskedCompact {
+    open: HashSet<String>,
+    asked_at: HashMap<String, u64>,
+}
+
+impl AskedCompact {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn refusal(
+        &self,
+        agent_id: &str,
+        known: bool,
+        live: bool,
+        can_compact: bool,
+        now_ms: u64,
+    ) -> Option<&'static str> {
+        if !known {
+            return Some("No agent on the floor has this id.");
+        }
+        if !live {
+            return Some("This agent has no terminal open.");
+        }
+        if !can_compact {
+            return Some("This agent's engine has no compact command the app can type.");
+        }
+        if self.open.contains(agent_id) {
+            return Some("A compact for this agent is already waiting.");
+        }
+        if let Some(&prev) = self.asked_at.get(agent_id)
+            && now_ms.saturating_sub(prev) < ASKED_COMPACT_GAP_MS
+        {
+            return Some("This agent was compacted on an ask less than 10 minutes ago.");
+        }
+        None
+    }
+
+    pub fn ask(&mut self, agent_id: &str, now_ms: u64) {
+        self.open.insert(agent_id.to_string());
+        self.asked_at.insert(agent_id.to_string(), now_ms);
+    }
+
+    pub fn waiting(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.open.iter().cloned().collect();
+        out.sort();
+        out
+    }
+
+    pub fn note_typed(
+        &mut self,
+        agent_id: Option<&str>,
+        is_compact: bool,
+        outcome: &str,
+        press_only: bool,
+    ) -> bool {
+        let Some(aid) = agent_id else {
+            return false;
+        };
+        if press_only || !is_compact || outcome == "held" || outcome == "gone" {
+            return false;
+        }
+        self.open.remove(aid)
+    }
+
+    pub fn forget(&mut self, agent_id: &str) {
+        self.open.remove(agent_id);
     }
 }
 
@@ -787,5 +939,39 @@ mod tests {
             |_| Some(CODEX_ROLLOUT_CLEAR_BYTES + 100),
             200_000,
         ));
+    }
+
+    #[test]
+    fn context_commands_and_asked_compact_work() {
+        assert_eq!(
+            compaction_command_for_provider("opencode", "preserve paths").as_deref(),
+            Some("/compact")
+        );
+        assert_eq!(
+            compaction_command_for_provider("claude", "preserve paths").as_deref(),
+            Some("/compact preserve paths")
+        );
+        assert_eq!(
+            compaction_command_for_provider("gemini", "preserve paths").as_deref(),
+            Some("/compress")
+        );
+        assert_eq!(compaction_command_for_provider("antigravity", "x"), None);
+        assert!(is_compaction_command("/compact keep details"));
+        assert!(is_compaction_command("/compress"));
+        assert!(!is_compaction_command("please /compact later"));
+
+        let mut ac = AskedCompact::new();
+        assert_eq!(ac.refusal("god", false, true, true, 1_000), Some("No agent on the floor has this id."));
+        assert_eq!(ac.refusal("god", true, false, true, 1_000), Some("This agent has no terminal open."));
+        assert_eq!(ac.refusal("god", true, true, false, 1_000), Some("This agent's engine has no compact command the app can type."));
+        assert!(ac.refusal("god", true, true, true, 1_000).is_none());
+        ac.ask("god", 1_000);
+        assert_eq!(ac.waiting(), vec!["god".to_string()]);
+        assert!(ac.refusal("god", true, true, true, 2_000).is_some());
+        assert!(!ac.note_typed(Some("god"), true, "held", false));
+        assert!(ac.note_typed(Some("god"), true, "submitted", false));
+        assert!(ac.waiting().is_empty());
+        assert!(ac.refusal("god", true, true, true, 2_000).is_some());
+        assert!(ac.refusal("god", true, true, true, 1_000 + ASKED_COMPACT_GAP_MS).is_none());
     }
 }

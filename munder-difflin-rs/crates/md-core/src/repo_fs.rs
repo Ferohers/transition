@@ -84,7 +84,7 @@ pub struct SearchResult {
     pub error: Option<String>,
 }
 
-fn normalize_lexical(path: &Path) -> PathBuf {
+pub fn normalize_lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for comp in path.components() {
         match comp {

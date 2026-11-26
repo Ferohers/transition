@@ -110966,12 +110966,6 @@ function Composer({ agent, autoFocus, holdKey = null, setupPanel }) {
   const [editId, setEditId] = reactExports.useState(null);
   const [editText, setEditText] = reactExports.useState("");
   const ref = reactExports.useRef(null);
-  reactExports.useEffect(() => {
-    const el2 = ref.current;
-    if (!el2) return;
-    el2.style.height = "auto";
-    el2.style.height = `${Math.min(Math.max(el2.scrollHeight, INPUT_MIN_H$2), INPUT_MAX_H$2)}px`;
-  }, [text2, files.length]);
   const canSend = (!!text2.trim() || files.length > 0) && !holdKey;
   const bodyOf2 = (sent2) => sent2.length ? (text2.trim() ? `${text2}
 
@@ -111130,7 +111124,7 @@ Attached files:
           rows: 3,
           placeholder: recording ? t2("queueComposer.recording") : transcribing ? t2("queueComposer.transcribing") : mode === "steer" ? t2("pro.room.steerPlaceholder", { name: agent.name }) : t2("pro.room.placeholder", { name: agent.name }),
           "aria-label": t2("pro.room.placeholder", { name: agent.name }),
-          style: { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", outline: "none", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.45, color: "var(--cth-ink-900)", minHeight: INPUT_MIN_H$2, maxHeight: INPUT_MAX_H$2, overflowY: "auto" }
+          style: { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", outline: "none", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.45, color: "var(--cth-ink-900)", height: INPUT_MIN_H$2, minHeight: INPUT_MIN_H$2, maxHeight: INPUT_MIN_H$2, overflowY: "auto" }
         }
       ),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 }, children: [
@@ -112905,12 +112899,6 @@ function OfficeMessageBox({ agent, why, engineName: engineName2 }) {
   const [delivered, setDelivered] = reactExports.useState(false);
   const ref = reactExports.useRef(null);
   const vars = { name: agent.name, office: office2?.name ?? "", engine: engineName2 };
-  reactExports.useEffect(() => {
-    const el2 = ref.current;
-    if (!el2) return;
-    el2.style.height = "auto";
-    el2.style.height = `${Math.min(Math.max(el2.scrollHeight, BOX_MIN_H), BOX_MAX_H)}px`;
-  }, [text2]);
   const can2 = !!text2.trim() && !busy && why === null && office2 !== null;
   const submit = async () => {
     if (!can2 || !office2) return;
@@ -112978,7 +112966,7 @@ function OfficeMessageBox({ agent, why, engineName: engineName2 }) {
           onKeyDown: onKey,
           placeholder: mode === "steer" ? t2("pro.room.steerPlaceholder", { name: agent.name }) : t2("pro.room.placeholder", { name: agent.name }),
           "aria-label": t2("pro.room.placeholder", { name: agent.name }),
-          style: { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", outline: "none", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.45, color: "var(--cth-ink-900)", minHeight: BOX_MIN_H, maxHeight: BOX_MAX_H, overflowY: "auto" }
+          style: { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", outline: "none", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.45, color: "var(--cth-ink-900)", height: BOX_MIN_H, minHeight: BOX_MIN_H, maxHeight: BOX_MIN_H, overflowY: "auto" }
         }
       ),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 }, children: [
@@ -114345,12 +114333,6 @@ function ChatBox({ mate, maySend, closedWhy, onSent }) {
     setRefusal(null);
   };
   const boxRef = reactExports.useRef(null);
-  reactExports.useEffect(() => {
-    const el2 = boxRef.current;
-    if (!el2) return;
-    el2.style.height = "auto";
-    el2.style.height = `${Math.min(Math.max(el2.scrollHeight, INPUT_MIN_H$1), INPUT_MAX_H$1)}px`;
-  }, [text2]);
   const [files, setFilesState] = reactExports.useState(() => pendingFiles.get(mate.id) ?? []);
   const filesRef = reactExports.useRef(files);
   const setFiles = (next) => {
@@ -114442,7 +114424,7 @@ function ChatBox({ mate, maySend, closedWhy, onSent }) {
           readOnly: sending,
           placeholder: t2("pro.room.placeholder", { name: firstName }),
           "aria-label": t2("pro.room.placeholder", { name: firstName }),
-          style: { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", outline: "none", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.45, color: "var(--cth-ink-900)", minHeight: INPUT_MIN_H$1, maxHeight: INPUT_MAX_H$1, overflowY: "auto" }
+          style: { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", outline: "none", resize: "none", font: "inherit", fontSize: 13, lineHeight: 1.45, color: "var(--cth-ink-900)", height: INPUT_MIN_H$1, minHeight: INPUT_MIN_H$1, maxHeight: INPUT_MIN_H$1, overflowY: "auto" }
         }
       ),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 6, minWidth: 0 }, children: [
@@ -139085,12 +139067,6 @@ function HomeInput({ agents, onTo, onSent }) {
     }
   }), []);
   reactExports.useEffect(() => {
-    const el2 = ref.current;
-    if (!el2) return;
-    el2.style.height = "auto";
-    el2.style.height = `${Math.min(Math.max(el2.scrollHeight, INPUT_MIN_H), INPUT_MAX_H)}px`;
-  }, [text2, files.length, recording, transcribing]);
-  reactExports.useEffect(() => {
     if (!open2) return void 0;
     const close = () => setOpen(false);
     const onKey2 = (e) => {
@@ -140215,7 +140191,7 @@ ${SIM_BTN_CSS}
 .cth-home .files{display:flex;gap:6px;flex-wrap:wrap}
 .cth-home .file{display:inline-flex;align-items:center;gap:4px;height:24px;padding:0 4px;padding-inline-start:8px;border:1px solid var(--bd);border-radius:6px;background:var(--r);font-size:12px}
 .cth-home .file button{width:18px;height:18px;border:0;background:none;display:inline-flex;align-items:center;justify-content:center;color:var(--i5);padding:0}
-.cth-home textarea.msg{display:block;width:100%;border:0;background:none;resize:none;outline:none;font-size:15px;line-height:22px;padding:6px 2px;min-height:58px;max-height:160px;overflow:auto}
+.cth-home textarea.msg{display:block;width:100%;box-sizing:border-box;border:0;background:none;resize:none;outline:none;font-size:15px;line-height:22px;padding:6px 2px;height:58px;min-height:58px;max-height:58px;overflow-y:auto}
 .cth-home textarea.msg::placeholder{color:var(--i5)}
 .cth-home .rec{display:flex;align-items:center;gap:8px;min-height:58px;padding:6px 2px;font-size:15px;line-height:22px;color:var(--i7)}
 .cth-home .wave{display:inline-flex;align-items:center;gap:2px;height:18px}

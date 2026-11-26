@@ -108,10 +108,85 @@ Every agent runs with environment variables: `AGENT_ID`, `AGENT_NAME`, `AGENT_DI
     }
 }
 
+fn copy_dir_missing_or_updated(src: &Path, dst: &Path) {
+    let Ok(rd) = fs::read_dir(src) else {
+        return;
+    };
+    if fs::create_dir_all(dst).is_err() {
+        return;
+    }
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        if name.to_string_lossy() == ".DS_Store" {
+            continue;
+        }
+        let from = entry.path();
+        let to = dst.join(&name);
+        if from.is_dir() {
+            copy_dir_missing_or_updated(&from, &to);
+        } else if from.is_file()
+            && let Ok(bytes) = fs::read(&from)
+            && fs::read(&to).ok().as_deref() != Some(bytes.as_slice())
+        {
+            let _ = fs::write(&to, &bytes);
+        }
+    }
+}
+
+fn ensure_agent_skills(agent_dir: &Path) {
+    let Some(res_root) = crate::routes_catalog::resources_root() else {
+        return;
+    };
+    let src_skills = res_root.join("skills");
+    if src_skills.is_dir() {
+        copy_dir_missing_or_updated(&src_skills, &agent_dir.join(".claude").join("skills"));
+    }
+}
+
+fn write_executable_script(path: &Path, content: &str) {
+    if fs::read_to_string(path).ok().as_deref() != Some(content)
+        && atomic_write_string(path, content).is_ok()
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o755));
+        }
+    }
+}
+
+fn ensure_hive_bin_helpers(hive_root: &Path) {
+    let bin_dir = hive_root.join("bin");
+    if fs::create_dir_all(&bin_dir).is_err() {
+        return;
+    }
+    let md_limits = r#"#!/bin/sh
+set -eu
+URL="${MD_SERVER_URL:-http://127.0.0.1:3110}/api/v1/usage/limits"
+if [ "${1:-}" = "--json" ]; then
+  exec curl -sf "$URL"
+fi
+curl -sf "$URL" || echo '{"ok":false,"error":"usage limits unavailable"}'
+"#;
+    let md_models = r#"#!/bin/sh
+set -eu
+CFG=$(curl -sf "${MD_SERVER_URL:-http://127.0.0.1:3110}/api/v1/config" || echo '{}')
+if [ "${1:-}" = "--json" ]; then
+  printf '%s\n' "$CFG"
+  exit 0
+fi
+printf 'Configured engines/models (from %s):\n%s\n' "${MD_SERVER_URL:-http://127.0.0.1:3110}" "$CFG"
+"#;
+    write_executable_script(&bin_dir.join("md-limits"), md_limits);
+    write_executable_script(&bin_dir.join("md-models"), md_models);
+}
+
 pub fn ensure_agent_hive_dirs(hive_root: &Path, agent_id: &str, name: &str) {
     let _ = fs::create_dir_all(hive_root.join("spawn-requests"));
+    let _ = fs::create_dir_all(hive_root.join("hire-requests"));
     let _ = fs::create_dir_all(hive_root.join("compact-requests"));
     let _ = fs::create_dir_all(hive_root.join("clear-requests"));
+    ensure_hive_bin_helpers(hive_root);
     if !is_safe_id(agent_id) {
         return;
     }
@@ -129,6 +204,13 @@ pub fn ensure_agent_hive_dirs(hive_root: &Path, agent_id: &str, name: &str) {
     if !mem.exists() {
         let _ = atomic_write_string(&mem, &format!("# Memory: {name}\n"));
     }
+    let handoff = agent_dir.join("handoff.md");
+    if !handoff.exists() {
+        let _ = atomic_write_string(
+            &handoff,
+            &format!("# Handoff: {name}\n\n_One section per piece of work. The app keeps the newest 12._\n"),
+        );
+    }
 }
 
 pub fn sync_fleet_json(state: &AppState) {
@@ -145,6 +227,7 @@ pub fn sync_fleet_json(state: &AppState) {
     let reg = state.hive.lock().unwrap().registry();
     let contexts = state.hooks.context_by_id.lock().unwrap().clone();
     let models = state.hooks.model_by_id.lock().unwrap().clone();
+    let sessions = state.hooks.session_by_id.lock().unwrap().clone();
     let breakers = state.breaker.lock().unwrap();
     let ptys = state.pty.list();
     let usage_by_id: std::collections::HashMap<String, md_hive::usage::AgentUsage> =
@@ -182,9 +265,20 @@ pub fn sync_fleet_json(state: &AppState) {
             }
             let provider = info.get("provider").and_then(|v| v.as_str()).unwrap_or("claude");
             let cwd_str = info.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
-            let oc_usage = if provider == "opencode" && !cwd_str.is_empty() {
-                crate::routes_usage_memory_kg::read_opencode_usage(
-                    &expand_tilde(cwd_str).to_string_lossy(),
+            let hook_sid = sessions.get(id).map(String::as_str);
+            let started_at = info.get("startedAt").and_then(|v| v.as_u64());
+            let oc_usage = if provider == "opencode" && (!cwd_str.is_empty() || hook_sid.is_some())
+            {
+                let expanded = if cwd_str.is_empty() {
+                    String::new()
+                } else {
+                    expand_tilde(cwd_str).to_string_lossy().into_owned()
+                };
+                crate::routes_usage_memory_kg::read_opencode_usage_for_since(
+                    &expanded,
+                    hook_sid,
+                    !sleeping,
+                    started_at,
                 )
             } else {
                 None
@@ -202,18 +296,30 @@ pub fn sync_fleet_json(state: &AppState) {
                 .map(|x| (x.estimated_cost_usd * 10_000.0).round() / 10_000.0)
                 .unwrap_or(0.0);
             let ctx = contexts.get(id).cloned().or_else(|| {
-                oc_usage.as_ref().and_then(|(_, latest)| {
-                    latest.map(|tok| md_hive::hooks::ContextSnapshot {
-                        agent_id: id.clone(),
-                        tokens: tok,
-                        limit: 200_000,
-                        ts: now_ms,
+                oc_usage.as_ref().and_then(|(oc_u, latest)| {
+                    latest.map(|tok| {
+                        let model_name = oc_u
+                            .model
+                            .as_deref()
+                            .or_else(|| models.get(id).map(String::as_str))
+                            .or_else(|| info.get("model").and_then(|v| v.as_str()))
+                            .unwrap_or("");
+                        let limit = crate::routes_usage_memory_kg::opencode_model_context_limit(
+                            None,
+                            model_name,
+                        );
+                        md_hive::hooks::ContextSnapshot {
+                            agent_id: id.clone(),
+                            tokens: tok,
+                            limit,
+                            ts: now_ms,
+                        }
                     })
                 })
             });
             let ctx_pct = ctx.as_ref().and_then(|c| {
                 if c.limit > 0 {
-                    Some(((c.tokens as f64 / c.limit as f64) * 100.0).round() as u64)
+                    Some((((c.tokens as f64 / c.limit as f64) * 100.0).round() as u64).min(100))
                 } else {
                     None
                 }
@@ -287,6 +393,8 @@ fn install_claude_hooks_settings(agent_dir: &Path) -> Option<PathBuf> {
             "UserPromptSubmit": [hook_entry(None)],
             "PreToolUse": [hook_entry(Some("*"))],
             "PostToolUse": [hook_entry(Some("*"))],
+            "PreCompact": [hook_entry(None)],
+            "PostCompact": [hook_entry(None)],
             "Stop": [hook_entry(None)],
             "Notification": [hook_entry(None)],
         }
@@ -308,7 +416,57 @@ fn install_opencode_config_content(
         return None;
     }
     let plugin_path = agent_dir.join("opencode-hive-plugin.mjs");
-    let plugin_src = r#"async function postHook(payload) {
+    let plugin_src = r#"import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+let cachedModelsMtimeMs = -1;
+let cachedModelLimits = new Map();
+
+function loadModelLimits() {
+  try {
+    const cacheBase = process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache");
+    const modelsPath = path.join(cacheBase, "opencode", "models.json");
+    const st = fs.statSync(modelsPath);
+    if (st.mtimeMs === cachedModelsMtimeMs) return cachedModelLimits;
+    const raw = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+    const next = new Map();
+    if (raw && typeof raw === "object") {
+      for (const [provId, provVal] of Object.entries(raw)) {
+        const models = provVal?.models;
+        if (!models || typeof models !== "object") continue;
+        for (const [modelId, modelVal] of Object.entries(models)) {
+          const ctx = modelVal?.limit?.context;
+          if (typeof ctx === "number" && ctx > 0) {
+            next.set(`${provId}/${modelId}`, ctx);
+            if (provId === "opencode" || provId === "anthropic" || !next.has(modelId)) {
+              next.set(modelId, ctx);
+            }
+          }
+        }
+      }
+    }
+    cachedModelsMtimeMs = st.mtimeMs;
+    cachedModelLimits = next;
+  } catch {}
+  return cachedModelLimits;
+}
+
+function contextLimitOf(providerId, modelId) {
+  const limits = loadModelLimits();
+  const mid = typeof modelId === "string" ? modelId.trim() : "";
+  const pid = typeof providerId === "string" ? providerId.trim() : "";
+  if (pid && mid && limits.has(`${pid}/${mid}`)) return limits.get(`${pid}/${mid}`);
+  if (mid && limits.has(mid)) return limits.get(mid);
+  const slashIdx = mid.indexOf("/");
+  if (slashIdx > 0) {
+    const short = mid.slice(slashIdx + 1);
+    if (limits.has(short)) return limits.get(short);
+  }
+  return /1m/i.test(mid) ? 1000000 : 200000;
+}
+
+async function postHook(payload) {
   try {
     const url = process.env.MD_HOOK_URL;
     const tok = process.env.MD_HOOK_TOKEN;
@@ -327,15 +485,29 @@ fn install_opencode_config_content(
 
 export const HiveBridge = async () => {
   let stopTimer = null;
+  let lastStopAt = 0;
+  let lastCompactAt = 0;
   const clearStopTimer = () => {
     if (stopTimer) {
       clearTimeout(stopTimer);
       stopTimer = null;
     }
   };
-  const emitStop = () => {
+  const sidOf = (obj) =>
+    obj?.sessionID || obj?.info?.sessionID || obj?.properties?.sessionID || obj?.properties?.info?.sessionID || obj?.message?.sessionID || undefined;
+  const emitStop = (sessionId) => {
     clearStopTimer();
-    return postHook({ hook_event_name: "Stop" });
+    const now = Date.now();
+    if (now - lastStopAt < 1500) return Promise.resolve();
+    lastStopAt = now;
+    return postHook({ hook_event_name: "Stop", session_id: sessionId });
+  };
+  const emitPostCompact = (sessionId) => {
+    clearStopTimer();
+    const now = Date.now();
+    if (now - lastCompactAt < 1500) return Promise.resolve();
+    lastCompactAt = now;
+    return postHook({ hook_event_name: "PostCompact", session_id: sessionId });
   };
   void postHook({ hook_event_name: "SessionStart" });
   return {
@@ -343,29 +515,49 @@ export const HiveBridge = async () => {
     try {
       const ev = input?.event;
       const t = ev?.type;
+      const sid = sidOf(ev);
       if (t === "session.idle" || (t === "session.status" && ev?.properties?.status?.type === "idle")) {
-        await emitStop();
+        await emitStop(sid);
+      } else if (t === "session.compacted") {
+        await emitPostCompact(sid);
       } else if (t === "session.status" && ev?.properties?.status?.type !== "idle") {
         clearStopTimer();
       } else if (t === "message.updated") {
         const info = ev?.properties?.info;
-        if (info?.role === "assistant" && info?.tokens) {
+        if (info?.mode === "compaction" || info?.agent === "compaction") {
+          clearStopTimer();
+          if (info?.time?.completed) {
+            await emitPostCompact(sid);
+          } else {
+            lastCompactAt = 0;
+            await postHook({
+              hook_event_name: "PreCompact",
+              session_id: sid,
+            });
+          }
+        }
+        if (info?.role === "assistant" && info?.tokens && (info?.time?.completed || info?.finish)) {
           const tok = info.tokens;
-          const total = typeof tok.total === "number" ? tok.total : (tok.input || 0) + (tok.output || 0) + (tok.cache?.read || 0);
-          await postHook({
-            hook_event_name: "Status",
-            model: info.modelID || undefined,
-            context_window: {
-              total_input_tokens: total,
-              context_window_size: 200000,
-            },
-          });
+          const sum = (tok.input || 0) + (tok.output || 0) + (tok.reasoning || 0) + (tok.cache?.read || 0) + (tok.cache?.write || 0);
+          const total = typeof tok.total === "number" && tok.total > 0 ? tok.total : sum;
+          if (total > 0) {
+            const limit = contextLimitOf(info.providerID, info.modelID);
+            await postHook({
+              hook_event_name: "Status",
+              session_id: sid,
+              model: info.modelID || undefined,
+              context_window: {
+                total_input_tokens: total,
+                context_window_size: limit,
+              },
+            });
+          }
         }
         if (info?.role === "assistant" && info?.time?.completed && info?.finish && info.finish !== "tool-calls") {
           clearStopTimer();
           stopTimer = setTimeout(() => {
             stopTimer = null;
-            void postHook({ hook_event_name: "Stop" });
+            void emitStop(sid);
           }, 200);
         }
       }
@@ -373,9 +565,11 @@ export const HiveBridge = async () => {
   },
   "tool.execute.before": async (input) => {
     clearStopTimer();
+    lastStopAt = 0;
     try {
       await postHook({
         hook_event_name: "PreToolUse",
+        session_id: sidOf(input),
         tool_name: input?.tool || input?.name || "tool",
         tool_input: input?.args || {},
       });
@@ -386,13 +580,15 @@ export const HiveBridge = async () => {
     try {
       await postHook({
         hook_event_name: "PostToolUse",
+        session_id: sidOf(input),
         tool_name: input?.tool || input?.name || "tool",
         tool_input: input?.args || {},
       });
     } catch {}
   },
-  "chat.message": async (_input, output) => {
+  "chat.message": async (input, output) => {
     clearStopTimer();
+    lastStopAt = 0;
     try {
       const parts = Array.isArray(output?.parts) ? output.parts : [];
       const text = parts
@@ -400,7 +596,7 @@ export const HiveBridge = async () => {
         .map((p) => p.text)
         .join("\n");
       if (text) {
-        await postHook({ hook_event_name: "UserPromptSubmit", prompt: text.slice(-4096) });
+        await postHook({ hook_event_name: "UserPromptSubmit", session_id: sidOf(output) || sidOf(input), prompt: text.slice(-4096) });
       }
     } catch {}
   },
@@ -408,6 +604,16 @@ export const HiveBridge = async () => {
 export default HiveBridge;
 "#;
     let _ = atomic_write_string(&plugin_path, plugin_src);
+    let oc_dir = agent_dir.join(".opencode");
+    if fs::create_dir_all(&oc_dir).is_ok() {
+        let tui_path = oc_dir.join("tui.json");
+        if !tui_path.exists() {
+            let _ = atomic_write_string(
+                &tui_path,
+                "{\n  \"$schema\": \"https://opencode.ai/tui.json\",\n  \"theme\": \"system\"\n}\n",
+            );
+        }
+    }
 
     let mut cfg = Map::new();
     cfg.insert("autoupdate".to_string(), Value::Bool(false));
@@ -417,6 +623,7 @@ export default HiveBridge;
     cfg.insert(
         "instructions".to_string(),
         json!([
+            agent_dir.join("identity.md").to_string_lossy().into_owned(),
             hive_root.join("PROTOCOL.md").to_string_lossy().into_owned(),
             hive_root.join("COMMANDS.md").to_string_lossy().into_owned(),
         ]),
@@ -475,6 +682,8 @@ fn install_codex_home(home: &Path, hive_root: &Path, agent_dir: &Path) -> Option
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_cmd }] }],
             "PreToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_cmd }] }],
             "PostToolUse": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_cmd }] }],
+            "PreCompact": [{ "hooks": [{ "type": "command", "command": hook_cmd }] }],
+            "PostCompact": [{ "hooks": [{ "type": "command", "command": hook_cmd }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_cmd }] }],
         }
     });
@@ -482,6 +691,93 @@ fn install_codex_home(home: &Path, hive_root: &Path, agent_dir: &Path) -> Option
         let _ = atomic_write_string(&codex_dir.join("hooks.json"), &text);
     }
     Some(codex_dir)
+}
+
+fn install_gemini_hooks(agent_dir: &Path) -> Option<PathBuf> {
+    let gemini_dir = agent_dir.join(".gemini-hive");
+    let settings_path = gemini_dir.join("system-settings.json");
+    let hook_cmd = "curl -sS -m 5 -X POST \"$MD_HOOK_URL\" -H \"Authorization: Bearer $MD_HOOK_TOKEN\" -H \"Content-Type: application/json\" --data-binary @- || true";
+    let hook_entry = |name: &str, matcher: Option<&str>| -> Value {
+        let mut obj = Map::new();
+        if let Some(m) = matcher {
+            obj.insert("matcher".to_string(), json!(m));
+        }
+        obj.insert("sequential".to_string(), json!(true));
+        obj.insert(
+            "hooks".to_string(),
+            json!([{
+                "name": format!("munder-hive-{name}"),
+                "type": "command",
+                "command": hook_cmd,
+                "timeout": 30000
+            }]),
+        );
+        Value::Object(obj)
+    };
+    let doc = json!({
+        "hooksConfig": { "enabled": true, "notifications": false },
+        "hooks": {
+            "SessionStart": [hook_entry("session-start", None)],
+            "BeforeAgent": [hook_entry("before-agent", None)],
+            "BeforeTool": [hook_entry("before-tool", Some(".*"))],
+            "AfterTool": [hook_entry("after-tool", Some(".*"))],
+            "AfterAgent": [hook_entry("after-agent", None)],
+        }
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&doc)
+        && atomic_write_string(&settings_path, &text).is_ok()
+    {
+        return Some(settings_path);
+    }
+    None
+}
+
+fn install_pi_hooks(agent_dir: &Path) -> Option<PathBuf> {
+    let pi_dir = agent_dir.join(".pi-agent");
+    let ext_path = pi_dir.join("extensions").join("hive-bridge.js");
+    let ext_src = r#"async function postHook(payload) {
+  try {
+    const url = process.env.MD_HOOK_URL;
+    const tok = process.env.MD_HOOK_TOKEN;
+    if (!url || !tok) return;
+    payload.agent_id = payload.agent_id || process.env.AGENT_ID || undefined;
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": `Bearer ${tok}`,
+      },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  } catch {}
+}
+
+export default function (pi) {
+  void postHook({ hook_event_name: "SessionStart" });
+  pi.on("tool_call", async (event) => {
+    await postHook({ hook_event_name: "PreToolUse", tool_name: event?.toolName || event?.tool });
+  });
+  pi.on("tool_result", async (event) => {
+    await postHook({ hook_event_name: "PostToolUse", tool_name: event?.toolName || event?.tool });
+  });
+  pi.on("agent_end", async () => {
+    await postHook({ hook_event_name: "Stop" });
+  });
+}
+"#;
+    if atomic_write_string(&ext_path, ext_src).is_err() {
+        return None;
+    }
+    let manifest = json!({
+        "name": "munder-hive-bridge",
+        "version": "0.3.2",
+        "main": "extensions/hive-bridge.js",
+        "auto": true
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&manifest) {
+        let _ = atomic_write_string(&pi_dir.join("extensions.json"), &text);
+    }
+    Some(pi_dir)
 }
 
 pub fn build_seed_prompt(
@@ -554,6 +850,30 @@ pub fn prepare_agent_spawn(
     write_commands_md(&hive_root);
     ensure_agent_hive_dirs(&hive_root, agent_id, name);
 
+    let agent_dir_path = hive_root.join("agents").join(agent_id);
+    if is_safe_id(agent_id) {
+        let role_label = if is_god {
+            "orchestrator (god)"
+        } else {
+            role.filter(|s| !s.trim().is_empty()).unwrap_or("agent")
+        };
+        let cwd_disp = expand_tilde(&opts.cwd).to_string_lossy().into_owned();
+        let identity_body = if is_god {
+            format!(
+                "# {name} ({agent_id})\n- Role: {role_label}\n- Working directory: {cwd_disp}\n- You are the **god / orchestrator**. Coordinate the floor, delegate execution to agents or temps, and own decomposition, sign-offs, and final QA.\n- Monitor the team with `fleet.json` and `registry.json`; full command reference in `COMMANDS.md`.\n"
+            )
+        } else {
+            format!(
+                "# {name} ({agent_id})\n- Role: {role_label}\n- Working directory: {cwd_disp}\n"
+            )
+        };
+        let id_path = agent_dir_path.join("identity.md");
+        if fs::read_to_string(&id_path).ok().as_deref() != Some(identity_body.as_str()) {
+            let _ = atomic_write_string(&id_path, &identity_body);
+        }
+        ensure_agent_skills(&agent_dir_path);
+    }
+
     // Ensure agent exists in registry.json
     if is_safe_id(agent_id) {
         let mut entry = Map::new();
@@ -567,7 +887,21 @@ pub fn prepare_agent_spawn(
         entry.insert("isGod".to_string(), Value::Bool(is_god));
         entry.insert("archived".to_string(), Value::Bool(false));
         entry.insert("stopped".to_string(), Value::Bool(false));
-        if let Some(r) = role.filter(|s| !s.trim().is_empty()) {
+        if opts.resume != Some(true) {
+            let now_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            entry.insert("startedAt".to_string(), Value::Number(now_ms.into()));
+        }
+        let effective_role = role
+            .filter(|s| !s.trim().is_empty())
+            .or(if is_god {
+                Some("orchestrator (god)")
+            } else {
+                None
+            });
+        if let Some(r) = effective_role {
             entry.insert("role".to_string(), Value::String(r.to_string()));
         }
         let _ = state.hive.lock().unwrap().register_worker(agent_id, entry);
@@ -576,7 +910,6 @@ pub fn prepare_agent_spawn(
     let _ = md_hive::memory::write_memory_index(&home);
 
     let port = state.port;
-    let agent_dir_path = hive_root.join("agents").join(agent_id);
     opts.env
         .entry("AGENT_ID".to_string())
         .or_insert_with(|| agent_id.to_string());
@@ -635,11 +968,17 @@ pub fn prepare_agent_spawn(
     for (k, v) in custom_env {
         opts.env.entry(k).or_insert(v);
     }
-    if !opts.env.contains_key("PATH") {
-        opts.env.insert(
-            "PATH".to_string(),
-            ensure_extra_path_entries(std::env::var("PATH").ok()),
-        );
+    let cur_path = opts
+        .env
+        .get("PATH")
+        .cloned()
+        .unwrap_or_else(|| ensure_extra_path_entries(std::env::var("PATH").ok()));
+    let bin_str = hive_root.join("bin").to_string_lossy().into_owned();
+    if !cur_path.split(':').any(|p| p == bin_str) {
+        opts.env
+            .insert("PATH".to_string(), format!("{bin_str}:{cur_path}"));
+    } else {
+        opts.env.entry("PATH".to_string()).or_insert(cur_path);
     }
 
     // Apply `maxTurns` and OpenCode non-interactive config/plugin bridge.
@@ -694,6 +1033,26 @@ pub fn prepare_agent_spawn(
                 {
                     opts.env
                         .insert("OPENCODE_CONFIG_CONTENT".to_string(), content);
+                }
+            }
+            "gemini" => {
+                if !opts.env.contains_key("GEMINI_CLI_SYSTEM_SETTINGS_PATH")
+                    && let Some(settings_path) = install_gemini_hooks(&agent_dir)
+                {
+                    opts.env.insert(
+                        "GEMINI_CLI_SYSTEM_SETTINGS_PATH".to_string(),
+                        settings_path.to_string_lossy().into_owned(),
+                    );
+                }
+            }
+            "pi" => {
+                if !opts.env.contains_key("PI_CODING_AGENT_DIR")
+                    && let Some(pi_dir) = install_pi_hooks(&agent_dir)
+                {
+                    opts.env.insert(
+                        "PI_CODING_AGENT_DIR".to_string(),
+                        pi_dir.to_string_lossy().into_owned(),
+                    );
                 }
             }
             _ => {}

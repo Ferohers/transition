@@ -641,6 +641,142 @@ pub fn directory_size_bytes(path: &Path) -> u64 {
     total
 }
 
+fn run_git_sync_in(dir: &Path, args: &[&str]) -> Result<String, String> {
+    if !dir.is_dir() {
+        return Err(format!("cwd does not exist: {}", dir.display()));
+    }
+    let out = std::process::Command::new("git")
+        .arg("-c")
+        .arg("protocol.file.allow=never")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.is_empty() {
+            format!("git exited {}", out.status)
+        } else {
+            err
+        })
+    }
+}
+
+/// Returns true if `cwd` is inside a git working tree (synchronous helper for project discovery).
+pub fn is_repo_sync(cwd: &Path) -> bool {
+    run_git_sync_in(cwd, &["rev-parse", "--is-inside-work-tree"])
+        .is_ok_and(|s| s.trim() == "true")
+}
+
+/// Resolves the main repository root (or top-level working tree) for `cwd`.
+pub fn main_repo_sync(cwd: &Path) -> Option<PathBuf> {
+    let common = run_git_sync_in(cwd, &["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .ok()?;
+    let p = PathBuf::from(common.trim());
+    if p.file_name().and_then(|n| n.to_str()) == Some(".git") {
+        p.parent().map(Path::to_path_buf)
+    } else {
+        run_git_sync_in(cwd, &["rev-parse", "--show-toplevel"])
+            .ok()
+            .map(|s| PathBuf::from(s.trim()))
+    }
+}
+
+/// Initializes a standalone git repository in `cwd` if `.git` does not exist yet
+/// (checked with `symlink_metadata` to avoid following dangling symlinks). When
+/// `first_commit` is provided, creates an initial empty commit so worktrees can
+/// branch immediately.
+pub fn init_repo_sync(cwd: &Path, first_commit: Option<&str>) -> bool {
+    if !cwd.is_dir() || cwd.join(".git").symlink_metadata().is_ok() {
+        return false;
+    }
+    let base_args = [
+        "-c",
+        "commit.gpgsign=false",
+        "-c",
+        "user.name=Munder Difflin",
+        "-c",
+        "user.email=hive@local",
+    ];
+    let mut init_args: Vec<&str> = base_args.to_vec();
+    init_args.extend(["init", "-q", "--template="]);
+    if run_git_sync_in(cwd, &init_args).is_err() {
+        return false;
+    }
+    if let Some(msg) = first_commit {
+        let mut commit_args: Vec<&str> = base_args.to_vec();
+        commit_args.extend(["commit", "-q", "--allow-empty", "--no-verify", "-m", msg]);
+        if run_git_sync_in(cwd, &commit_args).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Creates a git worktree at `worktree_dir` branched from `repo_dir`.
+pub fn add_worktree_sync(
+    repo_dir: &Path,
+    worktree_dir: &Path,
+    branch: &str,
+    base_branch: Option<&str>,
+) -> Result<(), String> {
+    if !is_safe_rev(branch) {
+        return Err("invalid worktree branch name".to_string());
+    }
+    if let Some(b) = base_branch
+        && !is_safe_rev(b)
+    {
+        return Err("invalid base branch name".to_string());
+    }
+    if let Some(parent) = worktree_dir.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let wt_str = worktree_dir.to_string_lossy().into_owned();
+    let mut args = vec!["worktree", "add", "-b", branch, &wt_str];
+    if let Some(b) = base_branch.filter(|s| !s.is_empty()) {
+        args.push(b);
+    }
+    run_git_sync_in(repo_dir, &args).map(|_| ())
+}
+
+/// Removes a git worktree cleanly (falling back to directory removal + prune).
+pub fn remove_worktree_sync(repo_dir: &Path, worktree_dir: &Path) {
+    let wt_str = worktree_dir.to_string_lossy().into_owned();
+    if run_git_sync_in(repo_dir, &["worktree", "remove", "--force", &wt_str]).is_err() {
+        let _ = std::fs::remove_dir_all(worktree_dir);
+        let _ = run_git_sync_in(repo_dir, &["worktree", "prune"]);
+    }
+}
+
+/// Stages and commits any dirty changes in `cwd` (used on isolated temp worker teardown).
+pub fn commit_all_sync(cwd: &Path, message: &str) -> Result<bool, String> {
+    let status = run_git_sync_in(cwd, &["status", "--porcelain"])?;
+    if status.trim().is_empty() {
+        return Ok(false);
+    }
+    run_git_sync_in(cwd, &["add", "-A"])?;
+    run_git_sync_in(
+        cwd,
+        &[
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "user.name=Munder Difflin",
+            "-c",
+            "user.email=hive@local",
+            "commit",
+            "-q",
+            "--no-verify",
+            "-m",
+            message,
+        ],
+    )?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -669,5 +805,34 @@ mod tests {
         assert!(main_repo(&path_str).await.is_some());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn init_repo_worktree_and_commit_all_work() {
+        let root = std::env::temp_dir().join(format!(
+            "md-git-wt-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let proj = root.join("proj");
+        let wt = root.join("wt-1");
+        std::fs::create_dir_all(&proj).unwrap();
+        assert!(!is_repo_sync(&proj));
+        assert!(init_repo_sync(&proj, Some("Project folder made by Munder Difflin")));
+        assert!(is_repo_sync(&proj));
+        assert_eq!(
+            main_repo_sync(&proj).and_then(|p| p.canonicalize().ok()),
+            proj.canonicalize().ok()
+        );
+
+        add_worktree_sync(&proj, &wt, "temp-worker-1", None).unwrap();
+        assert!(is_repo_sync(&wt));
+        std::fs::write(wt.join("hello.txt"), "anvil").unwrap();
+        assert!(commit_all_sync(&wt, "temp work").unwrap());
+        assert!(!commit_all_sync(&wt, "nothing left").unwrap());
+
+        std::fs::remove_dir_all(&root).ok();
     }
 }

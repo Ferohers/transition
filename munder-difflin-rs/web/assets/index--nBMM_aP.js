@@ -140141,7 +140141,7 @@ const HOME_CSS = `
 ${SIM_BTN_CSS}
 /* M30-260 (founder, 6 Nov): the Theme button opens one plain dropdown: every theme, Create your own, Light or Dark.
    M30-498: it drops from the top bar, so it opens at the top of Home, to its end edge. */
-.cth-home .dd{position:absolute;top:8px;inset-inline-end:10px;width:404px;max-width:calc(100% - 20px);max-height:calc(100% - 16px);background:var(--p);border:1px solid var(--bd);border-radius:12px;box-shadow:var(--shadow);z-index:64;display:flex;flex-direction:column;min-height:0}
+.cth-home .dd{position:absolute;top:8px;inset-inline-end:max(10px,var(--fb-right-pad,10px));width:404px;max-width:calc(100% - 20px);max-height:calc(100% - 16px);background:var(--p);border:1px solid var(--bd);border-radius:12px;box-shadow:var(--shadow);z-index:64;display:flex;flex-direction:column;min-height:0}
 .cth-home .dd header{display:flex;align-items:center;gap:10px;padding:10px 12px;padding-inline-start:14px;border-bottom:1px solid var(--dv)}
 .cth-home .dd header .tt{flex:1;min-width:0}
 .cth-home .dd header b{display:block;font-size:14px;line-height:18px;font-weight:600}
@@ -141552,11 +141552,12 @@ function HomeScreen({ config: config2 }) {
   ] });
 }
 function useHomeBox(homeRef, stageRef, kind, theme2) {
-  reactExports.useEffect(() => {
+  reactExports.useLayoutEffect(() => {
     const home = homeRef.current, stage2 = stageRef.current;
     if (!home || !stage2) return void 0;
     const inner = floorInnerAspect(theme2);
     const px = (n) => `${n}px`;
+    const topbarOwner = home.closest("[data-pro-main]");
     const set2 = () => {
       const b = homeBoxOf({ homeW: home.clientWidth, stageH: stage2.clientHeight, receipt: !!home.querySelector("[data-home-receipt]"), kind, inner });
       const st2 = home.style;
@@ -141565,12 +141566,19 @@ function useHomeBox(homeRef, stageRef, kind, theme2) {
       st2.setProperty("--fb-w", px(b.w));
       st2.setProperty("--fb-h", px(b.h));
       st2.setProperty("--in-w", px(b.inputW));
+      if (topbarOwner) {
+        const rightPad = r$1(Math.max(0, home.clientWidth - (b.x + b.w)));
+        topbarOwner.style.setProperty("--fb-right-pad", px(rightPad));
+      }
     };
     const seen2 = new ResizeObserver(set2);
     seen2.observe(home);
     seen2.observe(stage2);
     set2();
-    return () => seen2.disconnect();
+    return () => {
+      seen2.disconnect();
+      topbarOwner?.style.removeProperty("--fb-right-pad");
+    };
   }, [homeRef, stageRef, kind, theme2]);
 }
 const WORKBENCH_ENGINES = {
@@ -144215,7 +144223,7 @@ function ProShell({
         integrationsNeedLook
       }
     ),
-    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, minWidth: 0, minHeight: 0, position: "relative", background: "var(--cth-cream-50)", display: "flex", flexDirection: "column" }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-pro-main": true, style: { flex: 1, minWidth: 0, minHeight: 0, position: "relative", background: "var(--cth-cream-50)", display: "flex", flexDirection: "column" }, children: [
       screen === PRO_HOME && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-pro-topbar": true, style: {
         height: 44,
         minHeight: 44,
@@ -144224,7 +144232,10 @@ function ProShell({
         alignItems: "center",
         justifyContent: "flex-end",
         gap: 8,
-        padding: "4px 18px 0",
+        paddingTop: 4,
+        paddingInlineEnd: "var(--fb-right-pad, 18px)",
+        paddingInlineStart: 18,
+        paddingBottom: 0,
         background: "var(--cth-cream-50)",
         userSelect: "none"
       }, children: [

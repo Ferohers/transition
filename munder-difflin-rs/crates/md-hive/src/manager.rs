@@ -312,6 +312,47 @@ impl HiveManager {
         read_json_dir(&root.join("agents").join(agent_id).join("inbox"))
     }
 
+    /// Move handled inbox files (`<id>.json`) to `agents/<agent_id>/inbox/.done/`.
+    pub fn file_inbox_messages(&self, agent_id: &str, ids: &[String]) -> usize {
+        let Some(root) = self.root() else {
+            return 0;
+        };
+        if !is_safe_id(agent_id) || ids.is_empty() {
+            return 0;
+        }
+        let inbox_dir = root.join("agents").join(agent_id).join("inbox");
+        let done_dir = inbox_dir.join(".done");
+        let _ = fs::create_dir_all(&done_dir);
+        let wanted: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let Ok(entries) = fs::read_dir(&inbox_dir) else {
+            return 0;
+        };
+        let mut moved = 0usize;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() || path.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let stem = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let matches_id = wanted.contains(stem)
+                || fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+                    .and_then(|v| v.get("id").and_then(|x| x.as_str()).map(|s| wanted.contains(s)))
+                    .unwrap_or(false);
+            if matches_id
+                && let Some(fname) = path.file_name()
+                && fs::rename(&path, done_dir.join(fname)).is_ok()
+            {
+                moved += 1;
+            }
+        }
+        moved
+    }
+
     pub fn send_message(&mut self, mut msg: Value, from: &str) -> Result<Value, CoreError> {
         let root = self.ensure_hive()?;
         let Some(obj) = msg.as_object_mut() else {

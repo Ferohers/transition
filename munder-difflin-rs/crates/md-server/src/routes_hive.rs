@@ -109,6 +109,29 @@ async fn handle_hook(
         roster_ctx.as_deref(),
     );
 
+    let source = payload.get("source").and_then(|v| v.as_str());
+    let seen_prompts = state
+        .hooks
+        .proof
+        .lock()
+        .unwrap()
+        .recent_prompts(&eff_agent_id);
+    let to_file = state.wake_filing.lock().unwrap().note_hook(
+        &eff_agent_id,
+        event_name,
+        source,
+        &seen_prompts,
+        now_ms(),
+    );
+    if !to_file.is_empty() {
+        state.sync_hive_home();
+        let _ = state
+            .hive
+            .lock()
+            .unwrap()
+            .file_inbox_messages(&eff_agent_id, &to_file);
+    }
+
     if matches!(event_name, "Stop" | "SubagentStop") && reply.get("continue").is_none() {
         state.sync_hive_home();
         let unread = state.hive.lock().unwrap().inbox(&eff_agent_id);
@@ -384,20 +407,40 @@ async fn hive_inbox(Path(id): Path<String>, State(state): State<AppState>) -> Js
     Json(state.hive.lock().unwrap().inbox(&id))
 }
 
-fn deliver_or_enqueue(state: &AppState, target_id: &str, text: String, provider_hint: Option<&str>) {
-    state.emit(
-        "hive:enqueue",
-        serde_json::json!({ "targetId": target_id, "text": text }),
-    );
+pub(crate) fn deliver_or_enqueue(
+    state: &AppState,
+    target_id: &str,
+    text: String,
+    provider_hint: Option<&str>,
+) {
+    deliver_or_enqueue_inner(state, target_id, text, provider_hint, false);
+}
+
+fn deliver_or_enqueue_inner(
+    state: &AppState,
+    target_id: &str,
+    text: String,
+    provider_hint: Option<&str>,
+    from_inbox: bool,
+) {
+    let payload = if from_inbox {
+        serde_json::json!({ "targetId": target_id, "text": text, "fromInbox": true })
+    } else {
+        serde_json::json!({ "targetId": target_id, "text": text })
+    };
+    state.emit("hive:enqueue", payload);
     if state.events_tx.receiver_count() == 0 {
         let pty_id = format!("pty-{target_id}");
         if state.pty.info(&pty_id).is_some() {
             let sub = state.submitter.clone();
             let st_clone = state.clone();
+            let st_done = state.clone();
             let tid = target_id.to_string();
+            let tid_done = target_id.to_string();
+            let text_done = text.clone();
             let prov = provider_hint.unwrap_or("opencode").to_string();
             tokio::spawn(async move {
-                let _ = sub
+                if let Ok(res) = sub
                     .submit(
                         md_pty::submitter::PtySubmitRequest {
                             pty_id,
@@ -410,10 +453,28 @@ fn deliver_or_enqueue(state: &AppState, target_id: &str, text: String, provider_
                             ref_id: None,
                         },
                         move |r| {
-                            st_clone.emit("pty:began", serde_json::json!({ "ptyId": r.pty_id }));
+                            st_clone.emit("pty:began", serde_json::json!(r.pty_id));
                         },
                     )
-                    .await;
+                    .await
+                {
+                    let to_file = st_done.wake_filing.lock().unwrap().note_typed(
+                        &tid_done,
+                        &text_done,
+                        &res.outcome,
+                        res.ms,
+                        false,
+                        now_ms(),
+                    );
+                    if !to_file.is_empty() {
+                        st_done.sync_hive_home();
+                        let _ = st_done
+                            .hive
+                            .lock()
+                            .unwrap()
+                            .file_inbox_messages(&tid_done, &to_file);
+                    }
+                }
             });
         }
     }
@@ -443,7 +504,7 @@ async fn hive_send(
                     if let Some(tid) = t.as_str()
                         && tid != "human"
                     {
-                        deliver_or_enqueue(&state, tid, text.clone(), None);
+                        deliver_or_enqueue_inner(&state, tid, text.clone(), None, true);
                     }
                 }
             }
@@ -1224,10 +1285,470 @@ fn evaluate_circuit_breaker_tick(state: &AppState) {
     }
 }
 
+fn run_compact_and_clear_requests(state: &AppState) {
+    let Some(home) = state.harness_home() else {
+        return;
+    };
+    let hive_root = home.join("hive");
+    for (dir_name, is_clear) in [("compact-requests", false), ("clear-requests", true)] {
+        let dir = hive_root.join(dir_name);
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        let mut files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json"))
+            .collect();
+        files.sort();
+        for path in files {
+            let fname = path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "req.json".to_string());
+            let Ok(raw) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let fail = |err: &str| {
+                let failed = dir.join(".failed");
+                let _ = std::fs::create_dir_all(&failed);
+                let _ = std::fs::write(
+                    failed.join(&fname),
+                    serde_json::json!({ "error": err, "raw": raw }).to_string(),
+                );
+                let _ = std::fs::remove_file(&path);
+            };
+            let Ok(v) = serde_json::from_str::<Value>(&raw) else {
+                fail("invalid JSON");
+                continue;
+            };
+            let agent_id = v
+                .get("agent")
+                .or_else(|| v.get("agentId"))
+                .and_then(|x| x.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| fname.trim_end_matches(".json"));
+            let pty_id = format!("pty-{agent_id}");
+            if state.pty.info(&pty_id).is_none() {
+                fail("agent PTY is not live");
+                continue;
+            }
+            let done = dir.join(".done");
+            let _ = std::fs::create_dir_all(&done);
+            let _ = std::fs::rename(&path, done.join(&fname));
+
+            state.hive.lock().unwrap().append_log(&serde_json::json!({
+                "kind": if is_clear { "clear-requested" } else { "compact-requested" },
+                "agentId": agent_id,
+                "reason": v.get("reason").and_then(|r| r.as_str()).unwrap_or(""),
+            }));
+            if is_clear {
+                let rule = crate::routes_catalog::merged_context_trigger(
+                    state
+                        .config
+                        .lock()
+                        .unwrap()
+                        .read()
+                        .extra
+                        .get("contextTrigger"),
+                )
+                .get("clear")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
+                state.emit(
+                    "context:trigger",
+                    serde_json::json!({ "action": "clear", "rule": rule }),
+                );
+                if state.events_tx.receiver_count() == 0 {
+                    deliver_or_enqueue(state, agent_id, "/new".to_string(), None);
+                }
+            } else {
+                state.emit(
+                    "hive:compactAsked",
+                    serde_json::json!({ "agentId": agent_id }),
+                );
+                if state.events_tx.receiver_count() == 0 {
+                    deliver_or_enqueue(state, agent_id, "/compact".to_string(), None);
+                }
+            }
+        }
+    }
+}
+
+fn run_scheduled_missions(state: &AppState) {
+    let now = now_ms();
+    let (missions, ctx_trigger) = {
+        let mut cfg_store = state.config.lock().unwrap();
+        let cfg = cfg_store.read();
+        let list = cfg
+            .extra
+            .get("missions")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let ct = crate::routes_catalog::merged_context_trigger(cfg.extra.get("contextTrigger"));
+        (list, ct)
+    };
+    if missions.is_empty() {
+        return;
+    }
+
+    let mut updated_missions = missions.clone();
+    let mut fired_any = false;
+
+    for (idx, m) in missions.iter().enumerate() {
+        if !m.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        let interval_ms = m
+            .get("intervalMs")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0)
+            .or_else(|| {
+                m.get("intervalMinutes")
+                    .and_then(|v| v.as_u64())
+                    .filter(|&n| n > 0)
+                    .map(|mins| mins * 60_000)
+            })
+            .unwrap_or(0);
+        if interval_ms == 0 {
+            continue;
+        }
+        let last_fired = m.get("lastFiredAt").and_then(|v| v.as_u64()).unwrap_or(0);
+        if now.saturating_sub(last_fired) < interval_ms {
+            continue;
+        }
+
+        fired_any = true;
+        if let Some(obj) = updated_missions.get_mut(idx).and_then(|v| v.as_object_mut()) {
+            obj.insert("lastFiredAt".to_string(), serde_json::json!(now));
+        }
+
+        let id = m.get("id").and_then(|v| v.as_str()).unwrap_or("mission");
+        let kind = m.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+        let auto_compact = m.get("autoCompact").and_then(|v| v.as_bool()).unwrap_or(false);
+        let label = m.get("label").and_then(|v| v.as_str()).unwrap_or(id);
+        let body = m.get("body").and_then(|v| v.as_str()).unwrap_or("");
+        let to = m
+            .get("to")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("god");
+
+        if kind != "compact" {
+            state.sync_hive_home();
+            if (to == "temp" || to.starts_with("temp:"))
+                && let Some(home) = state.harness_home()
+            {
+                let sr_dir = home.join("hive").join("spawn-requests");
+                let _ = std::fs::create_dir_all(&sr_dir);
+                let slug = format!("mission-{id}-{now}");
+                let cwd = home.join("hive").join("projects").join(&slug);
+                let doc = serde_json::json!({
+                    "name": label,
+                    "objective": body,
+                    "cwd": cwd.to_string_lossy().into_owned(),
+                    "cloneOf": to.strip_prefix("temp:").filter(|s| !s.is_empty()),
+                });
+                let _ = std::fs::write(sr_dir.join(format!("{slug}.json")), doc.to_string());
+            } else {
+                let target = if to == "temp" || to.starts_with("temp:") { "god" } else { to };
+                let msg = serde_json::json!({
+                    "to": target,
+                    "act": "request",
+                    "subject": label,
+                    "body": body,
+                });
+                if let Ok(saved) = state.hive.lock().unwrap().send_message(msg, "scheduler") {
+                    state.emit("hive:message", saved);
+                    let text = format!("[SCHEDULED MISSION: {label}]\n{body}");
+                    deliver_or_enqueue_inner(state, target, text, None, true);
+                }
+            }
+        }
+
+        if kind == "compact" || auto_compact {
+            let rule = ctx_trigger
+                .get("compact")
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!({ "enabled": true }));
+            state.emit(
+                "context:trigger",
+                serde_json::json!({ "action": "compact", "rule": rule }),
+            );
+        }
+    }
+
+    if fired_any
+        && let Ok(next_cfg) = state
+            .config
+            .lock()
+            .unwrap()
+            .update(serde_json::json!({ "missions": updated_missions }))
+    {
+        state.emit("missions:updated", serde_json::json!({ "ok": true }));
+        if let Ok(val) = serde_json::to_value(&next_cfg) {
+            state.emit("config:changed", val);
+        }
+    }
+}
+
+fn run_context_trigger_tick(
+    state: &AppState,
+    last_cadence_run: &mut HashMap<&'static str, u64>,
+    last_pressure_compact: &mut HashMap<String, u64>,
+) {
+    let now = now_ms();
+    let cfg = state.config.lock().unwrap().read();
+    let ct = crate::routes_catalog::merged_context_trigger(cfg.extra.get("contextTrigger"));
+
+    for action in ["compact", "clear"] {
+        let Some(rule) = ct.get(action) else {
+            continue;
+        };
+        let enabled = rule.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+        let every_ms = rule.get("everyMs").and_then(|v| v.as_u64()).unwrap_or(0);
+        if !enabled || every_ms == 0 {
+            continue;
+        }
+        let prev = *last_cadence_run.entry(action).or_insert(now);
+        if now.saturating_sub(prev) >= every_ms {
+            last_cadence_run.insert(action, now);
+            state.emit(
+                "context:trigger",
+                serde_json::json!({ "action": action, "rule": rule }),
+            );
+        }
+    }
+
+    // Immediate token-pressure check when `compact.enabled` is true.
+    if let Some(compact_rule) = ct.get("compact")
+        && compact_rule
+            .get("enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    {
+        let pct_std = compact_rule
+            .get("minContextPct")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(50);
+        let pct_large = compact_rule
+            .get("minContextPctLargeWindow")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(30);
+        let contexts = state.hooks.context_by_id.lock().unwrap().clone();
+        for (aid, snap) in contexts {
+            if snap.limit == 0 || snap.tokens == 0 {
+                continue;
+            }
+            let bar_pct = if snap.limit >= 600_000 { pct_large } else { pct_std };
+            if bar_pct > 0 && snap.tokens.saturating_mul(100) >= snap.limit.saturating_mul(bar_pct) {
+                let prev_a = last_pressure_compact.get(&aid).copied().unwrap_or(0);
+                if now.saturating_sub(prev_a) >= 120_000 {
+                    last_pressure_compact.insert(aid.clone(), now);
+                    state.emit(
+                        "hive:compactAsked",
+                        serde_json::json!({ "agentId": aid }),
+                    );
+                    if state.events_tx.receiver_count() == 0 {
+                        deliver_or_enqueue(state, &aid, "/compact".to_string(), None);
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub(crate) async fn probe_terminal_safe(state: &AppState, pty_id: &str) -> bool {
+    if state.events_tx.receiver_count() == 0 {
+        return true;
+    }
+    let Some(info) = state.pty.info(pty_id) else {
+        return true;
+    };
+    let (probe_req, rx) = state.probes.register(pty_id, info.cols, info.rows);
+    let probe_id = probe_req.id.clone();
+    if let Ok(val) = serde_json::to_value(&probe_req) {
+        state.emit("terminal:probe", val);
+    }
+    state
+        .probes
+        .wait_with_timeout(&probe_id, rx)
+        .await
+        .map(|reply| reply.safe)
+        .unwrap_or(true)
+}
+
+fn run_wake_filing_quiet_tick(state: &AppState) {
+    let waiting = state.wake_filing.lock().unwrap().waiting();
+    if waiting.is_empty() {
+        return;
+    }
+    let ptys = state.pty.list();
+    let now = now_ms();
+    let mut to_file: Vec<(String, Vec<String>)> = Vec::new();
+    {
+        let mut wf = state.wake_filing.lock().unwrap();
+        for agent_id in waiting {
+            let pty_id = format!("pty-{agent_id}");
+            let last_out = ptys
+                .iter()
+                .find(|p| p.id == pty_id)
+                .map(|p| p.last_output_at)
+                .unwrap_or(0);
+            let ids = wf.note_quiet(&agent_id, last_out, now);
+            if !ids.is_empty() {
+                to_file.push((agent_id, ids));
+            }
+        }
+    }
+    if !to_file.is_empty() {
+        state.sync_hive_home();
+        let hive = state.hive.lock().unwrap();
+        for (agent_id, ids) in to_file {
+            let _ = hive.file_inbox_messages(&agent_id, &ids);
+        }
+    }
+}
+
+fn run_worker_wake_tick(state: &AppState, last_wake_by_agent: &mut HashMap<String, u64>) {
+    const BOOT_GRACE_MS: u64 = 35_000;
+    const QUIESCE_IDLE_MS: u64 = 12_000;
+    const WAKE_COOLDOWN_MS: u64 = 60_000;
+
+    state.sync_hive_home();
+    let reg = state.hive.lock().unwrap().registry();
+    let Some(agents) = reg.get("agents").and_then(|v| v.as_object()) else {
+        return;
+    };
+    let ptys = state.pty.list();
+    let now = now_ms();
+    let waiting: std::collections::HashSet<String> =
+        state.wake_filing.lock().unwrap().waiting().into_iter().collect();
+
+    for (agent_id, info) in agents {
+        if info.get("archived").and_then(|v| v.as_bool()).unwrap_or(false)
+            || info.get("onHold").and_then(|v| v.as_bool()).unwrap_or(false)
+            || info.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false)
+        {
+            continue;
+        }
+        if waiting.contains(agent_id) {
+            continue;
+        }
+        let prev_wake = last_wake_by_agent.get(agent_id).copied().unwrap_or(0);
+        if now.saturating_sub(prev_wake) < WAKE_COOLDOWN_MS {
+            continue;
+        }
+        let pty_id = format!("pty-{agent_id}");
+        let Some(pty_info) = state.pty.info(&pty_id) else {
+            continue;
+        };
+        if now.saturating_sub(pty_info.started_at) < BOOT_GRACE_MS {
+            continue;
+        }
+        let last_output_at = ptys
+            .iter()
+            .find(|p| p.id == pty_id)
+            .map(|p| p.last_output_at)
+            .unwrap_or(0);
+        if last_output_at == 0 || now.saturating_sub(last_output_at) < QUIESCE_IDLE_MS {
+            continue;
+        }
+        {
+            let ctl = state.control.lock().unwrap();
+            let snap = ctl.snapshot(agent_id);
+            if snap.paused || snap.halted || snap.auto_delivery_paused {
+                continue;
+            }
+        }
+        if state.hooks.proof.lock().unwrap().ask_open(agent_id) {
+            continue;
+        }
+
+        let inbox = state.hive.lock().unwrap().inbox(agent_id);
+        let pending = state.wake_filing.lock().unwrap().pending(agent_id, &inbox);
+        if pending.is_empty() {
+            continue;
+        }
+        let provider = info
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude")
+            .to_string();
+        let inbox_path = state.harness_home().map(|h| {
+            h.join("hive")
+                .join("agents")
+                .join(agent_id)
+                .join("inbox")
+                .to_string_lossy()
+                .into_owned()
+        });
+        let (one_line, self_file) = md_hive::wake_filing::wake_options_for_provider(&provider);
+        let (wake_text, _) = md_hive::wake_filing::build_inbox_wake(
+            &pending,
+            inbox_path.as_deref(),
+            one_line,
+            self_file,
+        );
+
+        last_wake_by_agent.insert(agent_id.clone(), now);
+        let st_clone = state.clone();
+        let aid = agent_id.clone();
+        tokio::spawn(async move {
+            if !probe_terminal_safe(&st_clone, &pty_id).await {
+                return;
+            }
+            let st_began = st_clone.clone();
+            if let Ok(res) = st_clone
+                .submitter
+                .submit(
+                    md_pty::submitter::PtySubmitRequest {
+                        pty_id,
+                        agent_id: Some(aid.clone()),
+                        provider,
+                        text: wake_text.clone(),
+                        source: "nudge".to_string(),
+                        settle_ms: Some(250),
+                        press_only: false,
+                        ref_id: None,
+                    },
+                    move |r| {
+                        st_began.emit("pty:began", serde_json::json!(r.pty_id));
+                    },
+                )
+                .await
+            {
+                let to_file = st_clone.wake_filing.lock().unwrap().note_typed(
+                    &aid,
+                    &wake_text,
+                    &res.outcome,
+                    res.ms,
+                    false,
+                    now_ms(),
+                );
+                if !to_file.is_empty() {
+                    st_clone.sync_hive_home();
+                    let _ = st_clone
+                        .hive
+                        .lock()
+                        .unwrap()
+                        .file_inbox_messages(&aid, &to_file);
+                }
+            }
+        });
+    }
+}
+
 pub fn spawn_hive_poller(state: AppState) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
         let mut ticks: u64 = 0;
+        let mut last_cadence_run: HashMap<&'static str, u64> = HashMap::new();
+        let mut last_pressure_compact: HashMap<String, u64> = HashMap::new();
+        let mut last_wake_by_agent: HashMap<String, u64> = HashMap::new();
         loop {
             interval.tick().await;
             ticks += 1;
@@ -1245,14 +1766,21 @@ pub fn spawn_hive_poller(state: AppState) {
                             let text = format!("[HIVE {act} from {from}] {subject}\n{body}")
                                 .trim()
                                 .to_string();
-                            deliver_or_enqueue(&state, tid, text, None);
+                            deliver_or_enqueue_inner(&state, tid, text, None, true);
                         }
                     }
                 }
             }
             process_spawn_requests(&state);
             prune_exited_workers(&state);
+            if ticks.is_multiple_of(4) {
+                run_wake_filing_quiet_tick(&state);
+                run_compact_and_clear_requests(&state);
+                run_scheduled_missions(&state);
+                run_context_trigger_tick(&state, &mut last_cadence_run, &mut last_pressure_compact);
+            }
             if ticks == 1 || ticks.is_multiple_of(8) {
+                run_worker_wake_tick(&state, &mut last_wake_by_agent);
                 evaluate_circuit_breaker_tick(&state);
                 crate::hive_bootstrap::sync_fleet_json(&state);
             }
@@ -1281,6 +1809,7 @@ fn default_screen_lines() -> usize {
 async fn hive_wake(State(state): State<AppState>, Json(req): Json<WakeReq>) -> Json<Value> {
     state.sync_hive_home();
     let pty_id = format!("pty-{}", req.agent_id);
+    let was_live = state.pty.info(&pty_id).is_some();
     let agent_info = {
         let mut hive = state.hive.lock().unwrap();
         let _ = hive.patch_agent_field(&req.agent_id, "sleeping", Some(Value::Bool(false)));
@@ -1297,7 +1826,7 @@ async fn hive_wake(State(state): State<AppState>, Json(req): Json<WakeReq>) -> J
             .cloned()
     };
 
-    if state.pty.info(&pty_id).is_none()
+    if !was_live
         && let Some(ref info) = agent_info
     {
         let cwd = info
@@ -1337,17 +1866,23 @@ async fn hive_wake(State(state): State<AppState>, Json(req): Json<WakeReq>) -> J
             resume: Some(false),
             hive: None,
         };
+        let is_god = info
+            .get("isGod")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || req.agent_id == "god";
         let seed = crate::hive_bootstrap::prepare_agent_spawn(
             &state,
             &mut spawn_opts,
             &req.agent_id,
             &name,
             &provider,
-            false,
+            is_god,
             role,
         );
         let res = state.pty.spawn(spawn_opts);
         if res.ok {
+            state.ended_agents.lock().unwrap().remove(&req.agent_id);
             state.emit(
                 "hive:agentSpawned",
                 serde_json::json!({
@@ -1372,45 +1907,100 @@ async fn hive_wake(State(state): State<AppState>, Json(req): Json<WakeReq>) -> J
         }
     }
 
-    let inbox = state.hive.lock().unwrap().inbox(&req.agent_id);
-    if !inbox.is_empty() {
-        let p = state
-            .harness_home()
-            .map(|h| h.join("hive/agents").join(&req.agent_id).join("inbox"))
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let text = format!(
-            "You have {} unread hive message(s) in {}. Please read, act on them, and move processed files to inbox/.done.",
-            inbox.len(),
-            p
-        );
-        deliver_or_enqueue(&state, &req.agent_id, text, None);
+    // When called by a connected UI (`enqueueMessage` calls `wakeAgent` unconditionally),
+    // do NOT echo `hive:enqueue` back over WebSocket or it triggers an enqueue<->wake loop.
+    // Headless mode (no WS listeners) still wakes unread inbox directly via submitter.
+    if state.events_tx.receiver_count() == 0 {
+        let inbox = state.hive.lock().unwrap().inbox(&req.agent_id);
+        if !inbox.is_empty() {
+            let p = state
+                .harness_home()
+                .map(|h| h.join("hive/agents").join(&req.agent_id).join("inbox"))
+                .map(|d| d.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            let text = format!(
+                "You have {} unread hive message(s) in {}. Please read, act on them, and move processed files to inbox/.done.",
+                inbox.len(),
+                p
+            );
+            deliver_or_enqueue(&state, &req.agent_id, text, None);
+        }
     }
     crate::hive_bootstrap::sync_fleet_json(&state);
     Json(serde_json::json!({ "ok": true }))
 }
 
+async fn hive_wake_retry(State(state): State<AppState>, Json(req): Json<WakeReq>) -> Json<Value> {
+    let ids = state.wake_filing.lock().unwrap().retry(&req.agent_id);
+    if !ids.is_empty() {
+        state.sync_hive_home();
+        state.hive.lock().unwrap().append_log(&serde_json::json!({
+            "kind": "wake-retry",
+            "agentId": req.agent_id,
+            "ids": ids,
+        }));
+    }
+    let _ = hive_wake(State(state), Json(req)).await;
+    Json(Value::Array(ids.into_iter().map(Value::String).collect()))
+}
+
 async fn hive_wake_text(Path(id): Path<String>, State(state): State<AppState>) -> Json<Value> {
     state.sync_hive_home();
-    let inbox = state.hive.lock().unwrap().inbox(&id);
-    if inbox.is_empty() {
+    let (inbox, provider) = {
+        let mut hive = state.hive.lock().unwrap();
+        let inbox = hive.inbox(&id);
+        let provider = hive
+            .registry()
+            .get("agents")
+            .and_then(|a| a.get(&id))
+            .and_then(|info| info.get("provider"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude")
+            .to_string();
+        (inbox, provider)
+    };
+    let pending = state.wake_filing.lock().unwrap().pending(&id, &inbox);
+    if pending.is_empty() {
         return Json(Value::Null);
     }
-    let text = inbox
-        .iter()
-        .map(|m| {
-            let from = m.get("from").and_then(|v| v.as_str()).unwrap_or("agent");
-            let subj = m.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-            let body = m.get("body").and_then(|v| v.as_str()).unwrap_or("");
-            format!("[from {from}] {subj} {body}").trim().to_string()
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
+    let inbox_path = state
+        .harness_home()
+        .map(|h| {
+            h.join("hive")
+                .join("agents")
+                .join(&id)
+                .join("inbox")
+                .to_string_lossy()
+                .into_owned()
+        });
+    let (one_line, self_file) = md_hive::wake_filing::wake_options_for_provider(&provider);
+    let (text, _) = md_hive::wake_filing::build_inbox_wake(
+        &pending,
+        inbox_path.as_deref(),
+        one_line,
+        self_file,
+    );
     Json(Value::String(text))
 }
 
-async fn hive_wake_unconfirmed(Path(_id): Path<String>) -> Json<Value> {
-    Json(Value::Array(Vec::new()))
+async fn hive_wake_unconfirmed(Path(id): Path<String>, State(state): State<AppState>) -> Json<Value> {
+    state.sync_hive_home();
+    let inbox = state.hive.lock().unwrap().inbox(&id);
+    let ids = state.wake_filing.lock().unwrap().unconfirmed(&id, &inbox);
+    Json(Value::Array(ids.into_iter().map(Value::String).collect()))
+}
+
+async fn hive_ended_agents(State(state): State<AppState>) -> Json<Value> {
+    let ptys = state.pty.list();
+    let live_ptys: std::collections::HashSet<&str> =
+        ptys.iter().map(|p| p.id.as_str()).collect();
+    let ended = state.ended_agents.lock().unwrap();
+    let rows: Vec<Value> = ended
+        .values()
+        .filter(|e| !live_ptys.contains(format!("pty-{}", e.agent_id).as_str()))
+        .filter_map(|e| serde_json::to_value(e).ok())
+        .collect();
+    Json(Value::Array(rows))
 }
 
 async fn pty_screen_lines(
@@ -1462,9 +2052,10 @@ pub fn hive_router() -> Router<AppState> {
         .route("/api/v1/hive/directory", get(hive_directory))
         .route("/api/v1/hive/human-mail-since", post(hive_human_mail_since))
         .route("/api/v1/hive/wake", post(hive_wake))
-        .route("/api/v1/hive/wake-retry", post(hive_wake))
+        .route("/api/v1/hive/wake-retry", post(hive_wake_retry))
         .route("/api/v1/hive/wake-text/{id}", get(hive_wake_text))
         .route("/api/v1/hive/wake-unconfirmed/{id}", get(hive_wake_unconfirmed))
+        .route("/api/v1/hive/ended-agents", get(hive_ended_agents))
         .route("/api/v1/pty/screen-lines", post(pty_screen_lines))
         .route("/api/v1/workers", get(workers_list))
         .route("/api/v1/workers/history", get(workers_history))

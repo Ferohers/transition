@@ -450,27 +450,97 @@ async fn missions_save(
     }
 }
 
+fn default_context_trigger() -> Value {
+    json!({
+        "compact": {
+            "enabled": true,
+            "everyMs": 2_400_000u64,
+            "minContextPct": 50u64,
+            "minContextPctLargeWindow": 30u64,
+            "message": "Keep the current task, recent decisions, open questions, and file paths in play. Drop resolved tangents.",
+            "force": false
+        },
+        "clear": {
+            "enabled": false,
+            "everyMs": 7_200_000u64,
+            "minContextPct": 80u64,
+            "minContextPctLargeWindow": 50u64,
+            "message": ""
+        },
+        "switchClear": {
+            "enabled": false,
+            "minContextPct": 50u64,
+            "minContextPctLargeWindow": 30u64
+        }
+    })
+}
+
+pub(crate) fn merged_context_trigger(raw: Option<&Value>) -> Value {
+    let mut base = default_context_trigger();
+    if let (Some(base_obj), Some(ovr_obj)) = (base.as_object_mut(), raw.and_then(|v| v.as_object()))
+    {
+        for (k, v) in ovr_obj {
+            if let (Some(b_sub), Some(o_sub)) =
+                (base_obj.get_mut(k).and_then(|x| x.as_object_mut()), v.as_object())
+            {
+                for (sk, sv) in o_sub {
+                    b_sub.insert(sk.clone(), sv.clone());
+                }
+            } else {
+                base_obj.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    base
+}
+
 async fn context_trigger_get(State(state): State<AppState>) -> Json<Value> {
     let cfg = state.config.lock().unwrap().read();
-    Json(
-        cfg.extra
-            .get("contextTrigger")
-            .cloned()
-            .unwrap_or_else(|| json!({})),
-    )
+    Json(merged_context_trigger(cfg.extra.get("contextTrigger")))
 }
 
 async fn context_trigger_set(
     State(state): State<AppState>,
     Json(body): Json<Value>,
 ) -> Json<Value> {
+    for section in ["compact", "clear"] {
+        if let Some(msg) = body
+            .get(section)
+            .and_then(|s| s.get("message"))
+            .and_then(|m| m.as_str())
+            && msg.chars().count() > 4000
+        {
+            return Json(json!({
+                "ok": false,
+                "error": "not saved: the message is longer than 4000 characters"
+            }));
+        }
+    }
+    let stored = {
+        let cfg = state.config.lock().unwrap().read();
+        cfg.extra.get("contextTrigger").cloned()
+    };
+    let next = if let Some(mut base) = stored.and_then(|v| v.as_object().cloned()) {
+        if let Some(inc) = body.as_object() {
+            for (k, v) in inc {
+                base.insert(k.clone(), v.clone());
+            }
+        }
+        merged_context_trigger(Some(&Value::Object(base)))
+    } else {
+        merged_context_trigger(Some(&body))
+    };
     match state
         .config
         .lock()
         .unwrap()
-        .update(json!({ "contextTrigger": body }))
+        .update(json!({ "contextTrigger": next }))
     {
-        Ok(_) => Json(json!({ "ok": true })),
+        Ok(cfg) => {
+            let effective = merged_context_trigger(cfg.extra.get("contextTrigger"));
+            state.emit("context:triggerUpdated", effective.clone());
+            Json(json!({ "ok": true, "contextTrigger": effective }))
+        }
         Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
     }
 }

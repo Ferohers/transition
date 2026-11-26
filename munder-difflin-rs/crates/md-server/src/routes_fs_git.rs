@@ -355,6 +355,111 @@ async fn fs_stat_abs(Json(req): Json<PathReq>) -> Json<Value> {
     }
 }
 
+async fn workspaces_list(State(state): State<AppState>) -> Json<Value> {
+    let mut cfg_store = state.config.lock().unwrap();
+    let cfg = cfg_store.read();
+    let home = cfg
+        .harness_home
+        .as_deref()
+        .map(md_core::config::expand_tilde)
+        .filter(|p| !p.as_os_str().is_empty());
+
+    let mut folders: Vec<String> = Vec::new();
+    let mut push_unique = |p: &Path| {
+        if p.is_dir() {
+            let s = p.to_string_lossy().into_owned();
+            if !folders.contains(&s) {
+                folders.push(s);
+            }
+        }
+    };
+
+    if let Some(ref h) = home {
+        push_unique(h);
+        for base in [h.clone(), h.join("projects"), h.join("hive").join("projects")] {
+            if let Ok(rd) = std::fs::read_dir(&base) {
+                let mut children: Vec<PathBuf> = rd
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| {
+                        p.is_dir()
+                            && !p
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.starts_with('.'))
+                    })
+                    .collect();
+                children.sort();
+                for c in children {
+                    push_unique(&c);
+                }
+            }
+        }
+    }
+    for r in &cfg.registered_repos {
+        push_unique(&md_core::config::expand_tilde(r));
+    }
+
+    Json(json!({
+        "ok": true,
+        "harnessHome": home.map(|p| p.to_string_lossy().into_owned()),
+        "folders": folders,
+    }))
+}
+
+async fn workspaces_ensure(
+    State(state): State<AppState>,
+    Json(req): Json<PathReq>,
+) -> Json<Value> {
+    let raw = req.path.trim();
+    if raw.is_empty() {
+        return Json(json!({ "ok": false, "error": "folder path cannot be empty" }));
+    }
+    let home = state.harness_home();
+    let resolved = if !raw.starts_with('/')
+        && !raw.starts_with('~')
+        && !(raw.len() >= 2 && raw.as_bytes()[1] == b':')
+    {
+        let Some(ref h) = home else {
+            return Json(json!({ "ok": false, "error": "no harnessHome configured for relative path" }));
+        };
+        if let Some(joined) = md_core::repo_fs::safe_resolve(&h.to_string_lossy(), raw) {
+            joined
+        } else {
+            return Json(json!({ "ok": false, "error": "invalid subfolder path" }));
+        }
+    } else {
+        md_core::config::expand_tilde(raw)
+    };
+
+    if resolved.is_dir() {
+        return Json(json!({
+            "ok": true,
+            "path": resolved.to_string_lossy(),
+            "created": false,
+        }));
+    }
+
+    let allowed_to_create = home.as_ref().is_some_and(|h| {
+        let canon_h = std::fs::canonicalize(h).unwrap_or_else(|_| h.clone());
+        resolved.starts_with(h) || resolved.starts_with(&canon_h)
+    });
+    if !allowed_to_create {
+        return Json(json!({
+            "ok": false,
+            "error": format!("folder does not exist: {} (pick or name a folder inside harnessHome to create it)", resolved.display()),
+        }));
+    }
+    match std::fs::create_dir_all(&resolved) {
+        Ok(()) => Json(json!({
+            "ok": true,
+            "path": resolved.to_string_lossy(),
+            "created": true,
+        })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
 async fn tools_status(State(state): State<AppState>) -> Json<Value> {
     let platform = md_core::host_node_platform();
     let is_win = platform == "win32";
@@ -831,6 +936,8 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/fs/rename", post(fs_rename))
         .route("/api/v1/fs/trash", post(fs_trash))
         .route("/api/v1/fs/stat-abs", post(fs_stat_abs))
+        .route("/api/v1/workspaces/list", get(workspaces_list))
+        .route("/api/v1/workspaces/ensure", post(workspaces_ensure))
         .route("/api/v1/fs/folder-state", post(fs_folder_state))
         .route("/api/v1/fs/upload", post(fs_upload))
         .route("/api/v1/fs/raw", get(fs_raw))

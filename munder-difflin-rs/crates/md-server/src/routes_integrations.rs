@@ -411,6 +411,80 @@ async fn webhooks_delete(State(state): State<AppState>, Path(id): Path<String>) 
     Json(json!({ "ok": removed }))
 }
 
+fn dispatch_webhook_entry(
+    state: &AppState,
+    entry: &md_integrations::webhooks::TriggerHistoryEntry,
+) {
+    let target = {
+        let wh = state.webhooks.lock().unwrap();
+        wh.list_endpoints()
+            .into_iter()
+            .find(|e| e.id == entry.source_id)
+            .and_then(|e| {
+                e.extra
+                    .get("responder")
+                    .or_else(|| e.extra.get("to"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(ToString::to_string)
+            })
+            .unwrap_or_else(|| "god".to_string())
+    };
+    let title = entry
+        .title
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(&entry.source_name);
+    let from_label = entry
+        .peer
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or("webhook");
+    let body = format!("[WEBHOOK {} from {}] {}\n{}", entry.source_name, from_label, title, entry.body);
+
+    if (target == "temp" || target.starts_with("temp:"))
+        && let Some(home) = state.harness_home()
+    {
+        let sr_dir = home.join("hive").join("spawn-requests");
+        let _ = std::fs::create_dir_all(&sr_dir);
+        let slug = format!("wh-{}", entry.id);
+        let default_cwd = home.join("hive").join("projects").join(&slug);
+        let req_doc = json!({
+            "name": format!("Webhook: {}", title),
+            "objective": body,
+            "cwd": default_cwd.to_string_lossy().into_owned(),
+            "cloneOf": target.strip_prefix("temp:").filter(|s| !s.is_empty()),
+        });
+        let _ = std::fs::write(sr_dir.join(format!("{slug}.json")), req_doc.to_string());
+        push_activity(
+            state,
+            "webhook:dispatched",
+            &entry.source_id,
+            json!({ "entryId": entry.id, "target": target, "spawnRequest": slug }),
+        );
+        return;
+    }
+
+    state.sync_hive_home();
+    let msg = json!({
+        "to": target,
+        "act": "request",
+        "subject": format!("Webhook: {title}"),
+        "body": body,
+    });
+    if let Ok(saved) = state.hive.lock().unwrap().send_message(msg, "webhook") {
+        state.emit("hive:message", saved);
+        crate::routes_hive::deliver_or_enqueue(state, &target, body, None);
+        push_activity(
+            state,
+            "webhook:dispatched",
+            &entry.source_id,
+            json!({ "entryId": entry.id, "target": target }),
+        );
+    }
+}
+
 async fn webhooks_inbound(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -444,6 +518,9 @@ async fn webhooks_inbound(
                 &id,
                 json!({ "entryId": entry.id, "status": entry.decision, "pending": pending }),
             );
+            if !pending {
+                dispatch_webhook_entry(&state, &entry);
+            }
             (
                 status,
                 Json(json!({
@@ -501,7 +578,13 @@ async fn triggers_decide(
         .unwrap()
         .decide(&id, &req.decision, req.task_id);
     match updated {
-        Some(entry) => Json(json!({ "ok": true, "entry": entry })),
+        Some(entry) => {
+            if req.decision == "approved" {
+                dispatch_webhook_entry(&state, &entry);
+            }
+            state.emit("triggers:updated", json!({ "id": entry.id, "decision": entry.decision }));
+            Json(json!({ "ok": true, "entry": entry }))
+        }
         None => Json(json!({ "ok": false, "error": "not_found" })),
     }
 }

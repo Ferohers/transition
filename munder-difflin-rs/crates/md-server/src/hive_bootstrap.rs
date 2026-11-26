@@ -105,6 +105,8 @@ Every agent runs with environment variables: `AGENT_ID`, `AGENT_NAME`, `AGENT_DI
 
 pub fn ensure_agent_hive_dirs(hive_root: &Path, agent_id: &str, name: &str) {
     let _ = fs::create_dir_all(hive_root.join("spawn-requests"));
+    let _ = fs::create_dir_all(hive_root.join("compact-requests"));
+    let _ = fs::create_dir_all(hive_root.join("clear-requests"));
     if !is_safe_id(agent_id) {
         return;
     }
@@ -229,6 +231,104 @@ fn install_claude_hooks_settings(agent_dir: &Path) -> Option<PathBuf> {
         return Some(settings_path);
     }
     None
+}
+
+fn install_opencode_config_content(
+    agent_dir: &Path,
+    hive_root: &Path,
+    auto_mode: bool,
+) -> Option<String> {
+    if fs::create_dir_all(agent_dir).is_err() {
+        return None;
+    }
+    let plugin_path = agent_dir.join("opencode-hive-plugin.mjs");
+    let plugin_src = r#"async function postHook(payload) {
+  try {
+    const url = process.env.MD_HOOK_URL;
+    const tok = process.env.MD_HOOK_TOKEN;
+    if (!url || !tok) return;
+    payload.agent_id = payload.agent_id || process.env.AGENT_ID || undefined;
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "authorization": `Bearer ${tok}`,
+      },
+      body: JSON.stringify(payload),
+    }).catch(() => {});
+  } catch {}
+}
+
+export const HiveBridge = async () => ({
+  event: async (input) => {
+    try {
+      if (input?.event?.type === "session.idle") {
+        await postHook({ hook_event_name: "Stop" });
+      }
+    } catch {}
+  },
+  "tool.execute.before": async (input) => {
+    try {
+      await postHook({
+        hook_event_name: "PreToolUse",
+        tool_name: input?.tool || input?.name || "tool",
+        tool_input: input?.args || {},
+      });
+    } catch {}
+  },
+  "tool.execute.after": async (input) => {
+    try {
+      await postHook({
+        hook_event_name: "PostToolUse",
+        tool_name: input?.tool || input?.name || "tool",
+        tool_input: input?.args || {},
+      });
+    } catch {}
+  },
+  "chat.message": async (_input, output) => {
+    try {
+      const parts = Array.isArray(output?.parts) ? output.parts : [];
+      const text = parts
+        .filter((p) => p && p.type === "text" && typeof p.text === "string" && !p.synthetic && !p.ignored)
+        .map((p) => p.text)
+        .join("\n");
+      if (text) {
+        await postHook({ hook_event_name: "UserPromptSubmit", prompt: text.slice(-4096) });
+      }
+    } catch {}
+  },
+});
+export default HiveBridge;
+"#;
+    let _ = atomic_write_string(&plugin_path, plugin_src);
+
+    let mut cfg = Map::new();
+    cfg.insert("autoupdate".to_string(), Value::Bool(false));
+    let mut plugin_url = String::from("file://");
+    plugin_url.push_str(&plugin_path.to_string_lossy());
+    cfg.insert("plugin".to_string(), json!([plugin_url]));
+    cfg.insert(
+        "instructions".to_string(),
+        json!([
+            hive_root.join("PROTOCOL.md").to_string_lossy().into_owned(),
+            hive_root.join("COMMANDS.md").to_string_lossy().into_owned(),
+        ]),
+    );
+    if auto_mode {
+        cfg.insert(
+            "permission".to_string(),
+            json!({
+                "*": "allow",
+                "edit": "allow",
+                "bash": "allow",
+                "webfetch": "allow",
+                "external_directory": "allow",
+                "doom_loop": "allow",
+                "question": "deny"
+            }),
+        );
+    }
+    serde_json::to_string(&Value::Object(cfg)).ok()
 }
 
 fn install_codex_home(home: &Path, hive_root: &Path, agent_dir: &Path) -> Option<PathBuf> {
@@ -401,21 +501,28 @@ pub fn prepare_agent_spawn(
         );
     }
 
-    // Apply `maxTurns` for Claude Code when configured and not already in argv.
-    if provider == "claude" && !opts.args.iter().any(|a| a == "--max-turns") {
-        let max_turns = {
-            let mut store = state.config.lock().unwrap();
-            store
-                .read()
-                .extra
-                .get("maxTurns")
-                .and_then(|v| v.as_u64())
-                .filter(|&n| n > 0)
-        };
-        if let Some(n) = max_turns {
-            opts.args.push("--max-turns".to_string());
-            opts.args.push(n.to_string());
-        }
+    // Apply `maxTurns` and OpenCode non-interactive config/plugin bridge.
+    let (max_turns, auto_mode) = {
+        let mut store = state.config.lock().unwrap();
+        let cfg = store.read();
+        let mt = cfg
+            .extra
+            .get("maxTurns")
+            .and_then(|v| v.as_u64())
+            .filter(|&n| n > 0);
+        let am = cfg
+            .extra
+            .get("autoMode")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        (mt, am)
+    };
+    if provider == "claude"
+        && !opts.args.iter().any(|a| a == "--max-turns")
+        && let Some(n) = max_turns
+    {
+        opts.args.push("--max-turns".to_string());
+        opts.args.push(n.to_string());
     }
 
     if is_safe_id(agent_id) {
@@ -437,6 +544,15 @@ pub fn prepare_agent_spawn(
                         "CODEX_HOME".to_string(),
                         codex_home.to_string_lossy().into_owned(),
                     );
+                }
+            }
+            "opencode" => {
+                if !opts.env.contains_key("OPENCODE_CONFIG_CONTENT")
+                    && let Some(content) =
+                        install_opencode_config_content(&agent_dir, &hive_root, auto_mode)
+                {
+                    opts.env
+                        .insert("OPENCODE_CONFIG_CONTENT".to_string(), content);
                 }
             }
             _ => {}

@@ -1,6 +1,60 @@
 (() => {
   const listeners = new Map();
   const ptySockets = new Map();
+  const recentEnqueues = new Map();
+
+  // Scrub any stale/duplicated unread-inbox wake spam persisted in `cth.messageQueues`.
+  try {
+    const rawQueues = window.localStorage.getItem('cth.messageQueues');
+    if (rawQueues) {
+      const parsed = JSON.parse(rawQueues);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        let changed = false;
+        for (const [aid, list] of Object.entries(parsed)) {
+          if (!Array.isArray(list)) continue;
+          const isWakeSpam = (txt) =>
+            typeof txt === 'string' &&
+            txt.startsWith('You have ') &&
+            txt.includes('unread hive message(s) in ') &&
+            txt.includes('inbox/.done');
+          const hasStructuredWake = list.some(
+            (item) => typeof item?.text === 'string' && item.text.startsWith('You have new hive inbox message(s)')
+          );
+          const wakeTexts = list
+            .filter((item) => typeof item?.text === 'string' && item.text.startsWith('You have new hive inbox message(s)'))
+            .map((item) => item.text);
+          let keptOneWake = false;
+          const cleaned = list.filter((item) => {
+            const txt = item?.text;
+            if (isWakeSpam(txt)) {
+              changed = true;
+              if (!keptOneWake && list.length <= 5) {
+                keptOneWake = true;
+                return true;
+              }
+              return false;
+            }
+            if (hasStructuredWake && typeof txt === 'string' && txt.startsWith('[HIVE ')) {
+              const firstLine = txt.split('\n')[0] || '';
+              const subj = firstLine.replace(/^\[HIVE [^\]]+\]\s*/, '').trim();
+              if (subj && wakeTexts.some((wt) => wt.includes(subj))) {
+                changed = true;
+                return false;
+              }
+            }
+            return true;
+          });
+          if (cleaned.length !== list.length) {
+            parsed[aid] = cleaned;
+            changed = true;
+          }
+        }
+        if (changed) {
+          window.localStorage.setItem('cth.messageQueues', JSON.stringify(parsed));
+        }
+      }
+    }
+  } catch {}
 
   function addListener(channel, fn) {
     if (typeof fn !== 'function') return () => {};
@@ -11,7 +65,8 @@
 
   function normalizeEventChannel(channel) {
     if (channel === 'control:breakerState') return 'breakerState';
-    if (channel === 'triggers:inbound') return 'triggerHistoryUpdated';
+    if (channel === 'triggers:inbound' || channel === 'triggers:updated') return 'triggerHistoryUpdated';
+    if (channel === 'hive:agentHold') return 'agentHold';
     const idx = channel.indexOf(':');
     if (idx <= 0) return channel;
     const prefix = channel.slice(0, idx);
@@ -131,6 +186,19 @@
           // PTY data/exit events are delivered exclusively by the ordered per-PTY
           // socket (/ws/pty/:id) so chunks are never written to xterm.js twice.
           if (msg.channel.startsWith('pty:data:') || msg.channel.startsWith('pty:exit:')) return;
+          if (msg.channel === 'hive:enqueue' && msg.payload) {
+            if (msg.payload.fromInbox) return;
+            const key = `${msg.payload.targetId || ''}:${msg.payload.text || ''}`;
+            const now = Date.now();
+            const prev = recentEnqueues.get(key) || 0;
+            if (now - prev < 5000) return;
+            recentEnqueues.set(key, now);
+            if (recentEnqueues.size > 200) {
+              for (const [k, t] of recentEnqueues) {
+                if (now - t > 10000) recentEnqueues.delete(k);
+              }
+            }
+          }
           emitLocal(msg.channel, msg.payload);
         }
       } catch {}
@@ -305,6 +373,17 @@
         : (r || { ok: false, error: 'submit failed' })
     )),
     withdrawPtySubmit: (ref) => req('/api/v1/pty/withdraw', { method: 'POST', body: JSON.stringify({ ref }) }).then((r) => r || { ok: false }),
+    onPtyBegan: (fn) => addListener('pty:began', (v) => {
+      const ptyId = typeof v === 'string' ? v : v?.ptyId;
+      if (typeof ptyId === 'string' && typeof fn === 'function') fn(ptyId);
+    }),
+    onTerminalProbe: (fn) => addListener('terminal:probe', (probeReq) => {
+      if (!probeReq || typeof fn !== 'function') return;
+      let out = null;
+      try { out = fn(probeReq); } catch { out = null; }
+      const reply = { id: probeReq.id, ...(out || { lines: null, safe: false, pooled: true }) };
+      void req('/api/v1/terminal/probe-reply', { method: 'POST', body: JSON.stringify(reply) }).catch(() => {});
+    }),
     onPtyData: (id, fn) => { ensurePtySocket(id); return addListener(`pty:data:${id}`, fn); },
     onPtyExit: (id, fn) => { ensurePtySocket(id); return addListener(`pty:exit:${id}`, fn); },
     codexAllowedFolders: () => req('/api/v1/codex/allowed-folders').then((r) => (Array.isArray(r) ? r : [])),
@@ -403,10 +482,127 @@
     },
     ideOwnerOffice: () => Promise.resolve(null),
     ideCloseWithoutSaving: () => Promise.resolve({ ok: true }),
-    chooseFolder: () => {
-      const p = window.prompt('Workspace folder path:', '~/HarnessAgents');
-      return Promise.resolve(p && p.trim() ? { ok: true, path: p.trim() } : { ok: false, error: 'cancelled' });
+    chooseFolder: async () => {
+      const data = await req('/api/v1/workspaces/list').catch(() => null);
+      const folders = Array.isArray(data?.folders) ? data.folders : [];
+      const home = data?.harnessHome || '~/HarnessAgents';
+      return new Promise((resolve) => {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(12,12,16,0.68);display:flex;align-items:center;justify-content:center;padding:16px;font-family:var(--cth-font-ui,system-ui,sans-serif);';
+        const card = document.createElement('div');
+        card.style.cssText = 'width:min(520px,100%);background:var(--cth-paper-100,#f6f4ef);color:var(--cth-ink-900,#1d1b18);border:1px solid var(--cth-ink-300,#c8c2b6);border-radius:10px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,0.35);display:flex;flex-direction:column;gap:12px;';
+
+        const title = document.createElement('div');
+        title.textContent = 'Select or Create Workspace Folder';
+        title.style.cssText = 'font-weight:600;font-size:14px;';
+        card.appendChild(title);
+
+        const hint = document.createElement('div');
+        hint.textContent = `Pick an existing folder, or type a new subfolder name (created inside ${home}):`;
+        hint.style.cssText = 'font-size:12px;opacity:0.78;line-height:1.4;';
+        card.appendChild(hint);
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.value = home;
+        input.placeholder = `${home}/projects/my-project or my-project`;
+        input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:12px;';
+        card.appendChild(input);
+
+        if (folders.length > 0) {
+          const listLabel = document.createElement('div');
+          listLabel.textContent = 'Available workspaces';
+          listLabel.style.cssText = 'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.65;';
+          card.appendChild(listLabel);
+
+          const list = document.createElement('div');
+          list.style.cssText = 'max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;';
+          for (const f of folders) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = f;
+            btn.style.cssText = 'text-align:left;padding:6px 8px;border-radius:6px;border:1px solid var(--cth-ink-300,#d5cfc3);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:11.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            btn.onclick = () => {
+              input.value = f;
+              void submit();
+            };
+            list.appendChild(btn);
+          }
+          card.appendChild(list);
+        }
+
+        const errEl = document.createElement('div');
+        errEl.style.cssText = 'font-size:12px;color:#b42318;display:none;';
+        card.appendChild(errEl);
+
+        const actions = document.createElement('div');
+        actions.style.cssText = 'display:flex;justify-content:flex-end;gap:8px;margin-top:4px;';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.type = 'button';
+        cancelBtn.textContent = 'Cancel';
+        cancelBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:transparent;color:inherit;cursor:pointer;font-size:12px;';
+
+        const okBtn = document.createElement('button');
+        okBtn.type = 'button';
+        okBtn.textContent = 'Use / Create Folder';
+        okBtn.style.cssText = 'padding:6px 12px;border-radius:6px;border:none;background:var(--cth-ink-900,#1d1b18);color:var(--cth-cream-100,#fff);cursor:pointer;font-size:12px;font-weight:500;';
+
+        let settled = false;
+        const done = (res) => {
+          if (settled) return;
+          settled = true;
+          window.removeEventListener('keydown', onKey, true);
+          overlay.remove();
+          resolve(res);
+        };
+        const submit = async () => {
+          const val = input.value.trim();
+          if (!val) {
+            errEl.textContent = 'Enter a folder name or path.';
+            errEl.style.display = 'block';
+            return;
+          }
+          okBtn.disabled = true;
+          const ensured = await req('/api/v1/workspaces/ensure', {
+            method: 'POST',
+            body: JSON.stringify({ path: val }),
+          }).catch(() => null);
+          okBtn.disabled = false;
+          if (ensured?.ok && ensured.path) {
+            done({ ok: true, path: ensured.path });
+          } else {
+            errEl.textContent = ensured?.error || 'Could not resolve folder path.';
+            errEl.style.display = 'block';
+          }
+        };
+        const onKey = (ev) => {
+          if (ev.key === 'Escape') {
+            ev.preventDefault();
+            ev.stopPropagation();
+            done({ ok: false, error: 'cancelled' });
+          } else if (ev.key === 'Enter' && document.activeElement === input) {
+            ev.preventDefault();
+            void submit();
+          }
+        };
+        cancelBtn.onclick = () => done({ ok: false, error: 'cancelled' });
+        okBtn.onclick = () => void submit();
+        overlay.onclick = (ev) => {
+          if (ev.target === overlay) done({ ok: false, error: 'cancelled' });
+        };
+        window.addEventListener('keydown', onKey, true);
+
+        actions.appendChild(cancelBtn);
+        actions.appendChild(okBtn);
+        card.appendChild(actions);
+        overlay.appendChild(card);
+        document.body.appendChild(overlay);
+        input.focus();
+        input.select();
+      });
     },
+    onCompactAsked: (fn) => addListener('hive:compactAsked', fn),
     toolsStatus: () => req('/api/v1/tools/status'),
     hiveTheme: () => req('/api/v1/config').then((c) => c?.officeTheme ?? null),
     setHiveTheme: (_home, officeTheme) => req('/api/v1/config', { method: 'PATCH', body: JSON.stringify({ officeTheme }) }).then((c) => ({ ok: !!c })),
@@ -579,8 +775,9 @@
     agentTemplateRemove: (id) => req(`/api/v1/templates/pro/${encodeURIComponent(id)}`, { method: 'DELETE' }).then((r) => r || { ok: false, error: 'remove failed' }),
     kgAddFiles: async () => {
       const picked = await pickLocalFiles({ accept: '.txt,.md,.markdown,.json,.csv,.tsv,.log,.html,.pdf', multiple: true, readAs: 'base64' });
-      if (!picked || !picked.length) return { ok: false, cancelled: true, added: 0 };
+      if (!picked || !picked.length) return { ok: false, error: 'cancelled', cancelled: true, results: [], added: 0 };
       let added = 0;
+      const results = [];
       const docs = [];
       const errors = [];
       for (const f of picked) {
@@ -590,12 +787,15 @@
         }).catch(() => null);
         if (res?.ok) {
           added++;
+          results.push({ ok: true, fileName: f.name, docId: res.docId, meta: res.meta });
           docs.push(res.meta);
         } else {
-          errors.push(res?.error || f.name);
+          const err = res?.error || f.name;
+          results.push({ ok: false, fileName: f.name, error: err });
+          errors.push(err);
         }
       }
-      return { ok: added > 0, added, docs, errors };
+      return { ok: added > 0, results, added, docs, errors };
     },
     saveDroppedFile: (name, bytes) => uploadRawBytes(name || 'drop.bin', bytes, 'drops'),
     saveClipboardImage: async () => {
@@ -803,8 +1003,9 @@
     hiveWakeRetry: (agentId) => req('/api/v1/hive/wake-retry', { method: 'POST', body: JSON.stringify({ agentId }) }).then((r) => r || { ok: false }),
     hiveWakeText: (agentId) => req(`/api/v1/hive/wake-text/${encodeURIComponent(agentId)}`),
     hiveWakeUnconfirmed: (agentId) => req(`/api/v1/hive/wake-unconfirmed/${encodeURIComponent(agentId)}`).then((r) => (Array.isArray(r) ? r : [])),
-    hiveSwitchClearGate: () => Promise.resolve('allow'),
+    hiveSwitchClearGate: () => Promise.resolve('go'),
     hiveCodexSizeClearText: () => Promise.resolve(null),
+    hiveEndedAgents: () => req('/api/v1/hive/ended-agents').then((r) => (Array.isArray(r) ? r : [])).catch(() => []),
     voiceTerminal: (ptyId, _rows, lines = 40) => req('/api/v1/pty/screen-lines', { method: 'POST', body: JSON.stringify({ ptyId, lines }) }).then((r) => r || { ok: false, lines: [] }),
     ideAttach: (handoff) => {
       try {
@@ -847,7 +1048,6 @@
     installCli: () => Promise.resolve({ ok: false, error: 'CLI installer is only available in the desktop app or via terminal' }),
     hiveArchivedAtBoot: () => Promise.resolve([]),
     hiveHeldAtBoot: () => Promise.resolve([]),
-    hiveEndedAgents: () => Promise.resolve([]),
     drainPendingHires: () => Promise.resolve([]),
     transcribeStatus: () => req('/api/v1/config').then((c) => buildTranscribeStatus(c?.transcribe)).catch(() => buildTranscribeStatus(null)),
     transcribeSetConfig: async (patch) => {

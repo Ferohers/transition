@@ -6,6 +6,7 @@ use md_hive::{
     hooks::HookEngine,
     manager::HiveManager,
     roster::RosterStore,
+    wake_filing::WakeFiling,
 };
 use md_integrations::{
     file_share::FileShareRegistry,
@@ -17,9 +18,20 @@ use md_pty::{
     submitter::{PtySubmitter, TerminalProbes},
 };
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndedAgentRecord {
+    pub agent_id: String,
+    pub exit_code: u32,
+    pub signal: Option<String>,
+    pub print_mode: bool,
+    pub at: u64,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +79,7 @@ pub struct AppState {
     pub hive: Arc<Mutex<HiveManager>>,
     pub control: Arc<Mutex<ControlRegistry>>,
     pub breaker: Arc<Mutex<CircuitBreaker>>,
+    pub wake_filing: Arc<Mutex<WakeFiling>>,
     pub hooks: HookEngine,
     pub pty: PtyManager,
     pub submitter: PtySubmitter,
@@ -78,6 +91,7 @@ pub struct AppState {
     pub file_share: Arc<Mutex<FileShareRegistry>>,
     pub workers: Arc<Mutex<Vec<WorkerRecord>>>,
     pub workers_history: Arc<Mutex<Vec<serde_json::Value>>>,
+    pub ended_agents: Arc<Mutex<HashMap<String, EndedAgentRecord>>>,
     pub integrations_activity: Arc<Mutex<Vec<serde_json::Value>>>,
     pub events_tx: broadcast::Sender<ServerEvent>,
 }

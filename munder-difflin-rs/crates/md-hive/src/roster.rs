@@ -77,10 +77,57 @@ impl RosterStore {
         home.join("roster-backups")
     }
 
+    fn is_wake_spam(text: &str) -> bool {
+        text.starts_with("You have ")
+            && text.contains("unread hive message(s) in ")
+            && text.contains("inbox/.done")
+    }
+
+    fn sanitize_queues(queues: &HashMap<String, Value>) -> HashMap<String, Value> {
+        let mut out = HashMap::new();
+        for (aid, val) in queues {
+            let Some(arr) = val.as_array() else {
+                out.insert(aid.clone(), val.clone());
+                continue;
+            };
+            let wake_texts: Vec<&str> = arr
+                .iter()
+                .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
+                .filter(|txt| txt.starts_with("You have new hive inbox message(s)"))
+                .collect();
+            let filtered: Vec<Value> = arr
+                .iter()
+                .filter(|item| {
+                    let txt = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if Self::is_wake_spam(txt) {
+                        return false;
+                    }
+                    if !wake_texts.is_empty() && txt.starts_with("[HIVE ") {
+                        let first_line = txt.lines().next().unwrap_or("");
+                        if let Some(end) = first_line.find(']') {
+                            let subj = first_line[end + 1..].trim();
+                            if !subj.is_empty() && wake_texts.iter().any(|wt| wt.contains(subj)) {
+                                return false;
+                            }
+                        }
+                    }
+                    true
+                })
+                .cloned()
+                .collect();
+            if !filtered.is_empty() {
+                out.insert(aid.clone(), Value::Array(filtered));
+            }
+        }
+        out
+    }
+
     pub fn read(&self, home: Option<&Path>) -> Option<RosterSnapshot> {
         let path = Self::roster_path(home?);
         let raw = fs::read_to_string(path).ok()?;
-        serde_json::from_str::<RosterSnapshot>(&raw).ok()
+        let mut snap = serde_json::from_str::<RosterSnapshot>(&raw).ok()?;
+        snap.queues = Self::sanitize_queues(&snap.queues);
+        Some(snap)
     }
 
     pub fn write(&mut self, home: Option<&Path>, snap: &RosterSnapshot) -> RosterWriteResult {
@@ -123,7 +170,7 @@ impl RosterStore {
             agents: snap.agents.clone(),
             archived: snap.archived.clone(),
             restorable: snap.restorable.clone(),
-            queues: snap.queues.clone(),
+            queues: Self::sanitize_queues(&snap.queues),
             selected_id: snap.selected_id.clone(),
         };
 

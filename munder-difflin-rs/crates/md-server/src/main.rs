@@ -32,13 +32,15 @@ use md_hive::{
     hooks::HookEngine,
     manager::HiveManager,
     roster::{RosterSnapshot, RosterStore, RosterWriteResult},
+    wake_filing::WakeFiling,
 };
 use md_pty::{
     manager::{PtyEvent, PtyListEntry, PtyManager, SpawnOptions, SpawnResult},
     submitter::{PtySubmitRequest, PtySubmitter, TerminalProbeReply, TerminalProbes},
 };
 use serde::Deserialize;
-use state::{AppState, IdeState, ServerEvent};
+use state::{AppState, EndedAgentRecord, IdeState, ServerEvent};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -50,6 +52,8 @@ use tower_http::services::ServeDir;
 fn spawn_pty_event_forwarder(
     pty: &PtyManager,
     workers: Arc<Mutex<Vec<state::WorkerRecord>>>,
+    wake_filing: Arc<Mutex<WakeFiling>>,
+    ended_agents: Arc<Mutex<HashMap<String, EndedAgentRecord>>>,
     events_tx: broadcast::Sender<ServerEvent>,
 ) {
     let mut rx = pty.subscribe();
@@ -69,6 +73,7 @@ fn spawn_pty_event_forwarder(
                     tail,
                     started_at,
                 }) => {
+                    let is_worker = workers.lock().unwrap().iter().any(|w| w.pty_id == id);
                     let agent_id = workers
                         .lock()
                         .unwrap()
@@ -76,6 +81,23 @@ fn spawn_pty_event_forwarder(
                         .find(|w| w.pty_id == id)
                         .map(|w| w.worker_id.clone())
                         .unwrap_or_else(|| id.strip_prefix("pty-").unwrap_or(&id).to_string());
+                    wake_filing.lock().unwrap().forget(&agent_id);
+                    if !is_worker {
+                        let now = std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as u64)
+                            .unwrap_or(0);
+                        ended_agents.lock().unwrap().insert(
+                            agent_id.clone(),
+                            EndedAgentRecord {
+                                agent_id: agent_id.clone(),
+                                exit_code,
+                                signal: signal.clone(),
+                                print_mode: false,
+                                at: now,
+                            },
+                        );
+                    }
                     let payload = serde_json::json!({
                         "exitCode": exit_code,
                         "signal": signal,
@@ -190,6 +212,7 @@ async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
     state.file_share.lock().unwrap().stop_all();
     state.workers.lock().unwrap().clear();
     state.workers_history.lock().unwrap().clear();
+    state.ended_agents.lock().unwrap().clear();
     state.integrations_activity.lock().unwrap().clear();
     state.control.lock().unwrap().clear_all();
     state.breaker.lock().unwrap().clear_all();
@@ -372,6 +395,16 @@ async fn pty_spawn(
         .and_then(|m| m.get("role").and_then(|v| v.as_str()))
         .map(ToString::to_string);
 
+    // On web, allow creating new workspace subfolders inside configured `harnessHome`
+    // (e.g. `<harnessHome>/Projects`) when adding an agent.
+    if let Some(home) = state.harness_home() {
+        let cwd_path = md_core::config::expand_tilde(&opts.cwd);
+        let canon_h = std::fs::canonicalize(&home).unwrap_or_else(|_| home.clone());
+        if !cwd_path.is_dir() && (cwd_path.starts_with(&home) || cwd_path.starts_with(&canon_h)) {
+            let _ = std::fs::create_dir_all(&cwd_path);
+        }
+    }
+
     let seed_prompt = crate::hive_bootstrap::prepare_agent_spawn(
         &state,
         &mut opts,
@@ -383,6 +416,7 @@ async fn pty_spawn(
     );
     let mut res = state.pty.spawn(opts);
     if res.ok {
+        state.ended_agents.lock().unwrap().remove(&agent_id);
         res.seed_prompt = seed_prompt;
         res.resumed = Some(false);
     }
@@ -475,19 +509,63 @@ async fn pty_submit(
     State(state): State<AppState>,
     Json(req): Json<PtySubmitRequest>,
 ) -> Json<serde_json::Value> {
+    if !req.press_only
+        && req.source != "queue"
+        && !routes_hive::probe_terminal_safe(&state, &req.pty_id).await
+    {
+        return Json(serde_json::json!({
+            "ok": true,
+            "sent": false,
+            "result": {
+                "ok": false,
+                "outcome": "held",
+                "proof": "none",
+                "presses": 0,
+                "ms": 0,
+                "reason": "draft-or-menu",
+                "chars": req.text.len(),
+            }
+        }));
+    }
     let state_clone = state.clone();
+    let eff_agent_id = req
+        .agent_id
+        .clone()
+        .or_else(|| req.pty_id.strip_prefix("pty-").map(ToString::to_string));
+    let text = req.text.clone();
+    let press_only = req.press_only;
     match state
         .submitter
         .submit(req, move |r| {
-            state_clone.emit("pty:began", serde_json::json!({ "ptyId": r.pty_id }));
+            state_clone.emit("pty:began", serde_json::json!(r.pty_id));
         })
         .await
     {
-        Ok(res) => Json(serde_json::json!({
-            "ok": res.ok,
-            "sent": res.outcome == "submitted",
-            "result": res,
-        })),
+        Ok(res) => {
+            if let Some(ref aid) = eff_agent_id {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let to_file = state.wake_filing.lock().unwrap().note_typed(
+                    aid,
+                    &text,
+                    &res.outcome,
+                    res.ms,
+                    press_only,
+                    now,
+                );
+                if !to_file.is_empty() {
+                    state.sync_hive_home();
+                    let _ = state.hive.lock().unwrap().file_inbox_messages(aid, &to_file);
+                }
+            }
+            Json(serde_json::json!({
+                "ok": res.ok,
+                "sent": res.outcome == "submitted",
+                "result": res,
+            }))
+        }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
@@ -839,11 +917,19 @@ async fn main() -> anyhow::Result<()> {
     let submitter = PtySubmitter::new(pty.clone());
     let control = Arc::new(Mutex::new(ControlRegistry::new()));
     let breaker = Arc::new(Mutex::new(CircuitBreaker::new()));
+    let wake_filing = Arc::new(Mutex::new(WakeFiling::new()));
     let hook_token = uuid::Uuid::new_v4().to_string();
     let hooks = HookEngine::new(control.clone(), breaker.clone(), hook_token);
     let (events_tx, _) = broadcast::channel(256);
     let workers = Arc::new(Mutex::new(Vec::new()));
-    spawn_pty_event_forwarder(&pty, workers.clone(), events_tx.clone());
+    let ended_agents = Arc::new(Mutex::new(HashMap::new()));
+    spawn_pty_event_forwarder(
+        &pty,
+        workers.clone(),
+        wake_filing.clone(),
+        ended_agents.clone(),
+        events_tx.clone(),
+    );
 
     let secrets = md_integrations::secrets::SecretStore::open(&data_dir)
         .map_err(|e| anyhow::anyhow!(e))?;
@@ -869,6 +955,7 @@ async fn main() -> anyhow::Result<()> {
         hive: Arc::new(Mutex::new(HiveManager::new(home))),
         control,
         breaker,
+        wake_filing,
         hooks,
         pty,
         submitter,
@@ -883,6 +970,7 @@ async fn main() -> anyhow::Result<()> {
         file_share: Arc::new(Mutex::new(md_integrations::file_share::FileShareRegistry::new())),
         workers,
         workers_history: Arc::new(Mutex::new(workers_history)),
+        ended_agents,
         integrations_activity: Arc::new(Mutex::new(Vec::new())),
         events_tx,
     };
@@ -911,6 +999,7 @@ mod tests {
         let submitter = PtySubmitter::new(pty.clone());
         let control = Arc::new(Mutex::new(ControlRegistry::new()));
         let breaker = Arc::new(Mutex::new(CircuitBreaker::new()));
+        let wake_filing = Arc::new(Mutex::new(WakeFiling::new()));
         let hooks = HookEngine::new(control.clone(), breaker.clone(), "test-hook-token".into());
         let (events_tx, _) = broadcast::channel(32);
         AppState {
@@ -922,6 +1011,7 @@ mod tests {
             hive: Arc::new(Mutex::new(HiveManager::new(None))),
             control,
             breaker,
+            wake_filing,
             hooks,
             pty,
             submitter,
@@ -936,6 +1026,7 @@ mod tests {
             file_share: Arc::new(Mutex::new(md_integrations::file_share::FileShareRegistry::new())),
             workers: Arc::new(Mutex::new(Vec::new())),
             workers_history: Arc::new(Mutex::new(Vec::new())),
+            ended_agents: Arc::new(Mutex::new(HashMap::new())),
             integrations_activity: Arc::new(Mutex::new(Vec::new())),
             events_tx,
         }
@@ -2108,7 +2199,7 @@ mod tests {
                             "id": "pty-god",
                             "cwd": dir.to_string_lossy().into_owned(),
                             "command": "/bin/sh",
-                            "args": ["-c", "sleep 2"],
+                            "args": ["-c", "echo ready; sleep 10"],
                             "provider": "opencode",
                             "resume": true,
                             "hive": { "id": "god", "name": "Michael", "provider": "opencode", "isGod": true }
@@ -2156,12 +2247,15 @@ mod tests {
         assert_eq!(send_json["ok"], true);
 
         let mut saw_enqueue = false;
+        let mut saw_from_inbox = false;
         while let Ok(ev) = rx.try_recv() {
             if ev.channel == "hive:enqueue" && ev.payload["targetId"] == "god" {
                 saw_enqueue = true;
+                saw_from_inbox = ev.payload["fromInbox"] == true;
             }
         }
         assert!(saw_enqueue, "hive_send should emit hive:enqueue to wake god");
+        assert!(saw_from_inbox, "hive_send enqueue should carry fromInbox: true");
 
         let hook_stop = app
             .clone()
@@ -2180,6 +2274,83 @@ mod tests {
             serde_json::from_slice(&axum::body::to_bytes(hook_stop.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
         assert_eq!(hook_json["decision"], "block");
+
+        // 2b. wake-text returns structured wake -> pty_submit + Stop auto-files inbox to inbox/.done
+        let wake_text_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/hive/wake-text/god")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let wake_text_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(wake_text_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let wake_str = wake_text_json.as_str().expect("wake-text should return string");
+        assert!(wake_str.contains("You have new hive inbox message(s): 1, printed below."));
+        assert!(wake_str.contains("These messages are filed for you when your turn ends:"));
+
+        let submit_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/pty/submit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "ptyId": "pty-god",
+                            "agentId": "god",
+                            "provider": "opencode",
+                            "text": wake_str,
+                            "source": "queue"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let submit_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(submit_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(submit_json["ok"], true);
+        assert_eq!(submit_json["sent"], true);
+
+        let hook_stop_after = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hook/god")
+                    .header("authorization", "Bearer test-hook-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"hook_event_name":"Stop"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let hook_after_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(hook_stop_after.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(
+            hook_after_json.get("decision").is_none(),
+            "Stop should not block after WakeFiling files the inbox message: {hook_after_json}"
+        );
+        assert!(state.hive.lock().unwrap().inbox("god").is_empty());
+        assert!(hive_root.join("agents/god/inbox/.done").is_dir());
 
         // 3. Temp spawn request spawns worker, routes outbox back to boss inbox, and handles exit pruning
         let req_dir = hive_root.join("spawn-requests");
@@ -2387,6 +2558,171 @@ mod tests {
                 .unwrap();
         assert_eq!(ss_json["screen"], "");
         let _ = state.pty.kill("pty-live-test");
+
+        // 6. workspaces/ensure creates dirs under harnessHome & opencode plugin/permissions get injected
+        let ws_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/workspaces/ensure")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"path":"Projects"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ws_json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(ws_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(ws_json["ok"], true);
+        assert!(dir.join("Projects").is_dir());
+
+        let mut oc_opts = md_pty::manager::SpawnOptions {
+            id: "pty-god".to_string(),
+            cwd: dir.join("Projects").to_string_lossy().into_owned(),
+            command: "opencode".to_string(),
+            args: vec!["--auto".to_string()],
+            cols: None,
+            rows: None,
+            env: std::collections::HashMap::new(),
+            shell_script: None,
+            provider: Some("opencode".to_string()),
+            resume: None,
+            hive: None,
+        };
+        let _ = crate::hive_bootstrap::prepare_agent_spawn(
+            &state,
+            &mut oc_opts,
+            "god",
+            "Michael",
+            "opencode",
+            true,
+            None,
+        );
+        let oc_cfg: serde_json::Value = serde_json::from_str(
+            oc_opts
+                .env
+                .get("OPENCODE_CONFIG_CONTENT")
+                .expect("OPENCODE_CONFIG_CONTENT should be set"),
+        )
+        .unwrap();
+        assert_eq!(oc_cfg["permission"]["question"], "deny");
+        assert_eq!(oc_cfg["permission"]["*"], "allow");
+        assert!(hive_root.join("agents/god/opencode-hive-plugin.mjs").is_file());
+
+        // 7. context-trigger defaults + webhook inbound auto-dispatch into god inbox
+        let ct_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/context-trigger").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let ct_json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(ct_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(ct_json["compact"]["enabled"], true);
+
+        let _ = state
+            .webhooks
+            .lock()
+            .unwrap()
+            .upsert_endpoint(md_integrations::webhooks::WebhookEndpointInput {
+                id: "ci-hook".to_string(),
+                name: "CI".to_string(),
+                secret: "topsecret".to_string(),
+                mode: md_integrations::webhooks::TriggerMode::AutoDispatch,
+                extra: Default::default(),
+            });
+        let wh_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/webhooks/ci-hook")
+                    .header("content-type", "application/json")
+                    .header("x-md-webhook-secret", "topsecret")
+                    .body(Body::from(r#"{"message":"Deploy completed","title":"Build #42","from":"CI"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wh_res.status(), StatusCode::OK);
+        assert!(state
+            .hive
+            .lock()
+            .unwrap()
+            .inbox("god")
+            .iter()
+            .any(|m| m["from"] == "webhook" && m["body"].as_str().unwrap_or("").contains("Deploy completed")));
+
+        // 8. Calling /api/v1/hive/wake on a live PTY while WS listener is subscribed must NOT emit `hive:enqueue` loop
+        let mut wake_rx = state.events_tx.subscribe();
+        let _ = state.pty.spawn(md_pty::manager::SpawnOptions {
+            id: "pty-god".to_string(),
+            cwd: dir.to_string_lossy().into_owned(),
+            command: "/bin/sh".to_string(),
+            args: vec!["-c".to_string(), "sleep 1".to_string()],
+            cols: None,
+            rows: None,
+            env: std::collections::HashMap::new(),
+            shell_script: None,
+            provider: None,
+            resume: None,
+            hive: None,
+        });
+        let wake_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/hive/wake")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"agentId":"god"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(wake_res.status(), StatusCode::OK);
+        while let Ok(ev) = wake_rx.try_recv() {
+            assert_ne!(
+                ev.channel, "hive:enqueue",
+                "hive_wake must never re-emit hive:enqueue back into the UI queue on live PTYs"
+            );
+        }
+        let _ = state.pty.kill("pty-god");
+
+        // 9. /api/v1/hive/ended-agents returns exited non-worker agents and omits live ones
+        state.ended_agents.lock().unwrap().insert(
+            "analyst-1".to_string(),
+            state::EndedAgentRecord {
+                agent_id: "analyst-1".to_string(),
+                exit_code: 0,
+                signal: None,
+                print_mode: false,
+                at: 12345,
+            },
+        );
+        let ended_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/hive/ended-agents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let ended_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(ended_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(ended_json
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["agentId"] == "analyst-1"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

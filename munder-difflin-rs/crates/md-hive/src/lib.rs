@@ -6,4 +6,6 @@ pub mod kg;
 pub mod manager;
 pub mod memory;
 pub mod roster;
+pub mod switch_clear;
 pub mod usage;
+pub mod wake_filing;

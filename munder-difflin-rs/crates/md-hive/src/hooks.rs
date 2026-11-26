@@ -79,6 +79,8 @@ impl HookEngine {
             .and_then(|v| v.as_str())
             .unwrap_or("Unknown");
         let prompt = payload.get("prompt").and_then(|v| v.as_str());
+        let source = payload.get("source").and_then(|v| v.as_str());
+        let notification_type = payload.get("notification_type").and_then(|v| v.as_str());
         let message = payload.get("message").and_then(|v| v.as_str());
         let tool_name = payload.get("tool_name").and_then(|v| v.as_str());
         let tool_input = payload.get("tool_input");
@@ -137,16 +139,25 @@ impl HookEngine {
             return (serde_json::json!({}), side);
         }
 
-        side.events.push((
-            "hive:hookEvent".to_string(),
-            serde_json::json!({
-                "agentId": agent_id,
-                "event": event,
-                "message": message,
-                "tool": tool_name,
-                "ts": now,
-            }),
-        ));
+        let mut hook_ev = serde_json::json!({
+            "agentId": agent_id,
+            "event": event,
+            "message": message,
+            "tool": tool_name,
+            "notificationType": notification_type,
+            "source": source,
+            "ts": now,
+        });
+        if event == "UserPromptSubmit"
+            && let Some(p) = prompt
+            && let Some(obj) = hook_ev.as_object_mut()
+        {
+            obj.insert(
+                "promptTail".to_string(),
+                Value::String(crate::hook_proof::prompt_tail(p)),
+            );
+        }
+        side.events.push(("hive:hookEvent".to_string(), hook_ev));
 
         {
             let ctl = self.control.lock().unwrap();
@@ -223,7 +234,12 @@ impl HookEngine {
             if let Some(ref txt) = s {
                 side.events.push((
                     "hive:steerLanded".to_string(),
-                    serde_json::json!({ "agentId": agent_id, "event": event, "chars": txt.len() }),
+                    serde_json::json!({
+                        "agentId": agent_id,
+                        "event": event,
+                        "chars": txt.len(),
+                        "tail": crate::hook_proof::prompt_tail(txt),
+                    }),
                 ));
             }
             s
@@ -317,9 +333,9 @@ mod tests {
 
         ctl.lock().unwrap().resume("jim");
         ctl.lock().unwrap().steer("jim", "use cargo test");
-        let (reply2, _) = eng.handle_hook(
+        let (reply2, side2) = eng.handle_hook(
             "jim",
-            &serde_json::json!({ "hook_event_name": "UserPromptSubmit", "prompt": "hi" }),
+            &serde_json::json!({ "hook_event_name": "UserPromptSubmit", "prompt": "hello world" }),
             Some("<goal>ship</goal>"),
             Some("STYLE"),
             None,
@@ -329,5 +345,7 @@ mod tests {
             .as_str()
             .unwrap();
         assert_eq!(ctx, "STYLE\n\n<goal>ship</goal>\n\nuse cargo test");
+        assert!(side2.events.iter().any(|(ch, ev)| ch == "hive:hookEvent" && ev["promptTail"] == "helloworld"));
+        assert!(side2.events.iter().any(|(ch, ev)| ch == "hive:steerLanded" && ev["tail"] == "usecargotest"));
     }
 }

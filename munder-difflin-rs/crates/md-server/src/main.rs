@@ -2345,7 +2345,10 @@ mod tests {
         let hook_json: serde_json::Value =
             serde_json::from_slice(&axum::body::to_bytes(hook_stop.into_body(), usize::MAX).await.unwrap())
                 .unwrap();
-        assert_eq!(hook_json["decision"], "block");
+        assert!(
+            hook_json.get("decision").is_none(),
+            "opencode Stop hook should never return blocking decision (avoids UI idle deadlock): {hook_json}"
+        );
 
         // 2b. wake-text returns structured wake -> pty_submit + Stop auto-files inbox to inbox/.done
         let wake_text_res = app

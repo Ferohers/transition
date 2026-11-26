@@ -326,17 +326,32 @@ fn install_opencode_config_content(
 }
 
 export const HiveBridge = async () => {
+  let stopTimer = null;
+  const clearStopTimer = () => {
+    if (stopTimer) {
+      clearTimeout(stopTimer);
+      stopTimer = null;
+    }
+  };
+  const emitStop = () => {
+    clearStopTimer();
+    return postHook({ hook_event_name: "Stop" });
+  };
   void postHook({ hook_event_name: "SessionStart" });
   return {
   event: async (input) => {
     try {
-      if (input?.event?.type === "session.idle") {
-        await postHook({ hook_event_name: "Stop" });
-      } else if (input?.event?.type === "message.updated") {
-        const info = input?.event?.properties?.info;
+      const ev = input?.event;
+      const t = ev?.type;
+      if (t === "session.idle" || (t === "session.status" && ev?.properties?.status?.type === "idle")) {
+        await emitStop();
+      } else if (t === "session.status" && ev?.properties?.status?.type !== "idle") {
+        clearStopTimer();
+      } else if (t === "message.updated") {
+        const info = ev?.properties?.info;
         if (info?.role === "assistant" && info?.tokens) {
-          const t = info.tokens;
-          const total = typeof t.total === "number" ? t.total : (t.input || 0) + (t.output || 0) + (t.cache?.read || 0);
+          const tok = info.tokens;
+          const total = typeof tok.total === "number" ? tok.total : (tok.input || 0) + (tok.output || 0) + (tok.cache?.read || 0);
           await postHook({
             hook_event_name: "Status",
             model: info.modelID || undefined,
@@ -346,10 +361,18 @@ export const HiveBridge = async () => {
             },
           });
         }
+        if (info?.role === "assistant" && info?.time?.completed && info?.finish && info.finish !== "tool-calls") {
+          clearStopTimer();
+          stopTimer = setTimeout(() => {
+            stopTimer = null;
+            void postHook({ hook_event_name: "Stop" });
+          }, 200);
+        }
       }
     } catch {}
   },
   "tool.execute.before": async (input) => {
+    clearStopTimer();
     try {
       await postHook({
         hook_event_name: "PreToolUse",
@@ -359,6 +382,7 @@ export const HiveBridge = async () => {
     } catch {}
   },
   "tool.execute.after": async (input) => {
+    clearStopTimer();
     try {
       await postHook({
         hook_event_name: "PostToolUse",
@@ -368,6 +392,7 @@ export const HiveBridge = async () => {
     } catch {}
   },
   "chat.message": async (_input, output) => {
+    clearStopTimer();
     try {
       const parts = Array.isArray(output?.parts) ? output.parts : [];
       const text = parts

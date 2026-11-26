@@ -165,8 +165,21 @@ async fn handle_hook(
 
     if matches!(event_name, "Stop" | "SubagentStop") && reply.get("continue").is_none() {
         state.sync_hive_home();
-        let unread = state.hive.lock().unwrap().inbox(&eff_agent_id);
-        if !unread.is_empty() {
+        let (unread, supports_blocking_stop) = {
+            let mut hive = state.hive.lock().unwrap();
+            let reg = hive.registry();
+            let provider = reg
+                .get("agents")
+                .and_then(|a| a.get(&eff_agent_id))
+                .and_then(|info| info.get("provider"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("claude");
+            (
+                hive.inbox(&eff_agent_id),
+                matches!(provider, "claude" | "codex" | "grok"),
+            )
+        };
+        if supports_blocking_stop && !unread.is_empty() {
             let inbox_dir = state
                 .harness_home()
                 .map(|h| {

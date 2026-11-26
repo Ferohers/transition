@@ -101,9 +101,11 @@ function useResolvedGodName() {
   const [godName, setGodName] = reactExports.useState(DEFAULT_GOD_NAME);
   reactExports.useEffect(() => {
     let cancelled = false;
-    void window.cth.hiveRegistry().then((reg) => {
-      if (!cancelled) setGodName(resolveGodName(reg?.agents?.[GOD_ID]?.name));
-    }).catch(() => {
+    void Promise.all([
+      window.cth.hiveRegistry().catch(() => null),
+      window.cth.getConfig?.().catch(() => null)
+    ]).then(([reg, cfg]) => {
+      if (!cancelled) setGodName(resolveGodName(reg?.agents?.[GOD_ID]?.name || cfg?.godName));
     });
     return () => {
       cancelled = true;

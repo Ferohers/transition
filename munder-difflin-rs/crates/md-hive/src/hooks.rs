@@ -72,6 +72,16 @@ impl HookEngine {
         self.transcript_paths.lock().unwrap().clear();
     }
 
+    pub fn forget_agent(&self, agent_id: &str) {
+        self.proof.lock().unwrap().forget(agent_id);
+        self.control.lock().unwrap().forget(agent_id);
+        self.breaker.lock().unwrap().forget(agent_id);
+        self.context_by_id.lock().unwrap().remove(agent_id);
+        self.model_by_id.lock().unwrap().remove(agent_id);
+        self.session_by_id.lock().unwrap().remove(agent_id);
+        self.transcript_paths.lock().unwrap().remove(agent_id);
+    }
+
     pub fn token_valid(&self, auth_header: Option<&str>) -> bool {
         let Some(header) = auth_header else {
             return false;

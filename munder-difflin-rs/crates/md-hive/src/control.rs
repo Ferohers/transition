@@ -105,6 +105,10 @@ impl ControlRegistry {
         self.map.clear();
     }
 
+    pub fn forget(&mut self, id: &str) {
+        self.map.remove(id);
+    }
+
     pub fn resume(&mut self, id: &str) {
         let c = self.ensure(id);
         c.paused = false;

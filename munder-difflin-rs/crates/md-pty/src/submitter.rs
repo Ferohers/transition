@@ -191,6 +191,9 @@ pub trait SubmitHooks: Send + Sync {
     fn ask_open(&self, agent_id: &str) -> bool;
     fn compact_running_since(&self, agent_id: &str, since_ms: u64, max_ms: u64, now_ms: u64)
     -> u64;
+    fn turn_open(&self, _agent_id: &str, _now_ms: u64) -> bool {
+        false
+    }
 }
 
 pub struct NoopSubmitHooks;
@@ -549,9 +552,19 @@ pub fn prompt_on_screen(lines: &[String]) -> bool {
     })
 }
 
+const DUPLICATE_SUBMIT_WINDOW_MS: u64 = 10_000;
+const MAX_WITHDRAWN_REFS: usize = 1024;
+
 #[derive(Debug, Clone)]
 struct UnprovedSend {
     tail: String,
+    at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct RecentSubmit {
+    tail: String,
+    chars: usize,
     at_ms: u64,
 }
 
@@ -563,6 +576,7 @@ pub struct PtySubmitter {
     withdrawn_refs: Arc<Mutex<HashSet<String>>>,
     pty_locks: Arc<Mutex<HashMap<String, Arc<AsyncMutex<()>>>>>,
     unproved: Arc<Mutex<HashMap<String, UnprovedSend>>>,
+    recent_submits: Arc<Mutex<HashMap<String, RecentSubmit>>>,
 }
 
 impl PtySubmitter {
@@ -578,7 +592,14 @@ impl PtySubmitter {
             withdrawn_refs: Arc::new(Mutex::new(HashSet::new())),
             pty_locks: Arc::new(Mutex::new(HashMap::new())),
             unproved: Arc::new(Mutex::new(HashMap::new())),
+            recent_submits: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    pub fn forget_pty(&self, pty_id: &str) {
+        self.pty_locks.lock().unwrap().remove(pty_id);
+        self.unproved.lock().unwrap().remove(pty_id);
+        self.recent_submits.lock().unwrap().remove(pty_id);
     }
 
     fn pty_lock(&self, pty_id: &str) -> Arc<AsyncMutex<()>> {
@@ -597,7 +618,11 @@ impl PtySubmitter {
             return false;
         }
         let active = self.active_refs.lock().unwrap().contains(ref_id);
-        self.withdrawn_refs.lock().unwrap().insert(ref_id.to_string());
+        let mut withdrawn = self.withdrawn_refs.lock().unwrap();
+        if withdrawn.len() >= MAX_WITHDRAWN_REFS {
+            withdrawn.clear();
+        }
+        withdrawn.insert(ref_id.to_string());
         active
     }
 
@@ -645,6 +670,24 @@ impl PtySubmitter {
         let res = self
             .run_submit_locked(&req, probe, hooks, &on_began)
             .await;
+
+        if let Ok(ref r) = res
+            && r.ok
+            && !req.press_only
+            && !submit_encoding_for(&req.provider, &req.text).slash
+        {
+            let tail = prompt_tail(&req.text);
+            if !tail.is_empty() {
+                self.recent_submits.lock().unwrap().insert(
+                    req.pty_id.clone(),
+                    RecentSubmit {
+                        tail,
+                        chars,
+                        at_ms: unix_now_ms(),
+                    },
+                );
+            }
+        }
 
         if let Some(ref r) = ref_id {
             self.active_refs.lock().unwrap().remove(r);
@@ -760,6 +803,42 @@ impl PtySubmitter {
         }
 
         let encoding = submit_encoding_for(&req.provider, &req.text);
+
+        if !req.press_only && !encoding.slash {
+            let now_check = unix_now_ms();
+            let tail_check = prompt_tail(&req.text);
+            if req.source != "human" && !tail_check.is_empty() {
+                let duplicate = self.recent_submits.lock().unwrap().get(&req.pty_id).is_some_and(
+                    |prev| {
+                        prev.chars == chars
+                            && prev.tail == tail_check
+                            && now_check.saturating_sub(prev.at_ms) < DUPLICATE_SUBMIT_WINDOW_MS
+                    },
+                );
+                if duplicate {
+                    return Ok(make_res(
+                        "held",
+                        "none",
+                        0,
+                        Some("duplicate-recent"),
+                        true,
+                        false,
+                        false,
+                    ));
+                }
+            }
+            if req.idle == Some(true) && eff_agent.is_some_and(|a| hooks.turn_open(a, now_check)) {
+                return Ok(make_res(
+                    "held",
+                    "none",
+                    0,
+                    Some("turn-open"),
+                    true,
+                    false,
+                    false,
+                ));
+            }
+        }
 
         // Check earlier unproved send on this PTY before typing new content.
         if !req.press_only {
@@ -1143,6 +1222,7 @@ mod tests {
         prompts: Mutex<Vec<(u64, String)>>,
         activity_at: Mutex<u64>,
         ask: Mutex<bool>,
+        turn_open_flag: Mutex<bool>,
     }
 
     impl MockHooks {
@@ -1151,6 +1231,7 @@ mod tests {
                 prompts: Mutex::new(Vec::new()),
                 activity_at: Mutex::new(0),
                 ask: Mutex::new(false),
+                turn_open_flag: Mutex::new(false),
             }
         }
     }
@@ -1179,6 +1260,9 @@ mod tests {
         }
         fn compact_running_since(&self, _: &str, _: u64, _: u64, _: u64) -> u64 {
             0
+        }
+        fn turn_open(&self, _agent_id: &str, _now_ms: u64) -> bool {
+            *self.turn_open_flag.lock().unwrap()
         }
     }
 
@@ -1448,5 +1532,106 @@ mod tests {
         let agy = submit_encoding_for("antigravity", "/clear");
         assert_eq!(agy.payload, "/clear ");
         assert!(agy.slash);
+    }
+
+    #[tokio::test]
+    async fn submit_holds_duplicate_recent_and_open_turn_and_forgets_pty() {
+        let mgr = PtyManager::new();
+        mgr.spawn(SpawnOptions {
+            id: "pty-a4".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "echo ready; sleep 5".into()],
+            cwd: "/tmp".into(),
+            cols: Some(80),
+            rows: Some(24),
+            env: HashMap::new(),
+            provider: Some("opencode".into()),
+            resume: None,
+            shell_script: None,
+            hive: None,
+        });
+        let submitter = PtySubmitter::with_timings(mgr.clone(), SubmitTimings::fast_for_test());
+        let hooks = MockHooks::new();
+        let probe = ScriptedProbe::new(vec![TerminalProbeReply {
+            id: "p1".into(),
+            lines: Some(vec!["❯".into()]),
+            safe: true,
+            pooled: false,
+        }]);
+        hooks
+            .prompts
+            .lock()
+            .unwrap()
+            .push((u64::MAX, prompt_tail("do work")));
+        let first = submitter
+            .submit_with_context(
+                PtySubmitRequest {
+                    pty_id: "pty-a4".into(),
+                    agent_id: Some("a4".into()),
+                    provider: "opencode".into(),
+                    text: "do work".into(),
+                    source: "queue".into(),
+                    settle_ms: None,
+                    press_only: false,
+                    idle: Some(true),
+                    ref_id: None,
+                },
+                Some(&probe),
+                &hooks,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.outcome, "submitted");
+
+        let dup = submitter
+            .submit_with_context(
+                PtySubmitRequest {
+                    pty_id: "pty-a4".into(),
+                    agent_id: Some("a4".into()),
+                    provider: "opencode".into(),
+                    text: "do work".into(),
+                    source: "queue".into(),
+                    settle_ms: None,
+                    press_only: false,
+                    idle: Some(true),
+                    ref_id: None,
+                },
+                Some(&probe),
+                &hooks,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(dup.outcome, "held");
+        assert_eq!(dup.reason.as_deref(), Some("duplicate-recent"));
+
+        *hooks.turn_open_flag.lock().unwrap() = true;
+        let open_turn = submitter
+            .submit_with_context(
+                PtySubmitRequest {
+                    pty_id: "pty-a4".into(),
+                    agent_id: Some("a4".into()),
+                    provider: "opencode".into(),
+                    text: "second distinct task".into(),
+                    source: "queue".into(),
+                    settle_ms: None,
+                    press_only: false,
+                    idle: Some(true),
+                    ref_id: None,
+                },
+                Some(&probe),
+                &hooks,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(open_turn.outcome, "held");
+        assert!(open_turn.behind);
+        assert_eq!(open_turn.reason.as_deref(), Some("turn-open"));
+
+        submitter.forget_pty("pty-a4");
+        assert!(submitter.recent_submits.lock().unwrap().is_empty());
+        let _ = mgr.kill("pty-a4");
     }
 }

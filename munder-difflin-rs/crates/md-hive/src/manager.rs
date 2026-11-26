@@ -435,10 +435,22 @@ impl HiveManager {
     }
 
     pub fn append_log(&self, entry: &Value) {
+        self.append_log_with_cap(entry, 10 * 1024 * 1024);
+    }
+
+    fn append_log_with_cap(&self, entry: &Value, max_bytes: u64) {
         let Ok(root) = self.ensure_hive() else {
             return;
         };
         let path = root.join("log.jsonl");
+        if max_bytes > 0
+            && let Ok(meta) = fs::metadata(&path)
+            && meta.len() >= max_bytes
+        {
+            let backup = root.join("log.jsonl.1");
+            let _ = fs::remove_file(&backup);
+            let _ = fs::rename(&path, &backup);
+        }
         let mut obj = entry.as_object().cloned().unwrap_or_default();
         if !obj.contains_key("ts") {
             obj.insert("ts".to_string(), Value::from(chrono::Utc::now().to_rfc3339()));
@@ -1198,6 +1210,11 @@ mod tests {
         assert_eq!(arr[0]["id"].as_str().unwrap(), &format!("{}-1", mgr.default_ticket_prefix(&dir.join("hive"))));
         assert_eq!(arr[1]["id"], "CUSTOM-9");
         assert_eq!(arr[2]["id"].as_str().unwrap(), &format!("{}-2", mgr.default_ticket_prefix(&dir.join("hive"))));
+
+        mgr.append_log_with_cap(&serde_json::json!({ "kind": "rot-1", "msg": "aaaa" }), 20);
+        mgr.append_log_with_cap(&serde_json::json!({ "kind": "rot-2", "msg": "bbbb" }), 20);
+        assert!(dir.join("hive/log.jsonl.1").exists());
+        assert!(dir.join("hive/log.jsonl").exists());
 
         fs::remove_dir_all(&dir).ok();
     }

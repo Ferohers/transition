@@ -58,6 +58,8 @@ fn spawn_pty_event_forwarder(state: &AppState) {
     let codex_size = state.codex_size.clone();
     let asked_compact = state.asked_compact.clone();
     let ended_agents = state.ended_agents.clone();
+    let pty = state.pty.clone();
+    let submitter = state.submitter.clone();
     let events_tx = state.events_tx.clone();
     tokio::spawn(async move {
         loop {
@@ -87,12 +89,16 @@ fn spawn_pty_event_forwarder(state: &AppState) {
                     switch_clear.lock().unwrap().forget(&agent_id);
                     codex_size.lock().unwrap().forget(&agent_id);
                     asked_compact.lock().unwrap().forget(&agent_id);
-                    if !is_worker {
+                    submitter.forget_pty(&id);
+                    if is_worker {
+                        pty.forget_pty(&id);
+                    } else {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_millis() as u64)
                             .unwrap_or(0);
-                        ended_agents.lock().unwrap().insert(
+                        let mut ended = ended_agents.lock().unwrap();
+                        ended.insert(
                             agent_id.clone(),
                             EndedAgentRecord {
                                 agent_id: agent_id.clone(),
@@ -102,6 +108,14 @@ fn spawn_pty_event_forwarder(state: &AppState) {
                                 at: now,
                             },
                         );
+                        if ended.len() > 200
+                            && let Some(oldest) = ended
+                                .iter()
+                                .min_by_key(|(_, r)| r.at)
+                                .map(|(k, _)| k.clone())
+                        {
+                            ended.remove(&oldest);
+                        }
                     }
                     let payload = serde_json::json!({
                         "exitCode": exit_code,
@@ -509,7 +523,10 @@ async fn pty_kill(
     Json(req): Json<PtyIdReq>,
 ) -> Json<serde_json::Value> {
     match state.pty.kill(&req.id) {
-        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Ok(()) => {
+            state.submitter.forget_pty(&req.id);
+            Json(serde_json::json!({ "ok": true }))
+        }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),
     }
 }
@@ -2822,7 +2839,9 @@ mod tests {
         .unwrap();
         assert_eq!(oc_cfg["permission"]["question"], "deny");
         assert_eq!(oc_cfg["permission"]["*"], "allow");
-        assert!(hive_root.join("agents/god/opencode-hive-plugin.mjs").is_file());
+        assert!(hive_root.join("agents/god/hive-plugin/package.json").is_file());
+        assert!(hive_root.join("agents/god/hive-plugin/index.mjs").is_file());
+        assert!(oc_opts.args.iter().any(|a| a == "--standalone"));
 
         // 7. context-trigger defaults + webhook inbound auto-dispatch into god inbox
         let ct_res = app

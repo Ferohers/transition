@@ -676,7 +676,20 @@
     toolsStatus: () => req('/api/v1/tools/status'),
     hiveTheme: () => req('/api/v1/config').then((c) => c?.officeTheme ?? null),
     setHiveTheme: (_home, officeTheme) => req('/api/v1/config', { method: 'PATCH', body: JSON.stringify({ officeTheme }) }).then((c) => ({ ok: !!c })),
-    teamsSetBossName: () => Promise.resolve({ ok: true, offline: true }),
+    teamsSetBossName: async (name) => {
+      const trimmed = typeof name === 'string' ? name.trim() : '';
+      if (!trimmed) return { ok: false, error: 'invalid', detail: 'Name required' };
+      agentNames.set('god', trimmed);
+      const updated = await req('/api/v1/config', {
+        method: 'PATCH',
+        body: JSON.stringify({ godName: trimmed }),
+      });
+      await req('/api/v1/hive/agent/rename', {
+        method: 'POST',
+        body: JSON.stringify({ id: 'god', value: trimmed }),
+      }).catch(() => null);
+      return updated ? { ok: true, saved: true } : { ok: false, error: 'failed' };
+    },
     teamsSetName: () => Promise.resolve({ ok: true, offline: true }),
     hiveRenameAgent: (id, value) => req('/api/v1/hive/agent/rename', { method: 'POST', body: JSON.stringify({ id, value }) }).then((r) => r || { ok: false }),
     hivePatchAgentRole: (id, value) => req('/api/v1/hive/agent/role', { method: 'POST', body: JSON.stringify({ id, value }) }).then((r) => r || { ok: false }),

@@ -158,6 +158,15 @@ struct HistoryPageQuery {
     before: Option<usize>,
 }
 
+fn sqlite_has_table(conn: &rusqlite::Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1 LIMIT 1",
+        [table],
+        |_| Ok(true),
+    )
+    .unwrap_or(false)
+}
+
 fn read_opencode_session_items(cwd: &str) -> Option<(String, Vec<Value>)> {
     let home = dirs::home_dir()?;
     let db_path = home.join(".local/share/opencode/opencode.db");
@@ -169,13 +178,105 @@ fn read_opencode_session_items(cwd: &str) -> Option<(String, Vec<Value>)> {
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )
     .ok()?;
-    let session_id: String = conn
-        .query_row(
-            "SELECT id FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
+
+    let v2_ses: Option<(String, i64)> = if sqlite_has_table(&conn, "session_v2") {
+        conn.query_row(
+            "SELECT id, time_updated FROM session_v2 WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
             [cwd],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .ok()?;
+        .ok()
+    } else {
+        None
+    };
+    let v1_ses: Option<(String, i64)> = if sqlite_has_table(&conn, "session") {
+        conn.query_row(
+            "SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
+            [cwd],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()
+    } else {
+        None
+    };
+
+    let (use_v2, session_id) = match (v2_ses, v1_ses) {
+        (Some((id2, ts2)), Some((id1, ts1))) => {
+            if ts2 >= ts1 {
+                (true, id2)
+            } else {
+                (false, id1)
+            }
+        }
+        (Some((id2, _)), None) => (true, id2),
+        (None, Some((id1, _))) => (false, id1),
+        (None, None) => return None,
+    };
+
+    if use_v2 {
+        let mut msg_stmt = conn
+            .prepare("SELECT id, type, time_created, data FROM session_message WHERE session_id = ?1 ORDER BY seq ASC, time_created ASC, id ASC")
+            .ok()?;
+        let mut part_stmt = conn
+            .prepare("SELECT message_id, type, data FROM session_part WHERE session_id = ?1 ORDER BY ordinal ASC, time_created ASC")
+            .ok()?;
+        let mut texts_by_msg: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        let part_rows = part_stmt
+            .query_map([&session_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .ok()?;
+        for row in part_rows.flatten() {
+            if row.1 == "text"
+                && let Ok(v) = serde_json::from_str::<Value>(&row.2)
+                && let Some(txt) = v.get("text").and_then(|t| t.as_str())
+                && !txt.trim().is_empty()
+            {
+                texts_by_msg.entry(row.0).or_default().push(txt.to_string());
+            }
+        }
+        let mut items = Vec::new();
+        let msg_rows = msg_stmt
+            .query_map([&session_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })
+            .ok()?;
+        for row in msg_rows.flatten() {
+            let (msg_id, msg_type, ts, raw_data) = row;
+            let kind = if msg_type == "user" { "user" } else { "assistant" };
+            let text = if let Some(parts) = texts_by_msg.get(&msg_id) {
+                parts.join("\n\n")
+            } else if msg_type == "user" {
+                serde_json::from_str::<Value>(&raw_data)
+                    .ok()
+                    .and_then(|v| v.get("text").and_then(|t| t.as_str()).map(ToString::to_string))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if text.trim().is_empty() {
+                continue;
+            }
+            items.push(json!({
+                "id": msg_id,
+                "kind": kind,
+                "at": ts,
+                "text": text,
+                "truncated": false,
+            }));
+        }
+        return Some((session_id, items));
+    }
 
     let mut msg_stmt = conn
         .prepare("SELECT id, time_created, data FROM message WHERE session_id = ?1 ORDER BY time_created ASC, id ASC")
@@ -366,32 +467,104 @@ fn read_opencode_usage_from_db(
     let flags =
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     let conn = rusqlite::Connection::open_with_flags(db_path, flags).ok()?;
-    let (ses_id, ses_updated): (String, i64) = if let Some(sid) = session_id.filter(|s| !s.is_empty())
-    {
-        let mut stmt = conn
-            .prepare("SELECT id, time_updated FROM session WHERE id = ?1 LIMIT 1")
-            .ok()?;
-        stmt.query_row([sid], |r| Ok((r.get(0)?, r.get(1)?))).ok()?
+    let has_v2 = sqlite_has_table(&conn, "session_v2") && sqlite_has_table(&conn, "session_message");
+    let has_v1 = sqlite_has_table(&conn, "session") && sqlite_has_table(&conn, "message");
+
+    let mut v2_pick: Option<(String, i64, Option<String>)> = None;
+    let mut v1_pick: Option<(String, i64)> = None;
+
+    if let Some(sid) = session_id.filter(|s| !s.is_empty()) {
+        if has_v2 {
+            v2_pick = conn
+                .query_row(
+                    "SELECT id, time_updated, model FROM session_v2 WHERE id = ?1 LIMIT 1",
+                    [sid],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .ok();
+        }
+        if v2_pick.is_none() && has_v1 {
+            v1_pick = conn
+                .query_row(
+                    "SELECT id, time_updated FROM session WHERE id = ?1 LIMIT 1",
+                    [sid],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+        }
     } else if allow_cwd_fallback && !cwd.is_empty() {
-        if let Some(min_ms) = min_updated_ms {
-            let cutoff = i64::try_from(min_ms.saturating_sub(5_000)).unwrap_or(i64::MAX);
-            let mut stmt = conn
-                .prepare("SELECT id, time_updated FROM session WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 1")
-                .ok()?;
-            stmt.query_row(rusqlite::params![cwd, cutoff], |r| Ok((r.get(0)?, r.get(1)?))).ok()?
-        } else {
-            let mut stmt = conn
-                .prepare("SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1")
-                .ok()?;
-            stmt.query_row([cwd], |r| Ok((r.get(0)?, r.get(1)?))).ok()?
+        let cutoff = min_updated_ms.map(|m| i64::try_from(m.saturating_sub(5_000)).unwrap_or(i64::MAX));
+        if has_v2 {
+            v2_pick = match cutoff {
+                Some(c) => conn
+                    .query_row(
+                        "SELECT id, time_updated, model FROM session_v2 WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 1",
+                        rusqlite::params![cwd, c],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .ok(),
+                None => conn
+                    .query_row(
+                        "SELECT id, time_updated, model FROM session_v2 WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
+                        [cwd],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .ok(),
+            };
+        }
+        if has_v1 {
+            v1_pick = match cutoff {
+                Some(c) => conn
+                    .query_row(
+                        "SELECT id, time_updated FROM session WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 1",
+                        rusqlite::params![cwd, c],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .ok(),
+                None => conn
+                    .query_row(
+                        "SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
+                        [cwd],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .ok(),
+            };
         }
     } else {
         return None;
-    };
+    }
 
-    let mut msg_stmt = conn
-        .prepare("SELECT data, time_created FROM message WHERE session_id = ?1 ORDER BY time_created ASC")
-        .ok()?;
+    let (use_v2, ses_id, ses_updated, v2_model_json): (bool, String, i64, Option<String>) =
+        match (v2_pick, v1_pick) {
+            (Some((id2, ts2, m2)), Some((id1, ts1))) => {
+                if ts2 >= ts1 {
+                    (true, id2, ts2, m2)
+                } else {
+                    (false, id1, ts1, None)
+                }
+            }
+            (Some((id2, ts2, m2)), None) => (true, id2, ts2, m2),
+            (None, Some((id1, ts1))) => (false, id1, ts1, None),
+            (None, None) => return None,
+        };
+
+    let mut usage = md_hive::usage::AgentUsage {
+        as_of: u64::try_from(ses_updated.max(0)).unwrap_or(0),
+        ..Default::default()
+    };
+    if let Some(m_json) = v2_model_json.as_deref()
+        && let Ok(mv) = serde_json::from_str::<Value>(m_json)
+        && let Some(mid) = mv.get("id").and_then(|x| x.as_str())
+    {
+        usage.model = Some(mid.to_string());
+    }
+
+    let sql = if use_v2 {
+        "SELECT data, time_created FROM session_message WHERE session_id = ?1 AND type = 'assistant' ORDER BY seq ASC, time_created ASC"
+    } else {
+        "SELECT data, time_created FROM message WHERE session_id = ?1 ORDER BY time_created ASC"
+    };
+    let mut msg_stmt = conn.prepare(sql).ok()?;
     let rows = msg_stmt
         .query_map([ses_id], |r| {
             let data: String = r.get(0)?;
@@ -400,19 +573,19 @@ fn read_opencode_usage_from_db(
         })
         .ok()?;
 
-    let mut usage = md_hive::usage::AgentUsage {
-        as_of: u64::try_from(ses_updated.max(0)).unwrap_or(0),
-        ..Default::default()
-    };
     let mut latest_context: Option<u64> = None;
     for row in rows.flatten() {
         let Ok(v) = serde_json::from_str::<Value>(&row.0) else {
             continue;
         };
-        if v.get("role").and_then(|x| x.as_str()) != Some("assistant") {
+        if !use_v2 && v.get("role").and_then(|x| x.as_str()) != Some("assistant") {
             continue;
         }
-        if let Some(m) = v.get("modelID").and_then(|x| x.as_str()) {
+        if let Some(m) = v
+            .get("modelID")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("model").and_then(|m| m.get("id")).and_then(|x| x.as_str()))
+        {
             usage.model = Some(m.to_string());
         }
         if let Some(c) = v.get("cost").and_then(|x| x.as_f64()) {
@@ -421,6 +594,7 @@ fn read_opencode_usage_from_db(
         if let Some(t) = v.get("tokens") {
             let inp = t.get("input").and_then(|x| x.as_u64()).unwrap_or(0);
             let out = t.get("output").and_then(|x| x.as_u64()).unwrap_or(0);
+            let reas = t.get("reasoning").and_then(|x| x.as_u64()).unwrap_or(0);
             let cw = t
                 .get("cache")
                 .and_then(|c| c.get("write"))
@@ -444,7 +618,11 @@ fn read_opencode_usage_from_db(
                 if let Some(total) = t.get("total").and_then(|x| x.as_u64()).filter(|&n| n > 0) {
                     latest_context = Some(total);
                 } else {
-                    let sum = inp.saturating_add(cr).saturating_add(out).saturating_add(cw);
+                    let sum = inp
+                        .saturating_add(cr)
+                        .saturating_add(out)
+                        .saturating_add(reas)
+                        .saturating_add(cw);
                     if sum > 0 {
                         latest_context = Some(sum);
                     }
@@ -1168,6 +1346,53 @@ mod tests {
             opencode_model_context_limit_from_path(&models_path, None, "unknown-model"),
             200_000
         );
+
+        // OpenCode 2.4.2 session_v2 + session_message support.
+        conn.execute_batch(
+            "CREATE TABLE session_v2 (id TEXT PRIMARY KEY, directory TEXT NOT NULL, model TEXT, time_updated INTEGER NOT NULL);
+             CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, type TEXT NOT NULL, seq INTEGER NOT NULL, time_created INTEGER NOT NULL, data TEXT NOT NULL);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_v2 (id, directory, model, time_updated) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                "ses-v2",
+                "/tmp/acme",
+                r#"{"id":"hy4-flash-free","providerID":"opencode"}"#,
+                2_020_000i64
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "mv2-1",
+                "ses-v2",
+                "assistant",
+                1i64,
+                2_020_000i64,
+                r#"{"time":{"created":2020000,"completed":2020500},"model":{"id":"hy4-flash-free","providerID":"opencode"},"finish":"stop","cost":0,"tokens":{"input":1000,"output":200,"reasoning":50,"cache":{"read":50000,"write":0}}}"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO session_message (id, session_id, type, seq, time_created, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                "mv2-streaming",
+                "ses-v2",
+                "assistant",
+                2i64,
+                2_021_000i64,
+                r#"{"time":{"created":2021000},"model":{"id":"hy4-flash-free","providerID":"opencode"},"tokens":{"input":10,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}"#
+            ],
+        )
+        .unwrap();
+        let (u_v2, ctx_v2) =
+            read_opencode_usage_from_db(&db_path, "/tmp/acme", None, true, Some(2_000_000))
+                .unwrap();
+        assert_eq!(u_v2.model.as_deref(), Some("hy4-flash-free"));
+        assert_eq!(u_v2.cache_read_tokens, 50_000);
+        assert_eq!(ctx_v2, Some(51_250));
 
         std::fs::remove_dir_all(&dir).ok();
     }

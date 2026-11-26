@@ -849,6 +849,7 @@ fn provider_default_command(provider: &str, model: Option<&str>) -> (String, Vec
         "codex" => "codex",
         "gemini" => "gemini",
         "opencode" => {
+            args.push("--standalone".to_string());
             args.push("--auto".to_string());
             "opencode"
         }
@@ -1088,6 +1089,14 @@ fn finish_worker_record(state: &AppState, w: WorkerRecord, result: &str, kill_pt
             );
         }
     }
+    state.hooks.forget_agent(&w.worker_id);
+    state.wake_filing.lock().unwrap().forget(&w.worker_id);
+    state.switch_clear.lock().unwrap().forget(&w.worker_id);
+    state.codex_size.lock().unwrap().forget(&w.worker_id);
+    state.asked_compact.lock().unwrap().forget(&w.worker_id);
+    state.ended_agents.lock().unwrap().remove(&w.worker_id);
+    state.pty.forget_pty(&w.pty_id);
+    state.submitter.forget_pty(&w.pty_id);
     state.emit("hive:agentArchived", serde_json::json!({ "id": w.worker_id }));
     state.emit(
         "projects:changed",
@@ -2130,6 +2139,15 @@ impl md_pty::submitter::SubmitHooks for AppSubmitHooks<'_> {
             .lock()
             .unwrap()
             .compact_running_since(agent_id, since_ms, max_ms, now_ms)
+    }
+
+    fn turn_open(&self, agent_id: &str, now_ms: u64) -> bool {
+        self.0
+            .hooks
+            .proof
+            .lock()
+            .unwrap()
+            .turn_open(agent_id, now_ms, 180_000)
     }
 }
 

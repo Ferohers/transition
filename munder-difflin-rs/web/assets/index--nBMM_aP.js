@@ -14303,7 +14303,8 @@ function useHive(config2) {
       if (cancelled || godSpawning.current) return;
       godSpawning.current = true;
       const reg = await window.cth.hiveRegistry().catch(() => null);
-      const godName = resolveGodName(reg?.agents?.[GOD_ID$1]?.name);
+      const godName = resolveGodName(reg?.agents?.[GOD_ID$1]?.name || config2.godName);
+      setGodName(godName);
       const godProvider = config2.godProvider ?? "claude";
       const godModel = config2.godModel;
       const command2 = effectiveGodCommand(config2.godCommand, buildSpawnCommand(config2, godModel, godProvider), godProvider);
@@ -14373,8 +14374,17 @@ function useHive(config2) {
             await submitToPty(GOD_PTY, remoteCommand, godProvider, { agentId: GOD_ID$1, source: "remote-control", settleMs: REMOTE_CONTROL_SETTLE_MS }).catch(() => void 0);
           }
           if (!cancelled && !resumedGod) {
-            if (res.seedPrompt) await submitToPty(GOD_PTY, res.seedPrompt, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
-            await submitToPty(GOD_PTY, INITIAL_GOD_PROMPT, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
+            if (res.seedPrompt) {
+              const seedRes = await submitToPty(GOD_PTY, res.seedPrompt, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
+              if (!cancelled && seedRes?.ok) {
+                useStore.getState().updateAgent(GOD_ID$1, { status: "working" });
+                useStore.getState().enqueueMessage(GOD_ID$1, INITIAL_GOD_PROMPT);
+              } else if (!cancelled) {
+                await submitToPty(GOD_PTY, INITIAL_GOD_PROMPT, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
+              }
+            } else {
+              await submitToPty(GOD_PTY, INITIAL_GOD_PROMPT, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
+            }
           }
         } catch {
         } finally {
@@ -14535,16 +14545,23 @@ function useHive(config2) {
     if (!config2?.onboardingComplete) return;
     return window.cth.onHiveTerminalHandoff((msg) => {
       if (seenTerminalHandoffs.current.has(msg.id)) return;
+      const markSeen = (id) => {
+        seenTerminalHandoffs.current.add(id);
+        if (seenTerminalHandoffs.current.size > 500) {
+          const oldest = seenTerminalHandoffs.current.values().next().value;
+          if (oldest !== void 0) seenTerminalHandoffs.current.delete(oldest);
+        }
+      };
       const { agents, enqueueMessage, messageQueues } = useStore.getState();
       const target2 = agents.find((a) => a.id === msg.to);
       if (target2?.ptyId) {
         const marker = `Message: ${msg.id}`;
         if ((messageQueues[target2.id] ?? []).some((queued) => queued.text.includes(marker))) return;
-        seenTerminalHandoffs.current.add(msg.id);
+        markSeen(msg.id);
         enqueueMessage(target2.id, terminalWorkOrderPrompt(msg));
         return;
       }
-      seenTerminalHandoffs.current.add(msg.id);
+      markSeen(msg.id);
       enqueueMessage(
         GOD_ID$1,
         [
@@ -14702,8 +14719,10 @@ function useHive(config2) {
       }
       if (!useStore.getState().messageQueues[srcId]?.some((m) => m.id === next.id)) return { sent: false };
       const flightKey = `${srcId}:${next.id}`;
-      if (inFlight2.has(flightKey)) return { sent: false };
+      const targetFlightKey = `target:${target2.id}`;
+      if (inFlight2.has(flightKey) || inFlight2.has(targetFlightKey)) return { sent: false };
       inFlight2.add(flightKey);
+      inFlight2.add(targetFlightKey);
       lastFlush.current[target2.id] = now2;
       const typed = withStandingContext(target2, wake ?? next.instruction ?? next.text, responseStyle.current);
       const typedAt = Date.now();
@@ -14722,6 +14741,10 @@ function useHive(config2) {
             if (!proved && useStore.getState().sentLog[srcId]?.some((e) => e.id === next.id)) {
               unproved.set(target2.id, [...unproved.get(target2.id) ?? [], { queueId: srcId, messageId: next.id, tail: promptTail(typed) }].slice(-UNPROVED_KEPT));
             }
+            const blNow = breakerLevel.current[target2.id];
+            const markNow = statusAfterDelivery(next.instruction ?? next.text, blNow === "constrained" || blNow === "stopped", !!target2.exit);
+            if (markNow) useStore.getState().updateAgent(target2.id, markNow);
+            lastFlush.current[target2.id] = Date.now();
             removeQueuedMessage(srcId, next.id);
             if (!proved && !wakeOptionsFor(inferAgentProvider(target2.command, target2.provider)).selfFile) notDeliveredLater(target2.id, srcId, next.id, promptTail(typed), typedAt);
             const switchCleared = switchClears.current[target2.id] === next.text;
@@ -14796,6 +14819,7 @@ function useHive(config2) {
         return { sent: false };
       } finally {
         inFlight2.delete(flightKey);
+        inFlight2.delete(targetFlightKey);
         if (submitting.get(target2.ptyId)?.messageId === next.id) submitting.delete(target2.ptyId);
       }
     };
@@ -14942,7 +14966,21 @@ ${msg.context}` : text2;
       useStore.getState().addAgent(agent, { keepSelection: true });
     });
     const offArchive = window.cth.onHiveAgentArchived?.((e) => {
-      if (e?.id) useStore.getState().archiveAgent(e.id);
+      if (!e?.id) return;
+      const id = e.id;
+      useStore.getState().archiveAgent(id);
+      delete nudged.current[id];
+      delete lastCompactUsed.current[id];
+      delete compactTypedAt.current[id];
+      delete lastFlush.current[id];
+      delete bootGraceUntil.current[id];
+      delete breakerLevel.current[id];
+      delete switchClears.current[id];
+      delete handoffInBox.current[id];
+      seeded2.current.delete(id);
+      codexSizeDue.current.delete(id);
+      askedClearDue.current.delete(id);
+      delete ptyLastOutput.current[`pty-${id}`];
     });
     return () => {
       offSpawn?.();
@@ -94177,6 +94215,7 @@ function ProOnboarding({ onComplete, entryOnly }) {
       setStep(2);
       return;
     }
+    const trimmedGodName = (godName ?? nameDraft)?.trim();
     const next = await window.cth.updateConfig({
       onboardingComplete: true,
       audience: draft.readAs ?? "technical",
@@ -94185,11 +94224,13 @@ function ProOnboarding({ onComplete, entryOnly }) {
       autoMode: true,
       godProvider: draft.provider,
       godModel: draft.model,
+      ...trimmedGodName ? { godName: trimmedGodName } : {},
       // Only a custom engine has a command the app cannot build for itself.
       // Every other provider resolves through buildSpawnCommand, so writing
       // one would be storing a fact the app already knows.
       ...draft.provider === "custom" && draft.command?.trim() ? { defaultCommand: draft.command.trim() } : {}
     });
+    if (trimmedGodName) setGodName(trimmedGodName);
     setBusy(false);
     onComplete?.(next);
   };

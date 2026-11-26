@@ -220,6 +220,20 @@ impl HookProofRecord {
             .map(|a| a.prompts.iter().cloned().collect())
             .unwrap_or_default()
     }
+
+    pub fn turn_open(&self, agent_id: &str, now_ms: u64, max_stale_ms: u64) -> bool {
+        let Some(a) = self.by_agent.get(agent_id) else {
+            return false;
+        };
+        let start = a.last_at.get("UserPromptSubmit").copied().unwrap_or(0);
+        let stop = a.last_at.get("Stop").copied().unwrap_or(0);
+        let fresh_ref = a.turn_at.max(start);
+        start > 0 && start > stop && now_ms.saturating_sub(fresh_ref) < max_stale_ms
+    }
+
+    pub fn forget(&mut self, agent_id: &str) {
+        self.by_agent.remove(agent_id);
+    }
 }
 
 #[cfg(test)]
@@ -251,5 +265,11 @@ mod tests {
         assert!(!r.prompt_seen("a1", 4001, &prompt_tail("please run verify")));
         assert!(r.event_seen("a1", 4000, &["UserPromptSubmit"]));
         assert_eq!(r.last_event_at("a1", "UserPromptSubmit"), 4000);
+        assert!(r.turn_open("a1", 5000, 60_000));
+        assert!(!r.turn_open("a1", 70_000, 60_000));
+        r.note(Some("a1"), "Stop", None, None, None, 5500);
+        assert!(!r.turn_open("a1", 6000, 60_000));
+        r.forget("a1");
+        assert!(!r.event_seen("a1", 0, &["UserPromptSubmit"]));
     }
 }

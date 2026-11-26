@@ -415,7 +415,19 @@ fn install_opencode_config_content(
     if fs::create_dir_all(agent_dir).is_err() {
         return None;
     }
-    let plugin_path = agent_dir.join("opencode-hive-plugin.mjs");
+    let plugin_dir = agent_dir.join("hive-plugin");
+    let pkg_json_path = plugin_dir.join("package.json");
+    let plugin_path = plugin_dir.join("index.mjs");
+    let pkg_src = r#"{
+  "name": "munder-difflin-hive",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs"
+  }
+}
+"#;
     let plugin_src = r#"import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -483,10 +495,14 @@ async function postHook(payload) {
   } catch {}
 }
 
-export const HiveBridge = async () => {
+export const HiveBridge = async (ctx) => {
   let stopTimer = null;
   let lastStopAt = 0;
   let lastCompactAt = 0;
+  let activeSessionId = undefined;
+  const modelBySession = new Map();
+  const compactionMsgs = new Set();
+
   const clearStopTimer = () => {
     if (stopTimer) {
       clearTimeout(stopTimer);
@@ -494,7 +510,14 @@ export const HiveBridge = async () => {
     }
   };
   const sidOf = (obj) =>
-    obj?.sessionID || obj?.info?.sessionID || obj?.properties?.sessionID || obj?.properties?.info?.sessionID || obj?.message?.sessionID || undefined;
+    obj?.sessionID ||
+    obj?.data?.sessionID ||
+    obj?.info?.sessionID ||
+    obj?.properties?.sessionID ||
+    obj?.properties?.info?.sessionID ||
+    obj?.message?.sessionID ||
+    activeSessionId;
+
   const emitStop = (sessionId) => {
     clearStopTimer();
     const now = Date.now();
@@ -509,43 +532,123 @@ export const HiveBridge = async () => {
     lastCompactAt = now;
     return postHook({ hook_event_name: "PostCompact", session_id: sessionId });
   };
+
   void postHook({ hook_event_name: "SessionStart" });
-  return {
-  event: async (input) => {
+
+  const handleEvent = async (ev) => {
     try {
-      const ev = input?.event;
       const t = ev?.type;
+      if (!t || t.endsWith(".delta")) return;
+      const d = ev?.data ?? ev?.properties ?? {};
       const sid = sidOf(ev);
-      if (t === "session.idle" || (t === "session.status" && ev?.properties?.status?.type === "idle")) {
-        await emitStop(sid);
-      } else if (t === "session.compacted") {
+      if (sid) activeSessionId = sid;
+
+      if (t === "session.inbox.enqueued") {
+        const item = d?.item;
+        if (item?.type === "user") {
+          clearStopTimer();
+          lastStopAt = 0;
+          const text = item?.payload?.text;
+          if (typeof text === "string" && text.trim()) {
+            await postHook({
+              hook_event_name: "UserPromptSubmit",
+              session_id: sid,
+              prompt: text.slice(-4096),
+            });
+          }
+        }
+      } else if (t === "session.step.started") {
+        clearStopTimer();
+        if (d?.model?.id || d?.modelID) {
+          modelBySession.set(sid || "", {
+            providerID: d?.model?.providerID || d?.providerID,
+            modelID: d?.model?.id || d?.modelID,
+          });
+        }
+        if (d?.agent === "compaction" || d?.mode === "compaction") {
+          if (d?.assistantMessageID) compactionMsgs.add(d.assistantMessageID);
+          lastCompactAt = 0;
+          await postHook({ hook_event_name: "PreCompact", session_id: sid });
+        }
+      } else if (t === "session.compacting" || t === "session.compaction.started") {
+        clearStopTimer();
+        lastCompactAt = 0;
+        await postHook({ hook_event_name: "PreCompact", session_id: sid });
+      } else if (
+        t === "session.compacted" ||
+        t === "session.compaction.completed" ||
+        t === "session.compaction.ended"
+      ) {
         await emitPostCompact(sid);
-      } else if (t === "session.status" && ev?.properties?.status?.type !== "idle") {
+      } else if (t === "session.step.ended") {
+        clearStopTimer();
+        if (d?.assistantMessageID && compactionMsgs.delete(d.assistantMessageID)) {
+          await emitPostCompact(sid);
+        }
+        const tok = d?.tokens;
+        if (tok && typeof tok === "object") {
+          const sum =
+            (tok.input || 0) +
+            (tok.output || 0) +
+            (tok.reasoning || 0) +
+            (tok.cache?.read || 0) +
+            (tok.cache?.write || 0);
+          const total = typeof tok.total === "number" && tok.total > 0 ? tok.total : sum;
+          if (total > 0) {
+            const tracked = modelBySession.get(sid || "");
+            const modelId = d?.model?.id || d?.modelID || tracked?.modelID;
+            const provId = d?.model?.providerID || d?.providerID || tracked?.providerID;
+            const limit = contextLimitOf(provId, modelId);
+            await postHook({
+              hook_event_name: "Status",
+              session_id: sid,
+              model: modelId || undefined,
+              context_window: {
+                total_input_tokens: total,
+                context_window_size: limit,
+              },
+            });
+          }
+        }
+      } else if (
+        t === "session.execution.succeeded" ||
+        t === "session.execution.failed" ||
+        t === "session.execution.aborted" ||
+        t === "session.idle" ||
+        (t === "session.status" && d?.status?.type === "idle")
+      ) {
+        await emitStop(sid);
+      } else if (t === "session.status" && d?.status?.type !== "idle") {
         clearStopTimer();
       } else if (t === "message.updated") {
-        const info = ev?.properties?.info;
+        const info = d?.info;
         if (info?.mode === "compaction" || info?.agent === "compaction") {
           clearStopTimer();
           if (info?.time?.completed) {
             await emitPostCompact(sid);
           } else {
             lastCompactAt = 0;
-            await postHook({
-              hook_event_name: "PreCompact",
-              session_id: sid,
-            });
+            await postHook({ hook_event_name: "PreCompact", session_id: sid });
           }
         }
         if (info?.role === "assistant" && info?.tokens && (info?.time?.completed || info?.finish)) {
           const tok = info.tokens;
-          const sum = (tok.input || 0) + (tok.output || 0) + (tok.reasoning || 0) + (tok.cache?.read || 0) + (tok.cache?.write || 0);
+          const sum =
+            (tok.input || 0) +
+            (tok.output || 0) +
+            (tok.reasoning || 0) +
+            (tok.cache?.read || 0) +
+            (tok.cache?.write || 0);
           const total = typeof tok.total === "number" && tok.total > 0 ? tok.total : sum;
           if (total > 0) {
-            const limit = contextLimitOf(info.providerID, info.modelID);
+            const limit = contextLimitOf(
+              info?.model?.providerID || info?.providerID,
+              info?.model?.id || info?.modelID,
+            );
             await postHook({
               hook_event_name: "Status",
               session_id: sid,
-              model: info.modelID || undefined,
+              model: info?.model?.id || info?.modelID || undefined,
               context_window: {
                 total_input_tokens: total,
                 context_window_size: limit,
@@ -562,47 +665,56 @@ export const HiveBridge = async () => {
         }
       }
     } catch {}
-  },
-  "tool.execute.before": async (input) => {
-    clearStopTimer();
-    lastStopAt = 0;
-    try {
-      await postHook({
-        hook_event_name: "PreToolUse",
-        session_id: sidOf(input),
-        tool_name: input?.tool || input?.name || "tool",
-        tool_input: input?.args || {},
-      });
-    } catch {}
-  },
-  "tool.execute.after": async (input) => {
-    clearStopTimer();
-    try {
-      await postHook({
-        hook_event_name: "PostToolUse",
-        session_id: sidOf(input),
-        tool_name: input?.tool || input?.name || "tool",
-        tool_input: input?.args || {},
-      });
-    } catch {}
-  },
-  "chat.message": async (input, output) => {
-    clearStopTimer();
-    lastStopAt = 0;
-    try {
-      const parts = Array.isArray(output?.parts) ? output.parts : [];
-      const text = parts
-        .filter((p) => p && p.type === "text" && typeof p.text === "string" && !p.synthetic && !p.ignored)
-        .map((p) => p.text)
-        .join("\n");
-      if (text) {
-        await postHook({ hook_event_name: "UserPromptSubmit", session_id: sidOf(output) || sidOf(input), prompt: text.slice(-4096) });
-      }
-    } catch {}
-  },
-}; };
-export default HiveBridge;
+  };
+
+  const sub = ctx?.event?.subscribe?.();
+  if (sub && typeof sub[Symbol.asyncIterator] === "function") {
+    void (async () => {
+      try {
+        for await (const ev of sub) {
+          await handleEvent(ev);
+        }
+      } catch {}
+    })();
+  }
+
+  try {
+    ctx?.tool?.hook?.("execute.before", async (input) => {
+      clearStopTimer();
+      lastStopAt = 0;
+      try {
+        await postHook({
+          hook_event_name: "PreToolUse",
+          session_id: sidOf(input),
+          tool_name: input?.tool || input?.info?.name || input?.name || "tool",
+          tool_input: input?.args || input?.input || {},
+        });
+      } catch {}
+    });
+    ctx?.tool?.hook?.("execute.after", async (input) => {
+      clearStopTimer();
+      try {
+        await postHook({
+          hook_event_name: "PostToolUse",
+          session_id: sidOf(input),
+          tool_name: input?.tool || input?.info?.name || input?.name || "tool",
+          tool_input: input?.args || input?.input || {},
+        });
+      } catch {}
+    });
+  } catch {}
+
+  return {
+    event: async (input) => handleEvent(input?.event ?? input),
+  };
+};
+
+export default {
+  id: "munder-difflin-hive",
+  setup: HiveBridge,
+};
 "#;
+    let _ = atomic_write_string(&pkg_json_path, pkg_src);
     let _ = atomic_write_string(&plugin_path, plugin_src);
     let oc_dir = agent_dir.join(".opencode");
     if fs::create_dir_all(&oc_dir).is_ok() {
@@ -618,7 +730,7 @@ export default HiveBridge;
     let mut cfg = Map::new();
     cfg.insert("autoupdate".to_string(), Value::Bool(false));
     let mut plugin_url = String::from("file://");
-    plugin_url.push_str(&plugin_path.to_string_lossy());
+    plugin_url.push_str(&plugin_dir.to_string_lossy());
     cfg.insert("plugin".to_string(), json!([plugin_url]));
     cfg.insert(
         "instructions".to_string(),
@@ -1027,6 +1139,9 @@ pub fn prepare_agent_spawn(
                 }
             }
             "opencode" => {
+                if !opts.args.iter().any(|a| a == "--standalone") {
+                    opts.args.push("--standalone".to_string());
+                }
                 if !opts.env.contains_key("OPENCODE_CONFIG_CONTENT")
                     && let Some(content) =
                         install_opencode_config_content(&agent_dir, &hive_root, auto_mode)

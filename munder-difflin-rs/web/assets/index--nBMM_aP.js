@@ -14344,6 +14344,7 @@ function useHive(config2) {
         ptyId: GOD_PTY,
         command: command2.trim(),
         provider: godProvider,
+        spawnedProvider: godProvider,
         model: godModel,
         isGod: true,
         recentTextTs: Date.now()
@@ -52661,14 +52662,36 @@ function ActivityTab() {
         return t2("commandCenter.logEscalate", { subject: e.subject ?? "" });
       case "approval":
         return e.approve ? t2("commandCenter.logApprovalGranted") : t2("commandCenter.logApprovalDenied");
-      default:
-        return JSON.stringify(e);
+      case "app-start":
+        return `started ${e.version ? `v${e.version}` : "app"}${e.platform ? ` (${e.platform})` : ""}`;
+      case "app-quit":
+      case "app-exit":
+        return `${e.kind === "app-quit" ? "quit" : "exit"}${e.code !== void 0 ? ` code=${e.code}` : ""}${e.ms !== void 0 ? ` (${e.ms}ms)` : ""}`;
+      case "floor-open":
+        return "office floor opened";
+      case "hooks":
+        return `hooks ${e.state ?? "ready"}`;
+      case "graphics":
+        return `graphics ${e.mode ?? "auto"}${e.gpuCompositing ? ` · gpu ${e.gpuCompositing}` : ""}`;
+      case "cap-catalog":
+      case "cap-catalog-update":
+        return `${e.op ?? e.outcome ?? "sync"}${e.entries ? ` (${e.entries} entries)` : ""}${e.from ? ` · ${e.from}` : ""}`;
+      case "voice_action":
+        return [e.actor, e.verb, e.target].filter(Boolean).join(" ") || "voice action";
+      default: {
+        const parts = Object.entries(e)
+          .filter(([k]) => k !== "kind" && k !== "ts")
+          .slice(0, 4)
+          .map(([k, v]) => `${k}=${typeof v === "string" ? v : JSON.stringify(v)}`);
+        return parts.length ? parts.join(" · ") : (e.kind ?? "event");
+      }
     }
   };
+  const entries = (Array.isArray(log) ? log : []).filter((e) => e && typeof e === "object");
   return /* @__PURE__ */ jsxRuntimeExports.jsxs(Scroll, { children: [
     /* @__PURE__ */ jsxRuntimeExports.jsxs(Section$5, { title: t2("commandCenter.activity"), children: [
-      log.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(Muted$6, { children: t2("commandCenter.nothingYet") }),
-      [...log].reverse().map((e, i8) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontSize: 12, color: "var(--cth-ink-700)", padding: "2px 0", display: "flex", gap: 6 }, children: [
+      entries.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx(Muted$6, { children: t2("commandCenter.nothingYet") }),
+      [...entries].reverse().map((e, i8) => /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { title: JSON.stringify(e), style: { fontSize: 12, color: "var(--cth-ink-700)", padding: "2px 0", display: "flex", gap: 6 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: "var(--cth-ink-300)", flexShrink: 0 }, children: e.kind ?? "·" }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }, children: fmt(e) })
       ] }, i8))
@@ -104190,6 +104213,24 @@ const ICON_FOR = {
   agents: "agents",
   temps: "temps"
 };
+function sanitizeBrandSvg(raw2) {
+  if (typeof raw2 !== "string") return null;
+  let cleaned = raw2.replace(/<\?xml[\s\S]*?\?>/gi, "").replace(/<!DOCTYPE[\s\S]*?>/gi, "").trim();
+  cleaned = cleaned.replace(/<script[\s\S]*?<\/script>/gi, "");
+  cleaned = cleaned.replace(/<foreignObject[\s\S]*?<\/foreignObject>/gi, "");
+  cleaned = cleaned.replace(/\son[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "");
+  cleaned = cleaned.replace(/javascript\s*:/gi, "");
+  const start2 = cleaned.search(/<svg[\s>]/i);
+  const end2 = cleaned.toLowerCase().lastIndexOf("</svg>");
+  if (start2 < 0 || end2 < start2) return null;
+  cleaned = cleaned.slice(start2, end2 + 6);
+  if (cleaned.length > 262144) return null;
+  return cleaned;
+}
+function brandLogoDataUrl(svgText) {
+  const safe = sanitizeBrandSvg(svgText);
+  return safe ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(safe)}` : null;
+}
 function ProSidebar({
   config: config2,
   current: current2,
@@ -104535,7 +104576,7 @@ function ProSidebar({
             "aria-label": collapsed2 ? t2("rail.expand") : t2("rail.collapse"),
             style: {
               position: "absolute",
-              top: 16,
+              top: brandLogoDataUrl(config2?.customLogoSvg) ? 36 : 16,
               insetInlineEnd: -13,
               zIndex: 6,
               width: 26,
@@ -104552,7 +104593,25 @@ function ProSidebar({
             children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: collapsed2 === rtl ? "chevronLeft" : "chevronRight", size: 12 })
           }
         ),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: collapsed2 ? "14px 0 10px" : "14px 14px 10px" } }),
+        brandLogoDataUrl(config2?.customLogoSvg) ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", {
+          "data-sidebar-logo": true,
+          style: {
+            height: 48,
+            minHeight: 48,
+            padding: collapsed2 ? "8px 6px" : "8px 14px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: 8,
+            boxSizing: "border-box",
+            overflow: "hidden"
+          },
+          children: /* @__PURE__ */ jsxRuntimeExports.jsx("img", {
+            src: brandLogoDataUrl(config2.customLogoSvg),
+            alt: "Logo",
+            style: { maxWidth: "100%", maxHeight: collapsed2 ? 26 : 32, width: "auto", height: "auto", objectFit: "contain", display: "block" }
+          })
+        }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: collapsed2 ? "14px 0 10px" : "14px 14px 10px" } }),
         getPro && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { padding: collapsed2 ? "0 10px 8px" : "0 14px 10px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(
           "button",
           {
@@ -114699,7 +114758,7 @@ function InboxScreen() {
     if (adds.length > 0) out.push({ id: "adds", kind: "adds" });
     for (const a of team) out.push({ id: `agent:${a.id}`, kind: "agent", agent: a });
     for (const c of cloudRows2) out.push({ id: c.row.ptyId, kind: "cloudAgent", officeId: c.officeId, row: c.row });
-    out.push({ id: "floor", kind: "floor" }, { id: "slack", kind: "slack" }, { id: "webhook", kind: "trigger", source: "webhook" });
+    out.push({ id: "floor", kind: "floor" }, { id: "webhook", kind: "trigger", source: "webhook" });
     if (inOrg) for (const m of roster.teammates) out.push({ id: `dm:${m.id}`, kind: "dm", mate: m });
     return out;
   }, [adds.length, inOrg, roster.teammates, team, cloudRows2]);
@@ -115658,7 +115717,7 @@ function ConfigTab({ agent, config: config2 }) {
       const cfg = await window.cth.getConfig();
       const nextProvider = cfg.godProvider ?? "claude";
       const command2 = effectiveGodCommand(cfg.godCommand, buildSpawnCommand(cfg, cfg.godModel, nextProvider), nextProvider);
-      const resume = nextProvider === (agent.provider ?? "claude");
+      const resume = nextProvider === (agent.spawnedProvider ?? agent.provider ?? "claude");
       const entry = acquireTerminal(agent.ptyId);
       const cols = entry.term.cols || 100;
       const rows = entry.term.rows || 30;
@@ -115678,7 +115737,7 @@ function ConfigTab({ agent, config: config2 }) {
         resume
       });
       if (!res.ok) throw new Error(res.error ?? "restart failed");
-      updateAgent(agent.id, { provider: nextProvider, model: cfg.godModel, command: command2.trim(), status: "idle", action: resume && res.resumed ? "continuing…" : "restarting…" });
+      updateAgent(agent.id, { provider: nextProvider, spawnedProvider: nextProvider, model: cfg.godModel, command: command2.trim(), status: "idle", action: resume && res.resumed ? "continuing…" : "restarting…" });
       if (res.resumeNotFound) proToast(t2("pro.room.restartedFresh", { name: agent.name }), { tone: "bad" });
       else proToast(t2("pro.room.restartedToast", { name: agent.name }));
     } catch (error) {
@@ -115730,7 +115789,10 @@ function ConfigTab({ agent, config: config2 }) {
       ] }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", kind: engineDirty || commandDirty ? "primary" : "default", disabled: !engineDirty && !commandDirty || !!conflict, onClick: () => {
-          void window.cth.updateConfig({ godProvider: provider, godModel: model, godCommand: godCommandToStore(commandDraft, restartCommand) }).then(ok).catch(bad);
+          void window.cth.updateConfig({ godProvider: provider, godModel: model, godCommand: godCommandToStore(commandDraft, restartCommand) }).then(() => {
+            updateAgent(agent.id, { provider, model });
+            ok();
+          }).catch(bad);
         }, children: t2("pro.god.config.apply") }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(Muted$3, { children: t2("pro.god.config.engineHint", { name: agent.name }) })
       ] }),
@@ -120346,6 +120408,81 @@ function OfficeThemePicker({ config: config2 }) {
         v2 === "halloween" ? t2("officeTheme.on") : t2("officeTheme.off")
       ] }, v2)) })
     ] }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-custom-logo-setting": true, style: { marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--cth-ink-300)", display: "flex", flexDirection: "column", gap: 8 }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+        fontFamily: "var(--cth-font-display)",
+        fontSize: 8,
+        lineHeight: "12px",
+        color: "var(--cth-ink-500)",
+        textTransform: "uppercase"
+      }, children: "Sidebar logo (SVG)" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, lineHeight: "16px", color: "var(--cth-ink-500)" }, children: "Custom SVG shown in the top-left sidebar header (recommended up to 212 × 32 px)." }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: {
+          height: 40,
+          minWidth: 140,
+          maxWidth: 220,
+          padding: "4px 10px",
+          borderRadius: 8,
+          border: "1px solid var(--cth-ink-300)",
+          background: "var(--cth-paper-100)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center"
+        }, children: brandLogoDataUrl(config2?.customLogoSvg) ? /* @__PURE__ */ jsxRuntimeExports.jsx("img", {
+          src: brandLogoDataUrl(config2.customLogoSvg),
+          alt: "Uploaded sidebar logo",
+          style: { maxWidth: "100%", maxHeight: 30, width: "auto", height: "auto", objectFit: "contain", display: "block" }
+        }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11.5, color: "var(--cth-ink-500)" }, children: "No custom logo" }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { style: {
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 6,
+          height: 28,
+          padding: "0 10px",
+          borderRadius: 7,
+          border: "1px solid var(--cth-ink-300)",
+          background: "var(--cth-cream-100)",
+          color: "var(--cth-ink-900)",
+          fontSize: 12,
+          fontWeight: 500,
+          cursor: "pointer"
+        }, children: [
+          "Upload SVG",
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", {
+            type: "file",
+            accept: ".svg,image/svg+xml",
+            "data-logo-upload": true,
+            style: { display: "none" },
+            onChange: (e) => {
+              const file2 = e.target.files?.[0];
+              e.target.value = "";
+              if (!file2) return;
+              const reader = new FileReader();
+              reader.onload = async () => {
+                const safe = sanitizeBrandSvg(String(reader.result ?? ""));
+                if (!safe) {
+                  setNote("Invalid SVG file (or exceeds 256 KB).");
+                  return;
+                }
+                setNote("");
+                await window.cth.updateConfig({ customLogoSvg: safe });
+              };
+              reader.readAsText(file2);
+            }
+          })
+        ] }),
+        config2?.customLogoSvg && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, {
+          size: "sm",
+          kind: "ghost",
+          onClick: () => {
+            setNote("");
+            void window.cth.updateConfig({ customLogoSvg: null });
+          },
+          children: "Reset"
+        })
+      ] })
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("p", { "data-art-credits": true, style: { margin: "14px 0 0", fontSize: 12, lineHeight: "16px", color: "var(--cth-ink-500)" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(
       Trans,
       {
@@ -121125,7 +121262,7 @@ function DictationPanel({ shared, config: config2 }) {
   const { cfg, status } = shared;
   const models = useModelDownloads(shared);
   const engineName2 = (e) => e === "apple" ? t2("settings.transcribe.engineApple") : e === "whisper" ? t2("settings.transcribe.engineWhisper") : e === "moonshine" ? t2("settings.transcribe.engineMoonshine") : e === "groq" ? t2("settings.transcribe.engineGroq") : t2("settings.transcribe.engineNone");
-  const nothing = !!status && status.chosen.dictation === null;
+  const nothing = !!status && status.chosen?.dictation === null;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-dictation-panel": !cfg.dictation ? "off" : nothing ? "nothing" : "on", style: { display: "flex", flexDirection: "column", gap: 10 }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx(Line$2, { label: t2("settings.transcribe.dictationSwitch"), info: t2("settings.transcribe.dictationSwitchDesc"), children: /* @__PURE__ */ jsxRuntimeExports.jsx(Toggle, { on: cfg.dictation, label: t2("settings.transcribe.dictationSwitch"), onChange: (next) => {
       void shared.save({ dictation: next });
@@ -121135,9 +121272,9 @@ function DictationPanel({ shared, config: config2 }) {
       status?.warming && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: hint$1, role: "status", "data-transcribe-warming": true, children: t2("settings.transcribe.warming") }),
       /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "grid", gridTemplateColumns: "auto 1fr", columnGap: 12, rowGap: 2, fontSize: 12 }, children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: "var(--cth-ink-500)" }, children: t2("settings.transcribe.dictationUses") }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-transcribe-dictation-engine": true, children: status?.chosen.dictation === "whisper" ? t2("settings.transcribe.whisperWith", { model: t2(MODEL_ROW_TEXT[status.model.inUse].name) }) : engineName2(status?.chosen.dictation) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-transcribe-dictation-engine": true, children: status?.chosen?.dictation === "whisper" && status?.model?.inUse ? t2("settings.transcribe.whisperWith", { model: t2(MODEL_ROW_TEXT[status.model.inUse].name) }) : engineName2(status?.chosen?.dictation) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: "var(--cth-ink-500)" }, children: t2("settings.transcribe.meetingsUse") }),
-        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-transcribe-meeting-engine": true, children: engineName2(status?.chosen.meeting) })
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-transcribe-meeting-engine": true, children: engineName2(status?.chosen?.meeting) })
       ] }),
       nothing && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { role: "alert", style: { ...hint$1, color: "var(--cth-ink-900)" }, "data-transcribe-nothing": true, children: t2("settings.transcribe.nothingCanTranscribe") }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(EngineLine, { shared }),
@@ -121159,11 +121296,11 @@ function EngineLine({ shared }) {
   const { cfg, status, save } = shared;
   const engines = [
     { value: "auto", label: t2("settings.transcribe.engineAuto") },
-    { value: "whisper", label: t2("settings.transcribe.engineWhisper"), disabled: !!status && !status.engines.whisper },
+    { value: "whisper", label: t2("settings.transcribe.engineWhisper"), disabled: !!status && !status.engines?.whisper },
     // 0.5.8: Moonshine Medium, dictation only; offered once its model is on disk.
-    ...status && status.moonshine?.helper !== false ? [{ value: "moonshine", label: t2("settings.transcribe.engineMoonshine") + (!status.engines.moonshine ? ` (${t2("settings.transcribe.needsMoonshine")})` : ""), disabled: !status.engines.moonshine }] : [],
-    { value: "groq", label: t2("settings.transcribe.engineGroq") + (status && !status.engines.groq ? ` (${t2("settings.transcribe.needsGroqKey")})` : ""), disabled: !!status && !status.engines.groq },
-    { value: "apple", label: t2("settings.transcribe.engineApple") + (status && !status.engines.apple ? ` (${t2("settings.transcribe.needsMac26")})` : ""), disabled: !!status && !status.engines.apple }
+    ...status && status.moonshine?.helper !== false ? [{ value: "moonshine", label: t2("settings.transcribe.engineMoonshine") + (!status.engines?.moonshine ? ` (${t2("settings.transcribe.needsMoonshine")})` : ""), disabled: !status.engines?.moonshine }] : [],
+    { value: "groq", label: t2("settings.transcribe.engineGroq") + (status && !status.engines?.groq ? ` (${t2("settings.transcribe.needsGroqKey")})` : ""), disabled: !!status && !status.engines?.groq },
+    { value: "apple", label: t2("settings.transcribe.engineApple") + (status && !status.engines?.apple ? ` (${t2("settings.transcribe.needsMac26")})` : ""), disabled: !!status && !status.engines?.apple }
   ];
   return /* @__PURE__ */ jsxRuntimeExports.jsx(Line$2, { label: t2("settings.transcribe.engine"), info: t2("settings.transcribe.engineHint"), children: /* @__PURE__ */ jsxRuntimeExports.jsx(SelectBox, { value: cfg.engine, ariaLabel: t2("settings.transcribe.engine"), options: engines, onChange: (v2) => {
     void save({ engine: v2 });
@@ -121186,15 +121323,15 @@ function useModelDownloads(shared) {
     fetching.current = false;
     setDownload(null);
     await shared.refresh();
-    if (r6.ok) {
+    if (r6?.ok) {
       void shared.save(id === "moonshine" ? { engine: "moonshine" } : { model: id, ...shared.cfg.engine === "moonshine" ? { engine: "auto" } : {} });
       return;
     }
     const size = id === "moonshine" ? MOONSHINE_MB : DOWNLOADABLE_MODELS.find((m) => m.id === id)?.mb ?? 0;
-    const where = id === "moonshine" ? shared.status?.moonshine?.path ?? "" : shared.status?.model.path[id] ?? "";
-    setError({ id, text: t2(downloadFailureKey(r6.code), { error: r6.error, folder: folderOf(where), size }) });
+    const where = id === "moonshine" ? shared.status?.moonshine?.path ?? "" : shared.status?.model?.path?.[id] ?? "";
+    setError({ id, text: t2(downloadFailureKey(r6?.code), { error: r6?.error, folder: folderOf(where), size }) });
   };
-  const running = shared.status?.model.downloading;
+  const running = shared.status?.model?.downloading;
   reactExports.useEffect(() => {
     if (isDownloadId(running) && !fetching.current) void fetchModel(running);
   }, [running]);
@@ -121205,7 +121342,7 @@ function ModelRows({ shared, models }) {
   const { cfg, live: live2, status, save } = shared;
   const busy = models.download !== null;
   const moonPending = cfg.engine !== live2.engine && cfg.engine === "moonshine";
-  const picked2 = moonPending ? "moonshine" : cfg.model !== live2.model ? cfg.model : status?.chosen.dictation === "moonshine" ? "moonshine" : status?.chosen.dictation === "whisper" ? status.model.inUse : null;
+  const picked2 = moonPending ? "moonshine" : cfg.model !== live2.model ? cfg.model : status?.chosen?.dictation === "moonshine" ? "moonshine" : status?.chosen?.dictation === "whisper" ? status?.model?.inUse ?? null : null;
   const ids = ["small", "base", "turbo"];
   const useWhisper = (id) => {
     void save({ model: id, ...cfg.engine === "moonshine" ? { engine: "auto" } : {} });
@@ -121213,7 +121350,7 @@ function ModelRows({ shared, models }) {
   return /* @__PURE__ */ jsxRuntimeExports.jsx(Line$2, { label: t2("settings.transcribe.model"), info: t2("settings.transcribe.modelHint"), stack: true, children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 8, width: "100%" }, children: [
     status && status.moonshine?.helper !== false && /* @__PURE__ */ jsxRuntimeExports.jsx(MoonshineRow, { shared, models, inUse: picked2 === "moonshine", busy }),
     ids.map((id) => {
-      const installed = status?.model.installed[id] ?? false;
+      const installed = status?.model?.installed?.[id] ?? false;
       const mine = models.download?.id === id ? models.download : null;
       const percent = mine && mine.total ? Math.round(100 * mine.received / mine.total) : null;
       const error = models.error?.id === id && !mine && !installed ? models.error.text : "";
@@ -121727,9 +121864,13 @@ const mockClient = {
   testDraft: (_record, secret) => Promise.resolve(secret ? { ok: true, status: 200 } : { ok: false, error: "no token typed" })
 };
 const integrationsClient = {
-  listTemplates: () => {
+  listTemplates: async () => {
     const b = liveBridge();
-    return b ? b.integrationsTemplates() : mockClient.listTemplates();
+    if (b && typeof b.integrationsTemplates === "function") {
+      const res = await b.integrationsTemplates();
+      if (Array.isArray(res) && res.length > 0) return res;
+    }
+    return mockClient.listTemplates();
   },
   list: () => {
     const b = liveBridge();
@@ -126336,8 +126477,8 @@ function Body({ config: config2, draft, framed, office: office2, inbound }) {
   const { offices: cloudOffices } = useCloudOffices();
   const movedKey = officeNameKey(cloudOffices.find((o) => o.officeId === live2?.answersIn)?.input.kind);
   const movedTo = movedKey ? t2(movedKey) : "";
-  const slackListed = view2 === "mac" && (config2.slackEnabled === true || !!config2.slackBotToken || !!live2?.answersIn);
-  const slackElsewhere = view2 === "office" || view2 === "macCloud";
+  const slackListed = false;
+  const slackElsewhere = false;
   const gh = githubRecords(records.filter((r6) => !isConnectionRecord(r6)));
   const ghRecord = gh.api ?? gh.git;
   const ghHook = inbound?.hooks.find((w2) => sourceOf(w2) === "github" && !inbound.isRemoved(w2.id) && w2.enabled);
@@ -126522,7 +126663,6 @@ function Body({ config: config2, draft, framed, office: office2, inbound }) {
   }) : [];
   const addedTemplates = new Set(records.map((r6) => resolveTemplate(templates, r6)?.idSuggestion).filter(Boolean));
   const otherRows = [];
-  if (view2 === "mac" && !slackListed) otherRows.push({ key: SLACK_ITEM, group: "chat", kind: "in", part: "preset", name: t2("integrations.hub.name.slackApp"), logo: "slack", line: kindWord("in"), tone: "off", chip: "", attn: false });
   if (ownApps ? !ghRecord : view2 === "macCloud" && !(ghRecord && githubInCloud.on)) otherRows.push({ key: GITHUB_ITEM, group: "apps", kind: "use", part: "preset", name: t2("integrations.hub.name.githubGit"), logo: "github", line: kindWord("both"), tone: "off", chip: "", attn: false });
   const others = acc.catalog.filter((c) => !isKnownConnectionProvider(c.id)).map((c) => ({ id: c.id, name: c.label, ...logos[c.id] ? { logo: logos[c.id] } : {}, ...c.categories[0] ? { category: c.categories[0] } : {}, ...c.callable === false ? { callable: false } : {} })).sort((x, y2) => x.name.localeCompare(y2.name, i18n.language));
   const nangoList = others.length ? [...SIGN_IN_SERVICES.map((id) => ({ id, name: providerLabel(id), ...logos[id] ? { logo: logos[id] } : {} })), ...others] : null;
@@ -129189,11 +129329,18 @@ function SettingsScreen({ config: config2, section }) {
   const nav2 = usePaneNav();
   const [workspace, setWorkspace] = reactExports.useState(false);
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", fontFamily: "var(--cth-font-ui)", color: "var(--cth-ink-900)", background: "var(--cth-cream-100)" }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Bar$1, { title: t2("pro.menu.settings"), children: config2 && /* @__PURE__ */ jsxRuntimeExports.jsxs(Btn, { onClick: () => setWorkspace(true), title: config2.harnessHome ?? void 0, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "folder", size: 14 }),
-      t2("pro.workspace.title"),
-      config2.harnessHome && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: "var(--cth-ink-500)", fontWeight: 400 }, children: folderName(config2.harnessHome) })
-    ] }) }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs(Bar$1, { title: t2("pro.menu.settings"), children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx(SharingChip, {}),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(AppChromeSlot, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProConnectionChip, {}) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(LimitsChip, { skin: "professional" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-sim-picker-slot": true, style: { display: "contents" } }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(ModeSwitch, {}),
+      config2 && /* @__PURE__ */ jsxRuntimeExports.jsxs(Btn, { onClick: () => setWorkspace(true), title: config2.harnessHome ?? void 0, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "folder", size: 14 }),
+        t2("pro.workspace.title"),
+        config2.harnessHome && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { color: "var(--cth-ink-500)", fontWeight: 400 }, children: folderName(config2.harnessHome) })
+      ] })
+    ] }),
     /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minHeight: 0, position: "relative" }, children: config2 && /* @__PURE__ */ jsxRuntimeExports.jsx(SettingsModal, { config: config2, initialSection: section, onClose: () => nav2.go(PRO_HOME), chrome: "inline" }, section ?? "") }),
     workspace && config2 && /* @__PURE__ */ jsxRuntimeExports.jsx(Sheet, { onClose: () => setWorkspace(false), width: 560, children: /* @__PURE__ */ jsxRuntimeExports.jsx(WorkspacePicker, { config: config2, onClose: () => setWorkspace(false) }) })
   ] });
@@ -144068,20 +144215,40 @@ function ProShell({
         integrationsNeedLook
       }
     ),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0, minHeight: 0, position: "relative", background: "var(--cth-cream-50)" }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(PaneNavProvider, { value: nav2, children: [
-      body2,
-      /* @__PURE__ */ jsxRuntimeExports.jsx(TaskSheetHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(AgentSheetHost, { config: config2 }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(CloudSignInSheetHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(CloudEnableSheetHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(SandboxGuideSheetHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(RunInSheetHost, { onSelect: go }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(SandboxSetupSheetHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(AskMeModalHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(ProToastHost, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(ProTour, { screen, onboarded: config2?.onboardingComplete === true, restored: !recovering, appVersion, goHome, goTo: go }),
-      screen !== PRO_HOME && /* @__PURE__ */ jsxRuntimeExports.jsx(AwayThemeButton, { goHome })
-    ] }) })
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, minWidth: 0, minHeight: 0, position: "relative", background: "var(--cth-cream-50)", display: "flex", flexDirection: "column" }, children: [
+      screen === PRO_HOME && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-pro-topbar": true, style: {
+        height: 44,
+        minHeight: 44,
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "flex-end",
+        gap: 8,
+        padding: "4px 18px 0",
+        background: "var(--cth-cream-50)",
+        userSelect: "none"
+      }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(SharingChip, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(AppChromeSlot, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProConnectionChip, {}) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(LimitsChip, { skin: "professional" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-sim-picker-slot": true, style: { display: "contents" } }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ModeSwitch, {})
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { flex: 1, minWidth: 0, minHeight: 0, position: "relative" }, children: /* @__PURE__ */ jsxRuntimeExports.jsxs(PaneNavProvider, { value: nav2, children: [
+        body2,
+        /* @__PURE__ */ jsxRuntimeExports.jsx(TaskSheetHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(AgentSheetHost, { config: config2 }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(CloudSignInSheetHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(CloudEnableSheetHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(SandboxGuideSheetHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(RunInSheetHost, { onSelect: go }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(SandboxSetupSheetHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(AskMeModalHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ProToastHost, {}),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(ProTour, { screen, onboarded: config2?.onboardingComplete === true, restored: !recovering, appVersion, goHome, goTo: go }),
+        screen === "settings" && /* @__PURE__ */ jsxRuntimeExports.jsx(AwayThemeButton, { goHome })
+      ] }) })
+    ] })
   ] });
 }
 function ModeSwitch() {
@@ -147569,6 +147736,14 @@ function App() {
     window.cth.getConfig().then((c) => {
       if (cancelled) return;
       setConfig(c);
+      const god = useStore.getState().agents.find((a) => a.isGod);
+      if (god && (c.godProvider || c.godModel !== void 0)) {
+        const nextP = c.godProvider ?? god.provider;
+        const nextM = c.godModel;
+        if (god.provider !== nextP || (god.model ?? void 0) !== (nextM ?? void 0)) {
+          useStore.getState().updateAgent(god.id, { provider: nextP, model: nextM });
+        }
+      }
       if (shouldAutoOpenHive(c)) setHiveOpened(true);
       useStore.getState().setHasGroqKey(!!c.groqApiKey);
       void refreshCanDictate();
@@ -147588,6 +147763,14 @@ function App() {
   reactExports.useEffect(() => window.cth.onConfigChanged((c) => {
     void refreshCanDictate();
     setConfig(c);
+    const god = useStore.getState().agents.find((a) => a.isGod);
+    if (god && (c.godProvider || c.godModel !== void 0)) {
+      const nextP = c.godProvider ?? god.provider;
+      const nextM = c.godModel;
+      if (god.provider !== nextP || (god.model ?? void 0) !== (nextM ?? void 0)) {
+        useStore.getState().updateAgent(god.id, { provider: nextP, model: nextM });
+      }
+    }
     useStore.getState().setAvatars(c.avatars ?? []);
     if (!applyOfficeFloorTheme()) useStore.getState().setOfficeTheme(floorOfficeTheme(c, c.harnessHome));
   }), []);
@@ -147756,15 +147939,7 @@ function App() {
     /* @__PURE__ */ jsxRuntimeExports.jsx(BootClock, {}),
     /* @__PURE__ */ jsxRuntimeExports.jsx(BootSplashGate, { screenReports: skin === "professional" }),
     skin !== "professional" && boot2.recovering && /* @__PURE__ */ jsxRuntimeExports.jsx(ProBooting, { remaining: boot2.remaining, skippable: boot2.skippable, onSkip: boot2.skip, card: /* @__PURE__ */ jsxRuntimeExports.jsx(ClassicBootCard, { remaining: boot2.remaining, skippable: boot2.skippable, onSkip: boot2.skip }) }),
-    skin === "professional" ? /* @__PURE__ */ jsxRuntimeExports.jsx(
-      ProTitlebar,
-      {
-        theme: appThemeNow,
-        onToggleTheme: flipTheme,
-        appVersion: "0.5.10",
-        chrome: /* @__PURE__ */ jsxRuntimeExports.jsx(AppChromeSlot, { children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProConnectionChip, {}) })
-      }
-    ) : /* @__PURE__ */ jsxRuntimeExports.jsxs(
+    skin !== "professional" && /* @__PURE__ */ jsxRuntimeExports.jsxs(
       "div",
       {
         ref: windowBarRef,

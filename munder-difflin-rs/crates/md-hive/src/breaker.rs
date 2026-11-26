@@ -36,6 +36,54 @@ pub struct BreakerState {
     pub cause: Option<BreakerCause>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BreakerAction {
+    None,
+    Steer,
+    Constrain,
+    Stop,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BreakerConfig {
+    pub enabled: bool,
+    pub hard_stop: bool,
+    pub repeated_tool_limit: usize,
+    pub error_storm_limit: usize,
+    pub token_velocity_per_min: u64,
+    pub cost_cap_usd: Option<f64>,
+}
+
+impl Default for BreakerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            hard_stop: false,
+            repeated_tool_limit: 8,
+            error_storm_limit: 5,
+            token_velocity_per_min: 60_000,
+            cost_cap_usd: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BreakerUsageInput {
+    pub agent_id: String,
+    pub work_tokens: u64,
+    pub output_tokens: u64,
+    pub usd: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BreakerDecision {
+    pub state: BreakerState,
+    pub action: BreakerAction,
+    pub changed: bool,
+}
+
 struct AgentBreaker {
     level: BreakerLevel,
     reason: String,
@@ -46,6 +94,8 @@ struct AgentBreaker {
     compacting_until: u64,
     last_distinct_tool_at: u64,
     last_user_prompt_at: u64,
+    last_output_tokens: Option<u64>,
+    last_sample_at: u64,
     ts: u64,
 }
 
@@ -61,29 +111,67 @@ impl Default for AgentBreaker {
             compacting_until: 0,
             last_distinct_tool_at: 0,
             last_user_prompt_at: 0,
+            last_output_tokens: None,
+            last_sample_at: 0,
             ts: 0,
         }
     }
 }
 
-#[derive(Default)]
 pub struct CircuitBreaker {
     agents: HashMap<String, AgentBreaker>,
-    repeated_tool_limit: usize,
-    error_storm_limit: usize,
+    config: BreakerConfig,
+}
+
+impl Default for CircuitBreaker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CircuitBreaker {
     pub fn new() -> Self {
         Self {
             agents: HashMap::new(),
-            repeated_tool_limit: 8,
-            error_storm_limit: 5,
+            config: BreakerConfig::default(),
         }
+    }
+
+    pub fn config(&self) -> &BreakerConfig {
+        &self.config
+    }
+
+    pub fn configure_from_harness(&mut self, cfg: &md_core::config::HarnessConfig) {
+        let mut next = BreakerConfig {
+            cost_cap_usd: cfg.extra.get("costCapUsd").and_then(|v| v.as_f64()),
+            ..BreakerConfig::default()
+        };
+        if let Some(cb) = cfg.extra.get("circuitBreaker").and_then(|v| v.as_object()) {
+            if let Some(v) = cb.get("enabled").and_then(|v| v.as_bool()) {
+                next.enabled = v;
+            }
+            if let Some(v) = cb.get("hardStop").and_then(|v| v.as_bool()) {
+                next.hard_stop = v;
+            }
+            if let Some(v) = cb.get("repeatedToolLimit").and_then(|v| v.as_u64()) {
+                next.repeated_tool_limit = (v as usize).max(1);
+            }
+            if let Some(v) = cb.get("errorStormLimit").and_then(|v| v.as_u64()) {
+                next.error_storm_limit = (v as usize).max(1);
+            }
+            if let Some(v) = cb.get("tokenVelocityPerMin").and_then(|v| v.as_u64()) {
+                next.token_velocity_per_min = v.max(1);
+            }
+        }
+        self.config = next;
     }
 
     pub fn forget(&mut self, agent_id: &str) {
         self.agents.remove(agent_id);
+    }
+
+    pub fn clear_all(&mut self) {
+        self.agents.clear();
     }
 
     pub fn set_state(&mut self, state: BreakerState) {
@@ -98,10 +186,18 @@ impl CircuitBreaker {
         match self.agents.get(agent_id) {
             Some(s) => BreakerState {
                 agent_id: agent_id.to_string(),
-                level: s.level,
-                reason: s.reason.clone(),
+                level: if self.config.enabled {
+                    s.level
+                } else {
+                    BreakerLevel::Healthy
+                },
+                reason: if self.config.enabled {
+                    s.reason.clone()
+                } else {
+                    String::new()
+                },
                 ts: s.ts,
-                cause: s.cause,
+                cause: if self.config.enabled { s.cause } else { None },
             },
             None => BreakerState {
                 agent_id: agent_id.to_string(),
@@ -127,12 +223,16 @@ impl CircuitBreaker {
         tool_input: Option<&Value>,
         now: u64,
     ) -> Option<BreakerState> {
+        if !self.config.enabled {
+            return None;
+        }
         let key = format!(
             "{}:{}",
             tool_name.unwrap_or(""),
             tool_input.map(|v| v.to_string()).unwrap_or_default()
         );
-        let limit = self.repeated_tool_limit;
+        let limit = self.config.repeated_tool_limit.max(1);
+        let hard_stop = self.config.hard_stop;
         let s = self.agents.entry(agent_id.to_string()).or_default();
         if s.repeat_key.as_deref() == Some(&key) {
             s.repeat_count += 1;
@@ -151,28 +251,188 @@ impl CircuitBreaker {
             return None;
         }
 
-        if s.repeat_count >= limit && s.level == BreakerLevel::Healthy {
-            s.level = BreakerLevel::Steering;
-            s.reason = format!("Repeated identical tool call {}x", s.repeat_count);
-            s.cause = Some(BreakerCause::RepeatLoop);
-            s.ts = now;
-            return Some(self.state_for(agent_id));
+        if s.repeat_count >= limit {
+            let next_level = match s.level {
+                BreakerLevel::Healthy => BreakerLevel::Steering,
+                BreakerLevel::Steering if s.repeat_count >= limit * 2 => BreakerLevel::Constrained,
+                BreakerLevel::Constrained if hard_stop && s.repeat_count >= limit * 3 => {
+                    BreakerLevel::Stopped
+                }
+                other => other,
+            };
+            if next_level != s.level || s.level == BreakerLevel::Healthy {
+                s.level = next_level;
+                s.reason = format!("Repeated identical tool call {}x", s.repeat_count);
+                s.cause = Some(BreakerCause::RepeatLoop);
+                s.ts = now;
+                return Some(self.state_for(agent_id));
+            }
         }
         None
     }
 
     pub fn record_error(&mut self, agent_id: &str, now: u64) -> Option<BreakerState> {
-        let limit = self.error_storm_limit;
+        if !self.config.enabled {
+            return None;
+        }
+        let limit = self.config.error_storm_limit.max(1);
+        let hard_stop = self.config.hard_stop;
         let s = self.agents.entry(agent_id.to_string()).or_default();
         s.error_count += 1;
-        if s.error_count >= limit && s.level == BreakerLevel::Healthy {
-            s.level = BreakerLevel::Steering;
-            s.reason = format!("Error storm ({} consecutive failures)", s.error_count);
-            s.cause = Some(BreakerCause::Other);
-            s.ts = now;
-            return Some(self.state_for(agent_id));
+        if s.error_count >= limit {
+            let next_level = match s.level {
+                BreakerLevel::Healthy => BreakerLevel::Steering,
+                BreakerLevel::Steering if s.error_count >= limit * 2 => BreakerLevel::Constrained,
+                BreakerLevel::Constrained if hard_stop && s.error_count >= limit * 3 => {
+                    BreakerLevel::Stopped
+                }
+                other => other,
+            };
+            if next_level != s.level {
+                s.level = next_level;
+                s.reason = format!("Error storm ({} consecutive failures)", s.error_count);
+                s.cause = Some(BreakerCause::Other);
+                s.ts = now;
+                return Some(self.state_for(agent_id));
+            }
         }
         None
+    }
+
+    /// Periodic budget & velocity evaluation matching upstream `CircuitBreaker.tick`.
+    pub fn tick_spend_and_velocity(
+        &mut self,
+        inputs: &[BreakerUsageInput],
+        agent_caps: &HashMap<String, u64>,
+        now_ms: u64,
+    ) -> Vec<BreakerDecision> {
+        let mut decisions = Vec::new();
+        if !self.config.enabled {
+            let ids: Vec<String> = self.agents.keys().cloned().collect();
+            for id in ids {
+                if let Some(s) = self.agents.get_mut(&id)
+                    && s.level != BreakerLevel::Healthy
+                {
+                    s.level = BreakerLevel::Healthy;
+                    s.reason.clear();
+                    s.cause = None;
+                    s.ts = now_ms;
+                    decisions.push(BreakerDecision {
+                        state: self.state_for(&id),
+                        action: BreakerAction::None,
+                        changed: true,
+                    });
+                }
+            }
+            return decisions;
+        }
+
+        let mut top_spender: Option<(String, f64)> = None;
+        let mut total_usd = 0.0f64;
+        for inp in inputs {
+            total_usd += inp.usd;
+            if top_spender.as_ref().is_none_or(|(_, max)| inp.usd > *max) {
+                top_spender = Some((inp.agent_id.clone(), inp.usd));
+            }
+        }
+        let cost_cap = self.config.cost_cap_usd.filter(|&c| c > 0.0);
+        let over_cost_cap_id = match (cost_cap, top_spender) {
+            (Some(cap), Some((id, _))) if total_usd > cap => Some(id),
+            _ => None,
+        };
+
+        let velocity_limit = self.config.token_velocity_per_min;
+        let hard_stop = self.config.hard_stop;
+
+        for inp in inputs {
+            let s = self.agents.entry(inp.agent_id.clone()).or_default();
+            let mut trip_reason: Option<String> = None;
+
+            if let Some(&cap) = agent_caps.get(&inp.agent_id).filter(|&&c| c > 0)
+                && inp.work_tokens > cap
+            {
+                trip_reason = Some(format!(
+                    "token limit: {} work tokens over agent cap of {}",
+                    inp.work_tokens, cap
+                ));
+            } else if over_cost_cap_id.as_deref() == Some(inp.agent_id.as_str())
+                && let Some(cap) = cost_cap
+            {
+                trip_reason = Some(format!(
+                    "cost cap: floor total ${total_usd:.2} over ${cap:.2} (top spender ${:.2})",
+                    inp.usd
+                ));
+            } else if now_ms >= s.compacting_until
+                && let Some(prev_out) = s.last_output_tokens
+                && s.last_sample_at > 0
+                && now_ms > s.last_sample_at
+                && inp.output_tokens > prev_out
+            {
+                let d_out = (inp.output_tokens - prev_out) as f64;
+                let d_min = (now_ms - s.last_sample_at) as f64 / 60_000.0;
+                if d_min > 0.0 {
+                    let vel = d_out / d_min;
+                    if vel > velocity_limit as f64 {
+                        trip_reason = Some(format!(
+                            "token velocity {}/min > {velocity_limit}/min",
+                            vel.round() as u64
+                        ));
+                    }
+                }
+            }
+
+            s.last_output_tokens = Some(inp.output_tokens);
+            s.last_sample_at = now_ms;
+
+            let prev_level = s.level;
+            let next_level = if let Some(ref r) = trip_reason {
+                s.reason = r.clone();
+                s.cause = Some(BreakerCause::Spend);
+                s.ts = now_ms;
+                match s.level {
+                    BreakerLevel::Healthy => BreakerLevel::Steering,
+                    BreakerLevel::Steering => BreakerLevel::Constrained,
+                    BreakerLevel::Constrained if hard_stop => BreakerLevel::Stopped,
+                    other => other,
+                }
+            } else if s.cause == Some(BreakerCause::Spend) && s.level != BreakerLevel::Healthy {
+                s.ts = now_ms;
+                match s.level {
+                    BreakerLevel::Stopped => BreakerLevel::Constrained,
+                    BreakerLevel::Constrained => BreakerLevel::Steering,
+                    BreakerLevel::Steering => {
+                        s.reason.clear();
+                        s.cause = None;
+                        BreakerLevel::Healthy
+                    }
+                    BreakerLevel::Healthy => BreakerLevel::Healthy,
+                }
+            } else {
+                s.level
+            };
+            s.level = next_level;
+
+            let changed = next_level != prev_level;
+            let escalated = next_level > prev_level;
+            let action = if escalated {
+                match next_level {
+                    BreakerLevel::Healthy => BreakerAction::None,
+                    BreakerLevel::Steering => BreakerAction::Steer,
+                    BreakerLevel::Constrained => BreakerAction::Constrain,
+                    BreakerLevel::Stopped => BreakerAction::Stop,
+                }
+            } else {
+                BreakerAction::None
+            };
+            if changed || action != BreakerAction::None {
+                decisions.push(BreakerDecision {
+                    state: self.state_for(&inp.agent_id),
+                    action,
+                    changed,
+                });
+            }
+        }
+        decisions
     }
 
     pub fn record_user_prompt(&mut self, agent_id: &str, now: u64) {
@@ -218,5 +478,38 @@ mod tests {
             .record_tool_use("a1", Some("Read"), None, 9)
             .expect("distinct tool should recover");
         assert_eq!(recovered.level, BreakerLevel::Healthy);
+    }
+
+    #[test]
+    fn configures_from_harness_and_trips_cost_velocity_caps() {
+        let mut cb = CircuitBreaker::new();
+        let cfg: md_core::config::HarnessConfig = serde_json::from_value(serde_json::json!({
+            "costCapUsd": 5.0,
+            "circuitBreaker": {
+                "enabled": true,
+                "hardStop": true,
+                "repeatedToolLimit": 3,
+                "errorStormLimit": 2,
+                "tokenVelocityPerMin": 1000
+            }
+        }))
+        .unwrap();
+        cb.configure_from_harness(&cfg);
+        assert_eq!(cb.config().repeated_tool_limit, 3);
+        assert_eq!(cb.config().error_storm_limit, 2);
+        assert!(cb.config().hard_stop);
+
+        let mut caps = HashMap::new();
+        caps.insert("a1".to_string(), 100);
+        let inputs = vec![BreakerUsageInput {
+            agent_id: "a1".to_string(),
+            work_tokens: 150,
+            output_tokens: 150,
+            usd: 1.0,
+        }];
+        let dec = cb.tick_spend_and_velocity(&inputs, &caps, 1000);
+        assert_eq!(dec.len(), 1);
+        assert_eq!(dec[0].state.level, BreakerLevel::Steering);
+        assert_eq!(dec[0].action, BreakerAction::Steer);
     }
 }

@@ -83,6 +83,16 @@ impl FileShareRegistry {
         self.shares.remove(id).is_some()
     }
 
+    pub fn stop_all(&mut self) -> usize {
+        let n = self.shares.len();
+        self.shares.clear();
+        n
+    }
+
+    pub fn get_share(&self, id: &str) -> Option<&SharedFileEntry> {
+        self.shares.get(id)
+    }
+
     pub fn authorize(&self, id: &str, password: Option<&str>) -> Result<&SharedFileEntry, &'static str> {
         let entry = self.shares.get(id).ok_or("not_found")?;
         if let Some(expected) = entry.password_hash {

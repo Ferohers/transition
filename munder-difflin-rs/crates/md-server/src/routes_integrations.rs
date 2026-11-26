@@ -28,6 +28,22 @@ struct SetSecretReq {
     value: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CustomSecretSetEntry {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ApplySecretsReq {
+    #[serde(default)]
+    set: Vec<CustomSecretSetEntry>,
+    #[serde(default)]
+    remove: Vec<String>,
+}
+
 fn default_secret_kind() -> String {
     "custom".to_string()
 }
@@ -112,9 +128,46 @@ async fn secrets_delete(State(state): State<AppState>, Path(key_ref): Path<Strin
     }
 }
 
+async fn secrets_apply(
+    State(state): State<AppState>,
+    Json(req): Json<ApplySecretsReq>,
+) -> Json<Value> {
+    let mut secrets = state.secrets.lock().unwrap();
+    for item in req.set {
+        if let Err(error) = secrets.set_secret(&item.name, "custom", &item.value) {
+            return Json(json!({ "ok": false, "code": "bad_value", "name": item.name, "error": error }));
+        }
+    }
+    for name in req.remove {
+        if let Err(error) = secrets.delete_secret(&name) {
+            return Json(json!({ "ok": false, "code": "bad_value", "name": name, "error": error }));
+        }
+    }
+    Json(json!({ "ok": true }))
+}
+
 async fn broker_integrations_list(State(state): State<AppState>) -> Json<Value> {
-    let broker = state.broker.lock().unwrap();
-    Json(serde_json::to_value(broker.list_records()).unwrap_or(Value::Null))
+    let records: Vec<IntegrationRecord> = {
+        let broker = state.broker.lock().unwrap();
+        broker.list_records().into_iter().cloned().collect()
+    };
+    let secrets = state.secrets.lock().unwrap();
+    let enriched: Vec<Value> = records
+        .into_iter()
+        .map(|rec| {
+            let has_secret = rec
+                .secret_ref
+                .as_deref()
+                .map(|r| secrets.has_secret(r))
+                .unwrap_or(false);
+            let mut val = serde_json::to_value(&rec).unwrap_or(Value::Null);
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("hasSecret".to_string(), Value::Bool(has_secret));
+            }
+            val
+        })
+        .collect();
+    Json(Value::Array(enriched))
 }
 
 async fn broker_integrations_upsert(
@@ -123,9 +176,121 @@ async fn broker_integrations_upsert(
 ) -> Json<Value> {
     let id = rec.id.clone();
     match state.broker.lock().unwrap().upsert_record(rec) {
-        Ok(()) => Json(json!({ "ok": true, "id": id })),
+        Ok(()) => {
+            push_activity(&state, "integration:upsert", &id, json!({ "ok": true }));
+            Json(json!({ "ok": true, "id": id }))
+        }
         Err(error) => Json(json!({ "ok": false, "error": error })),
     }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveIntegrationReq {
+    record: IntegrationRecord,
+    secret: Option<String>,
+}
+
+async fn broker_integrations_save(
+    State(state): State<AppState>,
+    Json(req): Json<SaveIntegrationReq>,
+) -> Json<Value> {
+    let id = req.record.id.clone();
+    let secret_ref = req
+        .record
+        .secret_ref
+        .clone()
+        .unwrap_or_else(|| format!("int:{id}"));
+    if let Err(error) = state.broker.lock().unwrap().upsert_record(req.record) {
+        return Json(json!({ "ok": false, "error": error }));
+    }
+    if let Some(secret) = req.secret.filter(|s| !s.is_empty())
+        && let Err(error) = state
+            .secrets
+            .lock()
+            .unwrap()
+            .set_secret(&secret_ref, "integration", &secret)
+    {
+        return Json(json!({ "ok": false, "error": error }));
+    }
+    push_activity(&state, "integration:save", &id, json!({ "ok": true }));
+    Json(json!({ "ok": true, "id": id }))
+}
+
+async fn broker_integrations_remove(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let (removed, secret_ref) = {
+        let mut broker = state.broker.lock().unwrap();
+        let sr = broker
+            .get_record(&id)
+            .and_then(|r| r.secret_ref.clone())
+            .unwrap_or_else(|| format!("int:{id}"));
+        match broker.remove_record(&id) {
+            Ok(r) => (r, sr),
+            Err(error) => return Json(json!({ "ok": false, "error": error })),
+        }
+    };
+    let _ = state.secrets.lock().unwrap().delete_secret(&secret_ref);
+    if removed {
+        push_activity(&state, "integration:remove", &id, json!({ "ok": true }));
+    }
+    Json(json!({ "ok": removed }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestIntegrationReq {
+    id: Option<String>,
+    draft: Option<IntegrationRecord>,
+    secret: Option<String>,
+}
+
+async fn broker_integrations_test(
+    State(state): State<AppState>,
+    Json(req): Json<TestIntegrationReq>,
+) -> Json<Value> {
+    let (record, secret) = if let Some(draft) = req.draft {
+        let sec = req.secret.filter(|s| !s.is_empty()).or_else(|| {
+            draft
+                .secret_ref
+                .as_deref()
+                .and_then(|r| state.secrets.lock().unwrap().reveal_for_broker(r))
+        });
+        (draft, sec)
+    } else if let Some(id) = req.id {
+        let rec = {
+            let broker = state.broker.lock().unwrap();
+            broker.get_record(&id).cloned()
+        };
+        let Some(rec) = rec else {
+            return Json(json!({ "ok": false, "error": "unknown integration" }));
+        };
+        if !rec.enabled {
+            return Json(json!({ "ok": false, "error": "integration is disabled" }));
+        }
+        let sec = rec
+            .secret_ref
+            .as_deref()
+            .and_then(|r| state.secrets.lock().unwrap().reveal_for_broker(r));
+        (rec, sec)
+    } else {
+        return Json(json!({ "ok": false, "error": "missing integration id or draft" }));
+    };
+
+    let res = md_integrations::secrets::IntegrationBroker::test_connection(
+        &record,
+        secret.as_deref(),
+    )
+    .await;
+    push_activity(
+        &state,
+        "integration:test",
+        &record.id,
+        json!({ "ok": res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) }),
+    );
+    Json(res)
 }
 
 async fn broker_grant_cap(
@@ -188,13 +353,61 @@ async fn webhooks_upsert(
     Json(req): Json<WebhookEndpointInput>,
 ) -> Json<Value> {
     match state.webhooks.lock().unwrap().upsert_endpoint(req) {
-        Ok(ep) => Json(json!({ "ok": true, "endpoint": ep })),
+        Ok(ep) => {
+            state.emit("webhooks:changed", json!({ "id": ep.id }));
+            Json(json!({ "ok": true, "endpoint": ep }))
+        }
         Err(error) => Json(json!({ "ok": false, "error": error })),
     }
 }
 
+async fn webhooks_save(
+    State(state): State<AppState>,
+    Json(list): Json<Vec<WebhookEndpointInput>>,
+) -> Json<Value> {
+    let saved = state.webhooks.lock().unwrap().replace_endpoints(list);
+    state.emit("webhooks:changed", json!({ "count": saved.len() }));
+    Json(serde_json::to_value(saved).unwrap_or(Value::Array(Vec::new())))
+}
+
+async fn webhooks_status(State(state): State<AppState>) -> Json<Value> {
+    let port: u16 = std::env::var("MD_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(3110);
+    let base_url = format!("http://127.0.0.1:{port}");
+    let list = state.webhooks.lock().unwrap().list_endpoints();
+    let endpoints: Vec<Value> = list
+        .iter()
+        .map(|ep| json!({ "id": ep.id, "url": format!("{base_url}/webhooks/{}", ep.id) }))
+        .collect();
+    Json(json!({
+        "running": true,
+        "starting": false,
+        "url": base_url,
+        "port": port,
+        "endpoints": endpoints,
+    }))
+}
+
+async fn webhooks_generate_secret() -> Json<Value> {
+    let s = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    Json(json!({ "secret": s }))
+}
+
+async fn webhooks_retry() -> Json<Value> {
+    Json(json!({ "ok": true }))
+}
+
 async fn webhooks_delete(State(state): State<AppState>, Path(id): Path<String>) -> Json<Value> {
     let removed = state.webhooks.lock().unwrap().delete_endpoint(&id);
+    if removed {
+        state.emit("webhooks:changed", json!({ "id": id, "deleted": true }));
+    }
     Json(json!({ "ok": removed }))
 }
 
@@ -224,6 +437,12 @@ async fn webhooks_inbound(
             state.emit(
                 "triggers:inbound",
                 serde_json::to_value(&entry).unwrap_or(Value::Null),
+            );
+            push_activity(
+                &state,
+                "webhook:inbound",
+                &id,
+                json!({ "entryId": entry.id, "status": entry.decision, "pending": pending }),
             );
             (
                 status,
@@ -304,6 +523,11 @@ async fn share_stop(State(state): State<AppState>, Path(id): Path<String>) -> Js
     Json(json!({ "ok": stopped }))
 }
 
+async fn share_stop_all(State(state): State<AppState>) -> Json<Value> {
+    let stopped = state.file_share.lock().unwrap().stop_all();
+    Json(json!({ "ok": true, "stopped": stopped }))
+}
+
 async fn share_download(
     State(state): State<AppState>,
     Path(id): Path<String>,
@@ -350,14 +574,139 @@ async fn realtime_mint_token(
     Json(serde_json::to_value(res).unwrap_or(Value::Null))
 }
 
+fn push_activity(state: &AppState, kind: &str, id: &str, detail: Value) {
+    let at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let entry = json!({
+        "id": format!("{}-{at}", uuid::Uuid::new_v4().simple()),
+        "kind": kind,
+        "targetId": id,
+        "at": at,
+        "detail": detail,
+    });
+    {
+        let mut act = state.integrations_activity.lock().unwrap();
+        act.insert(0, entry.clone());
+        if act.len() > 100 {
+            act.truncate(100);
+        }
+    }
+    state.emit("integrations:activity", entry);
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShareInspectReq {
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TelegramSetWebhookReq {
+    token: Option<String>,
+    webhook_url: Option<String>,
+    secret_token: Option<String>,
+}
+
+async fn integrations_activity(State(state): State<AppState>) -> Json<Value> {
+    let items = state.integrations_activity.lock().unwrap().clone();
+    Json(Value::Array(items))
+}
+
+async fn share_inspect(Json(req): Json<ShareInspectReq>) -> Json<Value> {
+    let out: Vec<Value> = req
+        .paths
+        .into_iter()
+        .map(|p| {
+            let expanded = md_core::config::expand_tilde(&p);
+            match std::fs::metadata(&expanded) {
+                Ok(meta) => {
+                    let name = expanded
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("item")
+                        .to_string();
+                    let kind = if meta.is_dir() { "dir" } else { "file" };
+                    json!({
+                        "path": p,
+                        "ok": true,
+                        "name": name,
+                        "kind": kind,
+                        "size": meta.len(),
+                    })
+                }
+                Err(e) => json!({
+                    "path": p,
+                    "ok": false,
+                    "error": e.to_string(),
+                }),
+            }
+        })
+        .collect();
+    Json(Value::Array(out))
+}
+
+async fn share_status(State(state): State<AppState>) -> Json<Value> {
+    let list = state.file_share.lock().unwrap().list_shares();
+    let out: Vec<Value> = list
+        .into_iter()
+        .map(|e| {
+            let mut val = serde_json::to_value(&e).unwrap_or(Value::Null);
+            if let Some(obj) = val.as_object_mut() {
+                obj.insert("url".to_string(), json!(format!("/share/{}", e.id)));
+            }
+            val
+        })
+        .collect();
+    Json(Value::Array(out))
+}
+
+async fn webhooks_telegram_set(
+    State(state): State<AppState>,
+    Json(req): Json<TelegramSetWebhookReq>,
+) -> Json<Value> {
+    if let Some(tok) = req.token.as_deref().map(str::trim).filter(|s| !s.is_empty())
+        && let Err(e) = state
+            .secrets
+            .lock()
+            .unwrap()
+            .set_secret("apikey:telegram", "provider", tok)
+    {
+        return Json(json!({ "ok": false, "error": e }));
+    }
+    let Some(url) = req
+        .webhook_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Json(json!({ "ok": false, "error": "webhookUrl is required" }));
+    };
+    push_activity(
+        &state,
+        "telegram:webhook",
+        "telegram",
+        json!({ "webhookUrl": url, "hasSecretToken": req.secret_token.is_some() }),
+    );
+    Json(json!({ "ok": true, "webhookUrl": url }))
+}
+
 pub fn integrations_router() -> Router<AppState> {
     Router::new()
         .route("/api/v1/secrets", get(secrets_list).post(secrets_set))
+        .route("/api/v1/secrets/apply", post(secrets_apply))
         .route("/api/v1/secrets/{keyRef}", delete(secrets_delete))
         .route(
             "/api/v1/integrations",
             get(broker_integrations_list).post(broker_integrations_upsert),
         )
+        .route("/api/v1/integrations/save", post(broker_integrations_save))
+        .route("/api/v1/integrations/test", post(broker_integrations_test))
+        .route("/api/v1/integrations/activity", get(integrations_activity))
+        .route("/api/v1/integrations/{id}", delete(broker_integrations_remove))
         .route("/api/v1/broker/capabilities", post(broker_grant_cap))
         .route("/broker/secrets", get(broker_secrets_list).post(broker_secrets_list))
         .route("/broker/secrets/read", post(broker_secrets_read))
@@ -365,11 +714,19 @@ pub fn integrations_router() -> Router<AppState> {
             "/api/v1/webhooks/endpoints",
             get(webhooks_list).post(webhooks_upsert),
         )
+        .route("/api/v1/webhooks/save", post(webhooks_save))
+        .route("/api/v1/webhooks/status", get(webhooks_status))
+        .route("/api/v1/webhooks/generate-secret", post(webhooks_generate_secret))
+        .route("/api/v1/webhooks/retry", post(webhooks_retry))
+        .route("/api/v1/webhooks/telegram-set", post(webhooks_telegram_set))
         .route("/api/v1/webhooks/endpoints/{id}", delete(webhooks_delete))
         .route("/webhooks/{id}", post(webhooks_inbound).get(webhooks_poll))
         .route("/api/v1/triggers/history", get(triggers_history))
         .route("/api/v1/triggers/history/{id}/decide", post(triggers_decide))
         .route("/api/v1/share", get(share_list).post(share_create))
+        .route("/api/v1/share/inspect", post(share_inspect))
+        .route("/api/v1/share/status", post(share_status).get(share_status))
+        .route("/api/v1/share/stop-all", post(share_stop_all))
         .route("/api/v1/share/{id}", delete(share_stop))
         .route("/share/{id}", get(share_download))
         .route("/api/v1/realtime/has-key", get(realtime_has_key))

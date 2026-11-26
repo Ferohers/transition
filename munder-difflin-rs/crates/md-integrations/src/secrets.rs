@@ -155,6 +155,11 @@ impl SecretStore {
         self.entries.contains_key(key_ref)
     }
 
+    pub fn clear_all(&mut self) {
+        self.entries.clear();
+        let _ = self.persist();
+    }
+
     /// Safe metadata list for UI — never returns plaintext values.
     pub fn list_metadata(&self) -> Vec<SecretMetadata> {
         let mut out: Vec<SecretMetadata> = self
@@ -198,15 +203,49 @@ impl SecretStore {
     }
 }
 
+fn default_kind() -> String {
+    "custom-rest".to_string()
+}
+
+fn default_auth_type() -> String {
+    "bearer".to_string()
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntegrationRecord {
     pub id: String,
-    pub name: String,
+    #[serde(alias = "name", default)]
+    pub label: String,
+    #[serde(default = "default_kind")]
+    pub kind: String,
     pub base_url: String,
-    pub auth_header: String,
-    pub auth_prefix: String,
-    pub secret_ref: String,
+    #[serde(default = "default_auth_type")]
+    pub auth_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_header: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_prefix: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_query: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_user: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_path: Option<String>,
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -218,6 +257,7 @@ pub struct BrokerCapability {
 
 #[derive(Default)]
 pub struct IntegrationBroker {
+    store_path: PathBuf,
     records: HashMap<String, IntegrationRecord>,
     tokens: HashMap<String, BrokerCapability>,
 }
@@ -227,15 +267,61 @@ impl IntegrationBroker {
         Self::default()
     }
 
-    pub fn upsert_record(&mut self, rec: IntegrationRecord) -> Result<(), String> {
+    pub fn open(data_dir: impl AsRef<Path>) -> Self {
+        let dir = data_dir.as_ref();
+        let _ = fs::create_dir_all(dir);
+        let store_path = dir.join("integrations.json");
+        let records = if store_path.is_file() {
+            let raw = fs::read_to_string(&store_path).unwrap_or_default();
+            serde_json::from_str::<HashMap<String, IntegrationRecord>>(&raw).unwrap_or_default()
+        } else {
+            HashMap::new()
+        };
+        Self {
+            store_path,
+            records,
+            tokens: HashMap::new(),
+        }
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        if self.store_path.as_os_str().is_empty() {
+            return Ok(());
+        }
+        let json = serde_json::to_string_pretty(&self.records).map_err(|e| e.to_string())?;
+        let tmp = self.store_path.with_extension("json.tmp");
+        fs::write(&tmp, json).map_err(|e| e.to_string())?;
+        fs::rename(&tmp, &self.store_path).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn upsert_record(&mut self, mut rec: IntegrationRecord) -> Result<(), String> {
         if !is_safe_id(&rec.id) {
             return Err("invalid integration id".to_string());
         }
-        if !rec.base_url.starts_with("https://") && !rec.base_url.starts_with("http://127.0.0.1") {
+        if !rec.base_url.starts_with("https://")
+            && !rec.base_url.starts_with("http://127.0.0.1")
+            && !rec.base_url.starts_with("http://localhost")
+            && !rec.base_url.starts_with("http://[::1]")
+        {
             return Err("integration baseUrl must be https:// or loopback".to_string());
         }
+        if rec.label.trim().is_empty() {
+            rec.label = rec.id.clone();
+        }
+        if rec.auth_type != "none" && rec.secret_ref.is_none() {
+            rec.secret_ref = Some(format!("int:{}", rec.id));
+        }
         self.records.insert(rec.id.clone(), rec);
-        Ok(())
+        self.persist()
+    }
+
+    pub fn remove_record(&mut self, id: &str) -> Result<bool, String> {
+        let removed = self.records.remove(id).is_some();
+        if removed {
+            self.persist()?;
+        }
+        Ok(removed)
     }
 
     pub fn list_records(&self) -> Vec<&IntegrationRecord> {
@@ -246,6 +332,79 @@ impl IntegrationBroker {
 
     pub fn get_record(&self, id: &str) -> Option<&IntegrationRecord> {
         self.records.get(id)
+    }
+
+    pub async fn test_connection(record: &IntegrationRecord, secret: Option<&str>) -> serde_json::Value {
+        if record.auth_type != "none" && secret.unwrap_or("").is_empty() {
+            return serde_json::json!({ "ok": false, "status": 503, "error": "no secret set" });
+        }
+        let base = record.base_url.trim_end_matches('/');
+        let probe = record
+            .probe_path
+            .as_deref()
+            .map(|p| p.trim_start_matches('/'))
+            .filter(|p| !p.is_empty());
+        let mut url = match probe {
+            Some(p) => format!("{base}/{p}"),
+            None => base.to_string(),
+        };
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(12))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }),
+        };
+        let sec = secret.unwrap_or("");
+        if record.auth_type == "query"
+            && let Some(param) = record.auth_query.as_deref().filter(|s| !s.is_empty())
+        {
+            if let Ok(parsed) = reqwest::Url::parse_with_params(&url, &[(param, sec)]) {
+                url = parsed.into();
+            } else {
+                let sep = if url.contains('?') { '&' } else { '?' };
+                url = format!("{url}{sep}{param}={sec}");
+            }
+        }
+        let mut builder = client.get(&url).header("User-Agent", "munder-difflin");
+        match record.auth_type.as_str() {
+            "bearer" | "github" => {
+                builder = builder.bearer_auth(sec);
+            }
+            "header" => {
+                if let Some(h) = record.auth_header.as_deref().filter(|s| !s.is_empty()) {
+                    builder = builder.header(h, sec);
+                }
+            }
+            "prefix" => {
+                if let Some(h) = record.auth_header.as_deref().filter(|s| !s.is_empty()) {
+                    let prefix = record.auth_prefix.as_deref().unwrap_or("");
+                    let val = if prefix.is_empty() {
+                        sec.to_string()
+                    } else {
+                        format!("{prefix} {sec}")
+                    };
+                    builder = builder.header(h, val);
+                }
+            }
+            "basic" => {
+                let user = record.auth_user.as_deref().unwrap_or("");
+                builder = builder.basic_auth(user, Some(sec));
+            }
+            _ => {}
+        }
+        match builder.send().await {
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let ok = resp.status().is_success();
+                serde_json::json!({
+                    "ok": ok,
+                    "status": status,
+                    "error": if ok { serde_json::Value::Null } else { serde_json::Value::String(format!("HTTP {status}")) }
+                })
+            }
+            Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        }
     }
 
     pub fn grant_capability(
@@ -280,6 +439,12 @@ impl IntegrationBroker {
 
     pub fn revoke_token(&mut self, token: &str) -> bool {
         self.tokens.remove(token).is_some()
+    }
+
+    pub fn clear_all(&mut self) {
+        self.records.clear();
+        self.tokens.clear();
+        let _ = self.persist();
     }
 }
 

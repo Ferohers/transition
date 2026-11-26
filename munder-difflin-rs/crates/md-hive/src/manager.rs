@@ -87,6 +87,71 @@ impl HiveManager {
         Ok(())
     }
 
+    pub fn sync_roster(&mut self, agents: &[Value], archived: &[Value]) -> Result<(), CoreError> {
+        if self.root().is_none() {
+            return Ok(());
+        }
+        let mut reg = self.registry();
+        if !reg.is_object() {
+            reg = serde_json::json!({ "agents": {} });
+        }
+        let reg_obj = reg.as_object_mut().unwrap();
+        if !reg_obj.get("agents").map(|v| v.is_object()).unwrap_or(false) {
+            reg_obj.insert("agents".to_string(), Value::Object(Map::new()));
+        }
+        let agents_map = reg_obj
+            .get_mut("agents")
+            .and_then(|v| v.as_object_mut())
+            .unwrap();
+
+        let mut changed = false;
+        for (list, is_archived) in [(agents, false), (archived, true)] {
+            for item in list {
+                let Some(obj) = item.as_object() else { continue };
+                let Some(id) = obj.get("id").and_then(|v| v.as_str()).filter(|s| is_safe_id(s)) else {
+                    continue;
+                };
+                if let Some(existing) = agents_map.get_mut(id).and_then(|v| v.as_object_mut()) {
+                    for k in ["name", "provider", "cwd", "isGod"] {
+                        if let Some(v) = obj.get(k).cloned()
+                            && existing.get(k) != Some(&v)
+                        {
+                            existing.insert(k.to_string(), v);
+                            changed = true;
+                        }
+                    }
+                    continue;
+                }
+                let mut entry = Map::new();
+                entry.insert("id".to_string(), Value::String(id.to_string()));
+                if let Some(name) = obj.get("name").cloned() {
+                    entry.insert("name".to_string(), name);
+                }
+                if let Some(role) = obj.get("role").or_else(|| obj.get("description")).cloned() {
+                    entry.insert("role".to_string(), role);
+                }
+                for k in ["provider", "cwd", "isGod", "sleeping", "status"] {
+                    if let Some(v) = obj.get(k).cloned() {
+                        entry.insert(k.to_string(), v);
+                    }
+                }
+                entry.insert("archived".to_string(), Value::Bool(is_archived));
+                agents_map.insert(id.to_string(), Value::Object(entry));
+                if !is_archived && let Some(root) = self.root() {
+                    let adir = root.join("agents").join(id);
+                    for sub in ["inbox", "inbox/.done", "outbox", "outbox/.sent", "spawn-requests"] {
+                        let _ = fs::create_dir_all(adir.join(sub));
+                    }
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.write_registry(&reg)?;
+        }
+        Ok(())
+    }
+
     pub fn patch_agent_field(
         &mut self,
         id: &str,
@@ -247,6 +312,242 @@ impl HiveManager {
         read_json_dir(&root.join("agents").join(agent_id).join("inbox"))
     }
 
+    pub fn send_message(&mut self, mut msg: Value, from: &str) -> Result<Value, CoreError> {
+        let root = self.ensure_hive()?;
+        let Some(obj) = msg.as_object_mut() else {
+            return Err(CoreError::InvalidPath("message must be a JSON object".to_string()));
+        };
+        let to = obj
+            .get("to")
+            .and_then(|v| v.as_str())
+            .filter(|s| is_safe_id(s))
+            .ok_or_else(|| CoreError::InvalidPath("invalid or missing recipient 'to'".to_string()))?
+            .to_string();
+        let id = obj
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| is_safe_id(s))
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("msg-{}", chrono::Utc::now().timestamp_millis()));
+        let ts = obj
+            .get("ts")
+            .and_then(|v| v.as_i64())
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        let conversation = obj
+            .get("conversation")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| id.clone());
+        let act = obj
+            .get("act")
+            .and_then(|v| v.as_str())
+            .unwrap_or("inform")
+            .to_string();
+        let subject = obj
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        obj.insert("id".to_string(), Value::String(id.clone()));
+        obj.insert("from".to_string(), Value::String(from.to_string()));
+        obj.insert("to".to_string(), Value::String(to.clone()));
+        obj.insert("ts".to_string(), Value::from(ts));
+        obj.insert("conversation".to_string(), Value::String(conversation));
+        obj.insert("act".to_string(), Value::String(act.clone()));
+        obj.insert(
+            "targets".to_string(),
+            Value::Array(vec![Value::String(to.clone())]),
+        );
+
+        let inbox_dir = root.join("agents").join(&to).join("inbox");
+        fs::create_dir_all(&inbox_dir)?;
+        atomic_write_json(&inbox_dir.join(format!("{id}.json")), &Value::Object(obj.clone()))?;
+
+        self.append_log(&serde_json::json!({
+            "kind": "message",
+            "id": id,
+            "from": from,
+            "to": to,
+            "act": act,
+            "subject": subject,
+            "ts": ts,
+        }));
+        Ok(Value::Object(obj.clone()))
+    }
+
+    /// Drain all `agents/<id>/outbox/*.json` files into recipient inboxes and
+    /// return the delivered message objects (plus `targets` array for broadcast).
+    pub fn drain_outboxes(&mut self) -> Vec<Value> {
+        let Some(root) = self.root() else {
+            return Vec::new();
+        };
+        let agents_dir = root.join("agents");
+        let Ok(agent_dirs) = fs::read_dir(&agents_dir) else {
+            return Vec::new();
+        };
+
+        let mut active_ids: Vec<String> = Vec::new();
+        if let Some(map) = self.registry().get("agents").and_then(|v| v.as_object()) {
+            for (aid, info) in map {
+                let archived = info.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !archived && is_safe_id(aid) {
+                    active_ids.push(aid.clone());
+                }
+            }
+        }
+
+        let mut delivered = Vec::new();
+        for dir_entry in agent_dirs.flatten() {
+            let from_id = dir_entry.file_name().to_string_lossy().into_owned();
+            if !is_safe_id(&from_id) {
+                continue;
+            }
+            let outbox = dir_entry.path().join("outbox");
+            let Ok(files) = fs::read_dir(&outbox) else {
+                continue;
+            };
+            let sent_dir = outbox.join(".sent");
+            let mut json_files: Vec<PathBuf> = files
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect();
+            json_files.sort();
+
+            for path in json_files {
+                let fname = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "msg.json".to_string());
+                let raw = match fs::read_to_string(&path) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let Ok(mut val) = serde_json::from_str::<Value>(&raw) else {
+                    let _ = fs::create_dir_all(&sent_dir);
+                    let _ = fs::rename(&path, sent_dir.join(format!("bad-{fname}")));
+                    continue;
+                };
+                let Some(obj) = val.as_object_mut() else {
+                    let _ = fs::create_dir_all(&sent_dir);
+                    let _ = fs::rename(&path, sent_dir.join(format!("bad-{fname}")));
+                    continue;
+                };
+                let to_raw = obj
+                    .get("to")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                let targets: Vec<String> = if to_raw == "broadcast" {
+                    active_ids
+                        .iter()
+                        .filter(|id| *id != &from_id)
+                        .cloned()
+                        .collect()
+                } else if to_raw == "human" {
+                    vec!["god".to_string()]
+                } else if is_safe_id(&to_raw) {
+                    vec![to_raw.clone()]
+                } else {
+                    Vec::new()
+                };
+
+                if targets.is_empty() && to_raw != "broadcast" {
+                    let _ = fs::create_dir_all(&sent_dir);
+                    let _ = fs::rename(&path, sent_dir.join(format!("bad-{fname}")));
+                    continue;
+                }
+
+                let id = format!(
+                    "out-{}-{}",
+                    chrono::Utc::now().timestamp_millis(),
+                    fname.trim_end_matches(".json")
+                );
+                let ts = chrono::Utc::now().timestamp_millis();
+                let act = obj
+                    .get("act")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("inform")
+                    .to_string();
+                let subject = obj
+                    .get("subject")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let conversation = obj
+                    .get("conversation")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| id.clone());
+
+                obj.insert("id".to_string(), Value::String(id.clone()));
+                obj.insert("from".to_string(), Value::String(from_id.clone()));
+                obj.insert("to".to_string(), Value::String(to_raw.clone()));
+                obj.insert("ts".to_string(), Value::from(ts));
+                obj.insert("act".to_string(), Value::String(act.clone()));
+                obj.insert("conversation".to_string(), Value::String(conversation));
+                obj.insert(
+                    "targets".to_string(),
+                    Value::Array(targets.iter().map(|t| Value::String(t.clone())).collect()),
+                );
+
+                let _ = fs::create_dir_all(&sent_dir);
+                if fs::rename(&path, sent_dir.join(&fname)).is_err() {
+                    continue;
+                }
+
+                for target in &targets {
+                    let inbox_dir = agents_dir.join(target).join("inbox");
+                    if fs::create_dir_all(&inbox_dir).is_ok() {
+                        let _ = atomic_write_json(&inbox_dir.join(format!("{id}.json")), &val);
+                    }
+                }
+                self.append_log(&serde_json::json!({
+                    "kind": "message",
+                    "id": id,
+                    "from": from_id,
+                    "to": to_raw,
+                    "targets": targets,
+                    "act": act,
+                    "subject": subject,
+                    "ts": ts,
+                }));
+                delivered.push(val);
+            }
+        }
+        delivered
+    }
+
+    pub fn register_worker(&mut self, id: &str, entry: Map<String, Value>) -> Result<(), CoreError> {
+        let root = self.ensure_hive()?;
+        if is_safe_id(id) {
+            let adir = root.join("agents").join(id);
+            for sub in ["inbox", "inbox/.done", "outbox", "outbox/.sent", "spawn-requests"] {
+                let _ = fs::create_dir_all(adir.join(sub));
+            }
+        }
+        let mut reg = self.registry();
+        if !reg.is_object() {
+            reg = serde_json::json!({ "agents": {} });
+        }
+        let reg_obj = reg.as_object_mut().unwrap();
+        if !reg_obj.get("agents").map(|v| v.is_object()).unwrap_or(false) {
+            reg_obj.insert("agents".to_string(), Value::Object(Map::new()));
+        }
+        if let Some(agents_map) = reg_obj.get_mut("agents").and_then(|v| v.as_object_mut()) {
+            if let Some(existing) = agents_map.get_mut(id).and_then(|v| v.as_object_mut()) {
+                for (k, v) in entry {
+                    existing.insert(k, v);
+                }
+            } else {
+                agents_map.insert(id.to_string(), Value::Object(entry));
+            }
+        }
+        self.write_registry(&reg)
+    }
+
     pub fn messages(&self, agent_id: Option<&str>, limit: usize) -> Vec<Value> {
         let Some(root) = self.root() else {
             return Vec::new();
@@ -312,6 +613,70 @@ impl HiveManager {
 
     pub fn agent_context_map(&self) -> HashMap<String, Value> {
         HashMap::new()
+    }
+
+    pub fn human_mail_since(&self, since_by_agent: &HashMap<String, i64>) -> Value {
+        let mut by_agent: HashMap<String, (usize, String, Vec<String>, i64)> = HashMap::new();
+        for msg in self.messages(None, 200) {
+            let to = msg.get("to").and_then(|v| v.as_str()).unwrap_or("");
+            let needs_human = msg
+                .get("needsHuman")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if to != "human" && !needs_human {
+                continue;
+            }
+            let from = msg
+                .get("from")
+                .and_then(|v| v.as_str())
+                .unwrap_or("god")
+                .to_string();
+            let ts = msg.get("ts").and_then(|v| v.as_i64()).unwrap_or(0);
+            let since = since_by_agent.get(&from).copied().unwrap_or(0);
+            if ts <= since {
+                continue;
+            }
+            let subject = msg
+                .get("subject")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let body = msg
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            let preview = if !subject.is_empty() && !body.is_empty() {
+                format!("{subject}: {body}")
+            } else if !body.is_empty() {
+                body.to_string()
+            } else {
+                subject.to_string()
+            };
+            let entry = by_agent
+                .entry(from)
+                .or_insert_with(|| (0, String::new(), Vec::new(), 0));
+            entry.0 += 1;
+            if ts >= entry.3 {
+                entry.3 = ts;
+                entry.1 = preview.clone();
+            }
+            if !preview.is_empty() && entry.2.len() < 10 {
+                entry.2.push(preview);
+            }
+        }
+        let mut out = Map::new();
+        for (agent_id, (count, latest, texts, _)) in by_agent {
+            out.insert(
+                agent_id,
+                serde_json::json!({
+                    "count": count,
+                    "latest": latest,
+                    "texts": texts,
+                }),
+            );
+        }
+        Value::Object(out)
     }
 }
 
@@ -395,6 +760,34 @@ mod tests {
         assert_eq!(hits[0].file, "tasks.json");
 
         assert!(mgr.delete_task("MD-1").unwrap());
+
+        let active = vec![serde_json::json!({
+            "id": "eng-1",
+            "name": "Engineer",
+            "description": "Writes Rust",
+            "provider": "claude"
+        })];
+        mgr.sync_roster(&active, &[]).unwrap();
+        assert!(mgr
+            .patch_agent_field("eng-1", "role", Some(Value::String("Builder".to_string())))
+            .unwrap());
+        let reg = mgr.registry();
+        assert_eq!(reg["agents"]["eng-1"]["role"], "Builder");
+
+        // Outbox -> Inbox routing test
+        let outbox_dir = dir.join("hive/agents/god/outbox");
+        fs::create_dir_all(&outbox_dir).unwrap();
+        fs::write(
+            outbox_dir.join("order.json"),
+            r#"{"to":"eng-1","act":"request","subject":"Do X","body":"Please run checks"}"#,
+        )
+        .unwrap();
+        let routed = mgr.drain_outboxes();
+        assert_eq!(routed.len(), 1);
+        assert_eq!(mgr.inbox("eng-1").len(), 1);
+        assert!(!outbox_dir.join("order.json").exists());
+        assert!(outbox_dir.join(".sent/order.json").exists());
+
         fs::remove_dir_all(&dir).ok();
     }
 }

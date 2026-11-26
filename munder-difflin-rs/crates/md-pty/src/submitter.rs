@@ -29,6 +29,9 @@ pub struct PtySubmitRequest {
 pub struct SubmitResult {
     pub ok: bool,
     pub outcome: String,
+    pub proof: String,
+    pub presses: u32,
+    pub ms: u64,
     pub reason: Option<String>,
     pub chars: usize,
 }
@@ -153,6 +156,7 @@ impl PtySubmitter {
         let chain_lock = self.lock_for(&req.pty_id);
         let _permit = chain_lock.lock().await;
 
+        let started = std::time::Instant::now();
         if self.is_withdrawn(req.ref_id.as_deref()) {
             if let Some(ref r) = req.ref_id {
                 self.withdrawn.lock().unwrap().remove(r);
@@ -160,6 +164,9 @@ impl PtySubmitter {
             return Ok(SubmitResult {
                 ok: false,
                 outcome: "held".to_string(),
+                proof: "none".to_string(),
+                presses: 0,
+                ms: 0,
                 reason: Some("withdrawn".to_string()),
                 chars: req.text.len(),
             });
@@ -169,11 +176,38 @@ impl PtySubmitter {
             return Err(PtyError::NotFound(req.pty_id));
         }
 
+        if !req.press_only && req.provider != "custom" {
+            let wait_deadline = std::time::Instant::now() + std::time::Duration::from_millis(6000);
+            loop {
+                let Some(info) = self.pty.info(&req.pty_id) else {
+                    return Err(PtyError::NotFound(req.pty_id));
+                };
+                let now_epoch = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                if info.has_output && now_epoch.saturating_sub(info.started_at) >= 1800 {
+                    break;
+                }
+                if std::time::Instant::now() >= wait_deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        }
+
         on_began(&req);
 
         if !req.press_only && !req.text.is_empty() {
-            self.pty.write(&req.pty_id, &req.text)?;
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            let use_paste = (req.provider == "codex" || req.text.contains('\n'))
+                && req.provider != "antigravity";
+            let payload = if use_paste {
+                format!("\x1b[200~{}\x1b[201~", req.text.replace('\r', ""))
+            } else {
+                req.text.clone()
+            };
+            self.pty.write(&req.pty_id, &payload)?;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
         self.pty.write(&req.pty_id, "\r")?;
 
@@ -190,6 +224,9 @@ impl PtySubmitter {
         Ok(SubmitResult {
             ok: true,
             outcome: "submitted".to_string(),
+            proof: "none".to_string(),
+            presses: 1,
+            ms: started.elapsed().as_millis() as u64,
             reason: None,
             chars: req.text.len(),
         })
@@ -214,6 +251,9 @@ mod tests {
             rows: Some(24),
             env: HashMap::new(),
             shell_script: None,
+            provider: None,
+            resume: None,
+            hive: None,
         });
         assert!(res.ok);
 

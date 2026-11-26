@@ -54,6 +54,15 @@ impl ControlRegistry {
         self.ensure(id).auto_delivery_paused = on;
     }
 
+    pub fn replace_auto_delivery_pauses(&mut self, paused_ids: &[String]) {
+        for c in self.map.values_mut() {
+            c.auto_delivery_paused = false;
+        }
+        for id in paused_ids {
+            self.ensure(id).auto_delivery_paused = true;
+        }
+    }
+
     pub fn gate_tool(&mut self, id: &str, tool: &str, on: bool) {
         let c = self.ensure(id);
         if on {
@@ -90,6 +99,10 @@ impl ControlRegistry {
         if let Some(c) = self.map.get_mut(id) {
             c.steer_queue.clear();
         }
+    }
+
+    pub fn clear_all(&mut self) {
+        self.map.clear();
     }
 
     pub fn resume(&mut self, id: &str) {

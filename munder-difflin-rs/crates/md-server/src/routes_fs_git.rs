@@ -1,18 +1,20 @@
 use crate::state::{AppState, IdeState};
 use axum::{
     Json, Router,
+    body::Body,
     extract::{Query, State},
-    response::Html,
+    http::{HeaderValue, StatusCode, header},
+    response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use base64::Engine;
 use md_core::repo_fs::{
-    SearchOptions, create_file_in, list_dir, make_dir_in, read_file_binary, read_file_text,
-    rename_in, search_in_root, trash_in, write_file_text,
+    SearchOptions, create_file_in, is_safe_id, list_dir, make_dir_in, read_file_binary,
+    read_file_text, rename_in, search_in_root, trash_in, write_file_text,
 };
 use serde::Deserialize;
-use serde_json::Value;
-use std::path::Path;
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +54,31 @@ struct RenameReq {
 struct CwdQuery {
     cwd: String,
     n: Option<usize>,
+    skip: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCommitFilesQuery {
+    cwd: String,
+    sha: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitShowFileQuery {
+    cwd: String,
+    rev: String,
+    rel_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GitCompareRefsQuery {
+    cwd: String,
+    base: String,
+    head: String,
+    mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -235,6 +262,52 @@ async fn git_checkout(Json(req): Json<GitCheckoutReq>) -> Json<Value> {
     }
 }
 
+async fn git_log_graph(Query(q): Query<CwdQuery>) -> Json<Value> {
+    match md_git::get_log_graph(&q.cwd, q.n.unwrap_or(200), q.skip.unwrap_or(0)).await {
+        Ok(commits) => Json(serde_json::to_value(commits).unwrap_or(Value::Null)),
+        Err(error) => Json(serde_json::json!({ "error": error })),
+    }
+}
+
+async fn git_commit_files(Query(q): Query<GitCommitFilesQuery>) -> Json<Value> {
+    match md_git::get_commit_files(&q.cwd, &q.sha).await {
+        Ok(files) => Json(serde_json::to_value(files).unwrap_or(Value::Null)),
+        Err(error) => Json(serde_json::json!({ "error": error })),
+    }
+}
+
+async fn git_show_file(Query(q): Query<GitShowFileQuery>) -> Json<Value> {
+    let res = md_git::get_file_at_rev(&q.cwd, &q.rev, &q.rel_path).await;
+    Json(serde_json::to_value(res).unwrap_or(Value::Null))
+}
+
+async fn git_compare_refs(Query(q): Query<GitCompareRefsQuery>) -> Json<Value> {
+    let mode = q.mode.as_deref().unwrap_or("three");
+    match md_git::compare_refs(&q.cwd, &q.base, &q.head, mode).await {
+        Ok(cmp) => Json(serde_json::to_value(cmp).unwrap_or(Value::Null)),
+        Err(error) => Json(serde_json::json!({ "error": error })),
+    }
+}
+
+async fn fs_folder_state(Json(req): Json<PathReq>) -> Json<Value> {
+    let p = md_core::config::expand_tilde(&req.path);
+    if !p.is_dir() {
+        return Json(serde_json::json!({
+            "exists": false,
+            "empty": true,
+            "path": p.to_string_lossy()
+        }));
+    }
+    let empty = std::fs::read_dir(&p)
+        .map(|mut rd| rd.next().is_none())
+        .unwrap_or(true);
+    Json(serde_json::json!({
+        "exists": true,
+        "empty": empty,
+        "path": p.to_string_lossy()
+    }))
+}
+
 async fn worktrees_list(State(state): State<AppState>) -> Json<Value> {
     let Some(home) = state.harness_home() else {
         return Json(serde_json::json!([]));
@@ -282,19 +355,132 @@ async fn fs_stat_abs(Json(req): Json<PathReq>) -> Json<Value> {
     }
 }
 
-async fn tools_status() -> Json<Value> {
-    let engines = ["claude", "codex", "gemini", "antigravity", "qwen", "cursor"];
-    let mut rows = Vec::new();
-    for name in engines {
-        let resolved = md_pty::manager::resolve_command(name);
+async fn tools_status(State(state): State<AppState>) -> Json<Value> {
+    let platform = md_core::host_node_platform();
+    let is_win = platform == "win32";
+    let git_posix = if platform == "darwin" {
+        "brew install git || xcode-select --install"
+    } else {
+        "sudo apt install git   # or: sudo dnf install git / pacman -S git"
+    };
+
+    let mut rows: Vec<Value> = Vec::new();
+    let home = state.harness_home();
+
+    // Base prerequisites (matching upstream `src/shared/toolCatalog.ts`)
+    let uv_path = md_pty::manager::resolve_command("uv");
+    rows.push(json!({
+        "id": "uv",
+        "bin": "uv",
+        "label": "uv",
+        "kind": "prerequisite",
+        "why": "Installs and runs mempalace. A self-contained Python toolchain — it does not touch any Python you already have.",
+        "essential": true,
+        "found": uv_path.as_ref().is_some_and(|p| p.is_file()),
+        "path": uv_path.map(|p| p.to_string_lossy().into_owned()),
+        "installCommand": if is_win {
+            "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\""
+        } else {
+            "curl -LsSf https://astral.sh/uv/install.sh | sh"
+        },
+        "docsUrl": "https://docs.astral.sh/uv/",
+    }));
+
+    let mem_bin = md_pty::manager::resolve_command("mempalace");
+    let mem_stat = md_hive::memory::memory_status(home.as_deref(), true, None);
+    let mem_found = mem_bin.as_ref().is_some_and(|p| p.is_file());
+    let mem_detail = if mem_found {
+        Some(if mem_stat.initialized {
+            "palace initialised"
+        } else {
+            "installed — palace not built yet"
+        })
+    } else {
+        None
+    };
+    rows.push(json!({
+        "id": "mempalace",
+        "bin": Value::Null,
+        "label": "MemPalace — semantic memory",
+        "kind": "memory",
+        "why": "Meaning-based recall across everything your agents have learned. Without it they still keep plain markdown notes, but cannot search them by meaning.",
+        "essential": true,
+        "found": mem_found,
+        "path": mem_bin.map(|p| p.to_string_lossy().into_owned()),
+        "installCommand": "uv tool install mempalace==3.3.5 --python 3.10",
+        "pinnedVersion": "3.3.5",
+        "switchCommand": "uv tool install mempalace==3.3.5 --python 3.10 --force",
+        "detail": mem_detail,
+        "note": "Needs uv first.",
+    }));
+
+    let git_path = md_pty::manager::resolve_command("git");
+    rows.push(json!({
+        "id": "git",
+        "bin": "git",
+        "label": "git",
+        "kind": "prerequisite",
+        "why": "Worktrees let agents work in parallel without fighting over one checkout, and the hive keeps its own history in git.",
+        "essential": true,
+        "found": git_path.as_ref().is_some_and(|p| p.is_file()),
+        "path": git_path.map(|p| p.to_string_lossy().into_owned()),
+        "installCommand": if is_win { "winget install --id Git.Git -e" } else { git_posix },
+        "docsUrl": "https://git-scm.com/downloads",
+    }));
+
+    let node_path = md_pty::manager::resolve_command("node");
+    rows.push(json!({
+        "id": "node",
+        "bin": "node",
+        "label": "Node.js",
+        "kind": "prerequisite",
+        "why": "Runs the npm-installed agent engines (OpenCode, and Claude Code on machines without the native build).",
+        "essential": false,
+        "found": node_path.as_ref().is_some_and(|p| p.is_file()),
+        "path": node_path.map(|p| p.to_string_lossy().into_owned()),
+        "installCommand": "",
+        "note": "Runs npm-installed agent CLIs. On Linux/macOS install Node.js 20+ via package manager or nvm if needed.",
+        "docsUrl": "https://nodejs.org",
+    }));
+
+    // Engine CLIs (matching `AGENT_PROVIDER_PRESETS` in `toolCatalog.ts`)
+    let engines: &[(&str, &str, &str, bool, &str, &str, &str)] = &[
+        ("claude", "claude", "Claude Code", true, "curl -fsSL https://claude.ai/install.sh | bash", "irm https://claude.ai/install.ps1 | iex", "https://docs.claude.com/en/docs/claude-code"),
+        ("codex", "codex", "Codex · GPT", false, "npm install -g @openai/codex", "npm install -g @openai/codex", "https://github.com/openai/codex"),
+        ("grok", "grok", "Grok · xAI", false, "curl -fsSL https://x.ai/install.sh | sh", "npm install -g @xai-official/grok-cli", "https://x.ai/cli"),
+        ("kimi", "kimi", "Kimi Code", false, "curl -L code.kimi.com/install.sh | bash", "Invoke-RestMethod https://code.kimi.com/install.ps1 | Invoke-Expression", "https://www.kimi.com/code/docs/en/"),
+        ("gemini", "gemini", "Gemini CLI", false, "npm install -g @google/gemini-cli", "npm install -g @google/gemini-cli", "https://github.com/google-gemini/gemini-cli"),
+        ("antigravity", "agy", "Antigravity · Gemini", false, "npm install -g @anthropic-ai/antigravity", "npm install -g @anthropic-ai/antigravity", "https://antigravity.google/docs/cli"),
+        ("qwen", "qwen", "Qwen (local available)", false, "npm install -g @qwen-code/qwen-code@latest", "npm install -g @qwen-code/qwen-code@latest", "https://github.com/QwenLM/qwen-code"),
+        ("opencode", "opencode", "OpenCode", false, "curl -fsSL https://opencode.ai/install | bash", "npm install -g opencode-ai@latest", "https://opencode.ai/docs"),
+        ("crush", "crush", "Crush · Charm", false, "npm install -g @charmland/crush", "npm install -g @charmland/crush", "https://github.com/charmbracelet/crush"),
+        ("pi", "pi", "Pi", false, "npm install -g --ignore-scripts @earendil-works/pi-coding-agent", "npm install -g --ignore-scripts @earendil-works/pi-coding-agent", "https://pi.dev/docs/latest"),
+        ("copilot", "copilot", "Copilot", false, "npm install -g @github/copilot", "npm install -g @github/copilot", "https://docs.github.com/copilot/concepts/agents/about-copilot-cli"),
+        ("cursor", "agent", "Cursor", false, "curl https://cursor.com/install -fsS | bash", "irm 'https://cursor.com/install?win32=true' | iex", "https://cursor.com/docs/cli/install"),
+    ];
+
+    for &(id, bin, label, essential, posix_cmd, win_cmd, docs) in engines {
+        let resolved = if id == "cursor" {
+            md_pty::manager::resolve_command("cursor-agent")
+                .or_else(|| md_pty::manager::resolve_command("agent"))
+        } else {
+            md_pty::manager::resolve_command(bin)
+        };
         let exists = resolved.as_ref().is_some_and(|p| p.is_file());
-        rows.push(serde_json::json!({
-            "id": format!("engine:{name}"),
+        rows.push(json!({
+            "id": format!("engine:{id}"),
+            "bin": bin,
+            "label": label,
+            "kind": "engine",
+            "why": format!("Agent engine — {bin}."),
+            "essential": essential,
             "found": exists,
             "path": resolved.map(|p| p.to_string_lossy().into_owned()),
-            "installCommand": if name == "claude" { Some("curl -fsSL https://claude.ai/install.sh | bash") } else { None }
+            "installCommand": if is_win { win_cmd } else { posix_cmd },
+            "docsUrl": docs,
         }));
     }
+
     Json(Value::Array(rows))
 }
 
@@ -325,9 +511,7 @@ async fn ide_dirty(State(state): State<AppState>, Json(req): Json<IdeDirtyReq>) 
     {
         let mut ide = state.ide.lock().unwrap();
         ide.unsaved_count = req.unsaved;
-        if !req.open_files.is_empty() {
-            ide.open_files = req.open_files.clone();
-        }
+        ide.open_files = req.open_files.clone();
     }
     state.emit(
         "ide:dirty",
@@ -342,6 +526,293 @@ async fn ide_open(State(state): State<AppState>, Json(req): Json<IdeOpenReq>) ->
         serde_json::json!({ "root": req.root, "rel": req.rel }),
     );
     Json(serde_json::json!({ "ok": true }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeWorkReq {
+    path: String,
+    base_branch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorktreeRemoveReq {
+    path: String,
+    #[serde(default)]
+    confirmed: bool,
+    #[serde(default)]
+    delete_branch: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FsUploadReq {
+    name: String,
+    base64: String,
+    #[serde(default)]
+    scope: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FsRawQuery {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GithubIssuesQuery {
+    repo: Option<String>,
+    cwd: Option<String>,
+}
+
+fn allowed_fs_roots(state: &AppState) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(h) = state.harness_home() {
+        roots.push(h);
+    }
+    roots.push(state.data_dir.clone());
+    let cfg = state.config.lock().unwrap().read();
+    for r in &cfg.registered_repos {
+        roots.push(md_core::config::expand_tilde(r));
+    }
+    roots
+}
+
+fn is_within_allowed_roots(state: &AppState, raw_path: &str) -> Option<PathBuf> {
+    let expanded = md_core::config::expand_tilde(raw_path);
+    let canon = std::fs::canonicalize(&expanded).ok()?;
+    for root in allowed_fs_roots(state) {
+        if let Ok(root_canon) = std::fs::canonicalize(&root)
+            && canon.starts_with(&root_canon)
+        {
+            return Some(canon);
+        }
+    }
+    None
+}
+
+async fn worktrees_work(Json(req): Json<WorktreeWorkReq>) -> Json<Value> {
+    let wt_path = md_core::config::expand_tilde(&req.path);
+    let wt_str = wt_path.to_string_lossy().into_owned();
+    if !wt_path.exists() {
+        return Json(json!({
+            "known": false,
+            "uncommitted": 0,
+            "unmerged": 0,
+            "base": req.base_branch.unwrap_or_else(|| "main".to_string())
+        }));
+    }
+    let st = md_git::get_status(&wt_str).await.ok();
+    let uncommitted = st
+        .as_ref()
+        .map(|s| s.staged.len() + s.unstaged.len() + s.untracked.len())
+        .unwrap_or(0);
+    let ab = md_git::get_ahead_behind(&wt_str).await.ok();
+    let unmerged = ab.as_ref().map(|x| x.ahead).unwrap_or(0);
+    let base = req
+        .base_branch
+        .or_else(|| ab.and_then(|x| x.upstream))
+        .unwrap_or_else(|| "main".to_string());
+    Json(json!({
+        "known": true,
+        "uncommitted": uncommitted,
+        "unmerged": unmerged,
+        "base": base,
+    }))
+}
+
+async fn worktrees_remove(
+    State(state): State<AppState>,
+    Json(req): Json<WorktreeRemoveReq>,
+) -> Json<Value> {
+    let wt_path = md_core::config::expand_tilde(&req.path);
+    let wt_str = wt_path.to_string_lossy().into_owned();
+    let allowed = is_within_allowed_roots(&state, &wt_str).is_some()
+        || wt_str.contains("/worktrees/")
+        || wt_str.contains("/.worktrees/");
+    if !allowed {
+        return Json(json!({ "ok": false, "error": "path is outside allowed workspace roots" }));
+    }
+    if !wt_path.exists() {
+        return Json(json!({ "ok": true, "alreadyMissing": true }));
+    }
+    if !req.confirmed
+        && let Ok(st) = md_git::get_status(&wt_str).await
+    {
+        let dirty = st.staged.len() + st.unstaged.len() + st.untracked.len();
+        if dirty > 0 {
+            return Json(json!({
+                "ok": false,
+                "dirty": true,
+                "uncommitted": dirty,
+                "error": "worktree has uncommitted changes"
+            }));
+        }
+    }
+    let branch = md_git::get_branch(&wt_str).await.ok().and_then(|b| b.current);
+    let main = md_git::main_repo(&wt_str)
+        .await
+        .unwrap_or_else(|| wt_str.clone());
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg("-C").arg(&main).arg("worktree").arg("remove");
+    if req.confirmed {
+        cmd.arg("--force");
+    }
+    cmd.arg(&wt_str);
+    match cmd.output().await {
+        Ok(out) if out.status.success() => {
+            if req.delete_branch
+                && let Some(br) = branch
+                && br != "main"
+                && br != "master"
+            {
+                let _ = tokio::process::Command::new("git")
+                    .args(["-C", &main, "branch", "-D", &br])
+                    .output()
+                    .await;
+            }
+            Json(json!({ "ok": true }))
+        }
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Json(json!({ "ok": false, "error": if err.is_empty() { "git worktree remove failed".to_string() } else { err } }))
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+async fn fs_upload(State(state): State<AppState>, Json(req): Json<FsUploadReq>) -> Json<Value> {
+    const MAX_UPLOAD_BYTES: usize = 25 * 1024 * 1024;
+    let b64 = req
+        .base64
+        .split_once(";base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(req.base64.as_str())
+        .trim();
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
+        return Json(json!({ "ok": false, "error": "invalid base64 payload" }));
+    };
+    if bytes.len() > MAX_UPLOAD_BYTES {
+        return Json(json!({ "ok": false, "error": "file exceeds 25 MB limit" }));
+    }
+    let raw_name = Path::new(&req.name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("attachment.bin");
+    let clean_name: String = raw_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let final_name = if clean_name.is_empty() {
+        "attachment.bin".to_string()
+    } else {
+        clean_name
+    };
+    let sub = req.scope.as_deref().filter(|s| is_safe_id(s)).unwrap_or("uploads");
+    let dir = state
+        .harness_home()
+        .map(|h| h.join("hive").join(sub))
+        .unwrap_or_else(|| state.data_dir.join(sub));
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return Json(json!({ "ok": false, "error": e.to_string() }));
+    }
+    let unique = &uuid::Uuid::new_v4().simple().to_string()[..8];
+    let dest = dir.join(format!("{unique}-{final_name}"));
+    if let Err(e) = std::fs::write(&dest, &bytes) {
+        return Json(json!({ "ok": false, "error": e.to_string() }));
+    }
+    let path_str = dest.to_string_lossy().into_owned();
+    Json(json!({
+        "ok": true,
+        "file": path_str,
+        "path": path_str,
+        "name": final_name,
+        "bytes": bytes.len(),
+    }))
+}
+
+fn content_type_for_path(path: &Path) -> &'static str {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js" | "mjs") => "application/javascript; charset=utf-8",
+        Some("json") => "application/json; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        Some("pdf") => "application/pdf",
+        Some("md" | "txt" | "log" | "csv") => "text/plain; charset=utf-8",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn fs_raw(State(state): State<AppState>, Query(q): Query<FsRawQuery>) -> Response {
+    let Some(canon) = is_within_allowed_roots(&state, &q.path) else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let Ok(bytes) = tokio::fs::read(&canon).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let mut resp = Response::new(Body::from(bytes));
+    if let Ok(val) = HeaderValue::from_str(content_type_for_path(&canon)) {
+        resp.headers_mut().insert(header::CONTENT_TYPE, val);
+    }
+    resp
+}
+
+async fn github_issues(
+    State(state): State<AppState>,
+    Query(q): Query<GithubIssuesQuery>,
+) -> Json<Value> {
+    let mut cmd = tokio::process::Command::new("gh");
+    cmd.args([
+        "issue",
+        "list",
+        "--json",
+        "number,title,url,state,author,createdAt",
+        "--limit",
+        "15",
+    ]);
+    if let Some(repo) = q.repo.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.args(["--repo", repo]);
+    } else if let Some(cwd) = q.cwd.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let dir = md_core::config::expand_tilde(cwd);
+        if dir.is_dir() {
+            cmd.current_dir(dir);
+        }
+    } else if let Some(home) = state.harness_home() {
+        cmd.current_dir(home);
+    }
+    match cmd.output().await {
+        Ok(out) if out.status.success() => {
+            let issues = serde_json::from_slice::<Value>(&out.stdout).unwrap_or_else(|_| json!([]));
+            Json(json!({ "ok": true, "issues": issues }))
+        }
+        Ok(out) => {
+            let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            Json(json!({
+                "ok": false,
+                "issues": [],
+                "error": if err.is_empty() { "gh issue list failed".to_string() } else { err }
+            }))
+        }
+        Err(e) => Json(json!({ "ok": false, "issues": [], "error": e.to_string() })),
+    }
 }
 
 pub fn fs_git_router() -> Router<AppState> {
@@ -360,12 +831,20 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/fs/rename", post(fs_rename))
         .route("/api/v1/fs/trash", post(fs_trash))
         .route("/api/v1/fs/stat-abs", post(fs_stat_abs))
+        .route("/api/v1/fs/folder-state", post(fs_folder_state))
+        .route("/api/v1/fs/upload", post(fs_upload))
+        .route("/api/v1/fs/raw", get(fs_raw))
         .route("/api/v1/tools/status", get(tools_status))
+        .route("/api/v1/github/issues", get(github_issues))
         .route("/api/v1/git/is-repo", get(git_is_repo))
         .route("/api/v1/git/main-repo", get(git_main_repo))
         .route("/api/v1/git/branch", get(git_branch))
         .route("/api/v1/git/status", get(git_status))
         .route("/api/v1/git/log", get(git_log))
+        .route("/api/v1/git/log-graph", get(git_log_graph))
+        .route("/api/v1/git/commit-files", get(git_commit_files))
+        .route("/api/v1/git/show-file", get(git_show_file))
+        .route("/api/v1/git/compare-refs", get(git_compare_refs))
         .route("/api/v1/git/branches", get(git_branches))
         .route("/api/v1/git/ahead-behind", get(git_ahead_behind))
         .route("/api/v1/git/diff", get(git_diff))
@@ -373,4 +852,6 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/git/checkout", post(git_checkout))
         .route("/api/v1/worktrees/list", get(worktrees_list))
         .route("/api/v1/worktrees/size", post(worktrees_size))
+        .route("/api/v1/worktrees/work", post(worktrees_work))
+        .route("/api/v1/worktrees/remove", post(worktrees_remove))
 }

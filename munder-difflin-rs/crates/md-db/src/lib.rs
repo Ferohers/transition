@@ -208,6 +208,12 @@ impl PersistStore {
         )?;
         Ok(())
     }
+
+    pub fn clear_all(&self) -> Result<(), DbError> {
+        self.conn.execute("DELETE FROM kv", [])?;
+        self.conn.execute("DELETE FROM command_history", [])?;
+        Ok(())
+    }
 }
 
 fn map_history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandHistoryEntry> {

@@ -170,15 +170,10 @@ async fn agent_import(Json(bundle): Json<Value>) -> Json<Value> {
     Json(json!({ "ok": true, "agent": bundle["agent"] }))
 }
 
-async fn templates_pro_list() -> Json<Value> {
-    let Some(root) = resources_root() else {
-        return Json(json!([]));
-    };
-    let dir = root.join("agent-templates");
+fn collect_templates_from(dir: &std::path::Path, built_in: bool, out: &mut Vec<Value>) {
     let Ok(rd) = std::fs::read_dir(dir) else {
-        return Json(json!([]));
+        return;
     };
-    let mut out = Vec::new();
     for entry in rd.flatten() {
         let p = entry.path();
         if p.extension().and_then(|s| s.to_str()) != Some("json") {
@@ -218,34 +213,48 @@ async fn templates_pro_list() -> Json<Value> {
                 "name": name,
                 "description": description,
                 "role": role,
-                "builtIn": true,
+                "builtIn": built_in,
                 "parts": parts,
             }));
         }
+    }
+}
+
+async fn templates_pro_list(State(state): State<AppState>) -> Json<Value> {
+    let mut out = Vec::new();
+    let user_dir = crate::routes_agent_file::user_templates_dir(&state);
+    collect_templates_from(&user_dir, false, &mut out);
+    if let Some(root) = resources_root() {
+        collect_templates_from(&root.join("agent-templates"), true, &mut out);
     }
     out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Json(Value::Array(out))
 }
 
-async fn templates_pro_read(Path(id): Path<String>) -> Json<Value> {
-    let Some(root) = resources_root() else {
-        return Json(json!({ "ok": false, "error": "resources directory not found" }));
-    };
+async fn templates_pro_read(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
     if id.contains('/') || id.contains('\\') || id.contains("..") {
         return Json(json!({ "ok": false, "error": "invalid template id" }));
     }
-    let dir = root.join("agent-templates");
-    let candidates = [
-        dir.join(format!("{id}.agent.json")),
-        dir.join(format!("{id}.json")),
-        dir.join(&id),
-    ];
-    for p in candidates {
-        if p.is_file()
-            && let Ok(raw) = std::fs::read_to_string(&p)
-            && let Ok(val) = serde_json::from_str::<Value>(&raw)
-        {
-            return Json(json!({ "ok": true, "file": val }));
+    let user_dir = crate::routes_agent_file::user_templates_dir(&state);
+    let mut dirs = vec![user_dir];
+    if let Some(root) = resources_root() {
+        dirs.push(root.join("agent-templates"));
+    }
+    for dir in dirs {
+        for p in [
+            dir.join(format!("{id}.agent.json")),
+            dir.join(format!("{id}.json")),
+            dir.join(&id),
+        ] {
+            if p.is_file()
+                && let Ok(raw) = std::fs::read_to_string(&p)
+                && let Ok(val) = serde_json::from_str::<Value>(&raw)
+            {
+                return Json(json!({ "ok": true, "file": val }));
+            }
         }
     }
     Json(json!({ "ok": false, "error": "template not found" }))
@@ -335,17 +344,32 @@ async fn capabilities_installed() -> Json<Value> {
             }
         }
 
-        // Scan MCP servers from ~/.claude/settings.json and ~/.gemini/settings.json
-        for (engine, settings_path) in [
-            ("claude", claude_dir.join("settings.json")),
-            ("gemini", home_dir.join(".gemini").join("settings.json")),
+        // Scan MCP servers from ~/.claude/settings.json, ~/.gemini/settings.json,
+        // ~/.codex/settings.json, and ~/.config/opencode/opencode.json
+        for (engine, settings_path, key) in [
+            ("claude", claude_dir.join("settings.json"), "mcpServers"),
+            ("gemini", home_dir.join(".gemini").join("settings.json"), "mcpServers"),
+            ("codex", home_dir.join(".codex").join("settings.json"), "mcpServers"),
+            (
+                "opencode",
+                home_dir.join(".config").join("opencode").join("opencode.json"),
+                "mcp",
+            ),
+            (
+                "opencode",
+                home_dir.join(".opencode").join("opencode.json"),
+                "mcp",
+            ),
         ] {
             if let Ok(raw) = std::fs::read_to_string(&settings_path)
                 && let Ok(val) = serde_json::from_str::<Value>(&raw)
-                && let Some(mcp) = val.get("mcpServers").and_then(|m| m.as_object())
+                && let Some(mcp) = val.get(key).and_then(|m| m.as_object())
             {
                 for (name, cfg) in mcp {
-                    let transport = if cfg.get("url").is_some() || cfg.get("httpUrl").is_some() {
+                    let transport = if cfg.get("url").is_some()
+                        || cfg.get("httpUrl").is_some()
+                        || cfg.get("type").and_then(|t| t.as_str()) == Some("remote")
+                    {
                         "http"
                     } else {
                         "stdio"
@@ -363,11 +387,329 @@ async fn capabilities_installed() -> Json<Value> {
         }
     }
 
+    let mut tools = Vec::new();
+    for (name, bin) in [
+        ("claude", "claude"),
+        ("codex", "codex"),
+        ("gemini", "gemini"),
+        ("opencode", "opencode"),
+        ("antigravity", "antigravity"),
+        ("qwen", "qwen"),
+        ("cursor", "agent"),
+        ("git", "git"),
+        ("gh", "gh"),
+        ("node", "node"),
+        ("python3", "python3"),
+        ("cargo", "cargo"),
+    ] {
+        if let Some(p) = md_pty::manager::resolve_command(bin)
+            && p.is_file()
+        {
+            tools.push(json!({
+                "key": format!("tool:{name}"),
+                "name": name,
+                "bin": bin,
+                "path": p.to_string_lossy().into_owned(),
+            }));
+        }
+    }
+
     Json(json!({
         "plugins": plugins,
         "servers": servers,
-        "tools": [],
+        "tools": tools,
     }))
+}
+
+async fn missions_list(State(state): State<AppState>) -> Json<Value> {
+    let cfg = state.config.lock().unwrap().read();
+    let list = cfg
+        .extra
+        .get("missions")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Json(Value::Array(list))
+}
+
+async fn missions_save(
+    State(state): State<AppState>,
+    Json(missions): Json<Vec<Value>>,
+) -> Json<Value> {
+    match state
+        .config
+        .lock()
+        .unwrap()
+        .update(json!({ "missions": missions }))
+    {
+        Ok(_) => {
+            state.emit("missions:updated", json!({ "ok": true }));
+            Json(json!({ "ok": true }))
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+async fn context_trigger_get(State(state): State<AppState>) -> Json<Value> {
+    let cfg = state.config.lock().unwrap().read();
+    Json(
+        cfg.extra
+            .get("contextTrigger")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    )
+}
+
+async fn context_trigger_set(
+    State(state): State<AppState>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    match state
+        .config
+        .lock()
+        .unwrap()
+        .update(json!({ "contextTrigger": body }))
+    {
+        Ok(_) => Json(json!({ "ok": true })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentSettingPatchReq {
+    kind: String,
+    agent_id: Option<String>,
+    key: Option<String>,
+    value: Value,
+}
+
+async fn agent_settings_set(
+    State(state): State<AppState>,
+    Json(req): Json<AgentSettingPatchReq>,
+) -> Json<Value> {
+    let mut store = state.config.lock().unwrap();
+    let cfg = store.read();
+    let aid = req.agent_id.as_deref().unwrap_or("");
+    let patch = match req.kind.as_str() {
+        "mcp" => {
+            let mut map = cfg
+                .extra
+                .get("agentMcp")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let mut row = map
+                .get(aid)
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            if let Some(k) = req.key.as_deref() {
+                if req.value.is_null() {
+                    row.remove(k);
+                } else {
+                    row.insert(k.to_string(), req.value);
+                }
+            }
+            map.insert(aid.to_string(), Value::Object(row));
+            json!({ "agentMcp": map })
+        }
+        "skillOff" => {
+            let mut map = cfg
+                .extra
+                .get("agentSkillsOff")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            let mut arr: Vec<String> = map
+                .get(aid)
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(ToString::to_string)).collect())
+                .unwrap_or_default();
+            if let Some(folder) = req.key {
+                let off = req.value.as_bool().unwrap_or(false);
+                arr.retain(|x| x != &folder);
+                if off {
+                    arr.push(folder);
+                }
+            }
+            map.insert(aid.to_string(), json!(arr));
+            json!({ "agentSkillsOff": map })
+        }
+        "codexMemory" => {
+            let mut arr: Vec<String> = cfg
+                .extra
+                .get("agentCodexMemoryOn")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().filter_map(|x| x.as_str().map(ToString::to_string)).collect())
+                .unwrap_or_default();
+            let on = req.value.as_bool().unwrap_or(false);
+            arr.retain(|x| x != aid);
+            if on && !aid.is_empty() {
+                arr.push(aid.to_string());
+            }
+            json!({ "agentCodexMemoryOn": arr })
+        }
+        "browser" => {
+            let mut map = cfg
+                .extra
+                .get("agentBrowser")
+                .and_then(|v| v.as_object())
+                .cloned()
+                .unwrap_or_default();
+            map.insert(aid.to_string(), req.value);
+            json!({ "agentBrowser": map })
+        }
+        _ => return Json(json!({ "ok": false, "error": "unknown setting kind" })),
+    };
+
+    match store.update(patch) {
+        Ok(next) => {
+            let val = serde_json::to_value(&next).unwrap_or(Value::Null);
+            state.emit("config:changed", val.clone());
+            Json(val)
+        }
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillInstallReq {
+    url: String,
+    name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillUninstallReq {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CapabilityInstallReq {
+    entry_id: String,
+}
+
+async fn skills_install(
+    State(state): State<AppState>,
+    Json(req): Json<SkillInstallReq>,
+) -> Json<Value> {
+    let mut store = state.config.lock().unwrap();
+    let cfg = store.read();
+    let mut installed = cfg
+        .extra
+        .get("installedSkills")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let name = req.name.unwrap_or_else(|| req.url.clone());
+    if !installed
+        .iter()
+        .any(|x| x.get("name").and_then(|v| v.as_str()) == Some(&name))
+    {
+        installed.push(json!({
+            "name": name,
+            "url": req.url,
+            "path": format!("skills/{name}"),
+            "scope": "user",
+        }));
+    }
+    match store.update(json!({ "installedSkills": installed })) {
+        Ok(_) => Json(json!({ "ok": true })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+async fn skills_uninstall(
+    State(state): State<AppState>,
+    Json(req): Json<SkillUninstallReq>,
+) -> Json<Value> {
+    let mut store = state.config.lock().unwrap();
+    let cfg = store.read();
+    let mut installed = cfg
+        .extra
+        .get("installedSkills")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    installed.retain(|x| x.get("path").and_then(|v| v.as_str()) != Some(&req.path));
+    match store.update(json!({ "installedSkills": installed })) {
+        Ok(_) => Json(json!({ "ok": true })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+async fn capabilities_install(
+    State(state): State<AppState>,
+    Json(req): Json<CapabilityInstallReq>,
+) -> Json<Value> {
+    let mut store = state.config.lock().unwrap();
+    let cfg = store.read();
+    let mut caps = cfg
+        .extra
+        .get("installedCapabilities")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    if !caps.iter().any(|v| v.as_str() == Some(&req.entry_id)) {
+        caps.push(json!(req.entry_id));
+    }
+    match store.update(json!({ "installedCapabilities": caps })) {
+        Ok(_) => Json(json!({ "ok": true, "lines": ["Registered in local configuration"] })),
+        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+    }
+}
+
+async fn office_themes_list(State(state): State<AppState>) -> Json<Value> {
+    let dir = state.data_dir.join("office-themes");
+    let mut themes = Vec::new();
+    let bad: Vec<Value> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                let id = entry.file_name().to_string_lossy().into_owned();
+                let label = std::fs::read_to_string(p.join("theme.json"))
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                    .and_then(|v| v.get("label").and_then(|l| l.as_str()).map(ToString::to_string))
+                    .unwrap_or_else(|| id.clone());
+                themes.push(json!({ "id": id, "label": label }));
+            }
+        }
+    }
+    Json(json!({ "themes": themes, "bad": bad }))
+}
+
+async fn office_themes_read(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> Json<Value> {
+    let p = state.data_dir.join("office-themes").join(&id).join("theme.json");
+    match std::fs::read_to_string(&p)
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+    {
+        Some(v) => Json(v),
+        None => Json(Value::Null),
+    }
+}
+
+async fn code_themes_list(State(state): State<AppState>) -> Json<Value> {
+    let dir = state.data_dir.join("code-themes");
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            if let Ok(raw) = std::fs::read_to_string(entry.path())
+                && let Ok(val) = serde_json::from_str::<Value>(&raw)
+            {
+                out.push(val);
+            }
+        }
+    }
+    Json(Value::Array(out))
 }
 
 pub fn catalog_router() -> Router<AppState> {
@@ -380,12 +722,24 @@ pub fn catalog_router() -> Router<AppState> {
             "/api/v1/catalog/capabilities/installed",
             post(capabilities_installed),
         )
+        .route("/api/v1/capabilities/install", post(capabilities_install))
         .route("/api/v1/presets", get(presets_list))
         .route("/api/v1/skills", get(skills_list))
+        .route("/api/v1/skills/install", post(skills_install))
+        .route("/api/v1/skills/uninstall", post(skills_uninstall))
         .route(
             "/api/v1/themes/workbench",
             get(theme_workbench_get).post(theme_workbench_set),
         )
+        .route("/api/v1/themes/office", get(office_themes_list))
+        .route("/api/v1/themes/office/{id}", get(office_themes_read))
+        .route("/api/v1/themes/code", get(code_themes_list))
         .route("/api/v1/agents/export", post(agent_export))
         .route("/api/v1/agents/import", post(agent_import))
+        .route("/api/v1/agents/settings", post(agent_settings_set))
+        .route("/api/v1/missions", get(missions_list).post(missions_save))
+        .route(
+            "/api/v1/context-trigger",
+            get(context_trigger_get).post(context_trigger_set),
+        )
 }

@@ -86,6 +86,43 @@ pub struct GitWorktreeInfo {
     pub bare: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCommitFile {
+    pub path: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitFileAtRev {
+    pub ok: bool,
+    pub exists: bool,
+    pub is_binary: bool,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitCompare {
+    pub ahead: u32,
+    pub behind: u32,
+    pub merge_base: Option<String>,
+    pub files: Vec<GitCommitFile>,
+}
+
+fn is_safe_rev(rev: &str) -> bool {
+    !rev.is_empty()
+        && rev.len() <= 256
+        && !rev.starts_with('-')
+        && !rev.contains('\0')
+        && !rev.contains("..")
+}
+
 async fn run_git(cwd: &str, args: &[&str]) -> Result<String, String> {
     let dir = expand_tilde(cwd);
     if !dir.is_dir() {
@@ -370,6 +407,217 @@ pub async fn checkout(cwd: &str, reference: &str, detach: bool) -> Result<(), St
     }
     args.push(reference);
     run_git(cwd, &args).await.map(|_| ())
+}
+
+fn parse_name_status_z(raw: &str) -> Vec<GitCommitFile> {
+    let tokens: Vec<&str> = raw.split('\0').filter(|t| !t.is_empty()).collect();
+    let mut files = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        let status = tokens[i];
+        let Some(first) = status.chars().next() else {
+            i += 1;
+            continue;
+        };
+        if !first.is_ascii_uppercase() {
+            i += 1;
+            continue;
+        }
+        let kind = first.to_string();
+        if first == 'R' || first == 'C' {
+            if let (Some(old_p), Some(new_p)) = (tokens.get(i + 1), tokens.get(i + 2)) {
+                files.push(GitCommitFile {
+                    path: (*new_p).to_string(),
+                    status: kind,
+                    old_path: Some((*old_p).to_string()),
+                });
+                i += 3;
+                continue;
+            }
+        } else if let Some(path) = tokens.get(i + 1) {
+            files.push(GitCommitFile {
+                path: (*path).to_string(),
+                status: kind,
+                old_path: None,
+            });
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    files
+}
+
+pub async fn get_log_graph(cwd: &str, count: usize, skip: usize) -> Result<Vec<GitCommit>, String> {
+    let max_count = format!("--max-count={}", count.clamp(1, 500));
+    let skip_arg = format!("--skip={skip}");
+    let fmt = "--pretty=format:%H\x1f%P\x1f%s\x1f%an\x1f%at\x1f%D\x1e";
+    let out = run_git(cwd, &["log", "--all", &max_count, &skip_arg, fmt]).await?;
+    let mut commits = Vec::new();
+    for rec in out.split('\x1e') {
+        if rec.trim().is_empty() {
+            continue;
+        }
+        let fields: Vec<&str> = rec.split('\x1f').collect();
+        if fields.len() < 6 || fields[0].is_empty() {
+            continue;
+        }
+        let sha = fields[0].to_string();
+        let short_sha = sha.chars().take(7).collect();
+        let parents = fields[1]
+            .split(' ')
+            .filter(|p| !p.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        let refs = fields[5]
+            .split(", ")
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .map(ToString::to_string)
+            .collect();
+        commits.push(GitCommit {
+            sha,
+            short_sha,
+            parents,
+            subject: fields[2].to_string(),
+            author: fields[3].to_string(),
+            time: fields[4].parse::<i64>().unwrap_or(0),
+            refs,
+        });
+    }
+    Ok(commits)
+}
+
+pub async fn get_commit_files(cwd: &str, sha: &str) -> Result<Vec<GitCommitFile>, String> {
+    if !is_safe_rev(sha) {
+        return Err("invalid revision".to_string());
+    }
+    let out = run_git(
+        cwd,
+        &[
+            "diff-tree",
+            "--no-commit-id",
+            "-r",
+            "--root",
+            "-z",
+            "-M",
+            "--name-status",
+            sha,
+            "--",
+        ],
+    )
+    .await?;
+    Ok(parse_name_status_z(&out))
+}
+
+pub async fn get_file_at_rev(cwd: &str, rev: &str, rel_path: &str) -> GitFileAtRev {
+    if !is_safe_rev(rev) {
+        return GitFileAtRev {
+            ok: false,
+            exists: false,
+            is_binary: false,
+            content: String::new(),
+            error: Some("invalid revision".to_string()),
+        };
+    }
+    if safe_resolve(cwd, rel_path).is_none() {
+        return GitFileAtRev {
+            ok: false,
+            exists: false,
+            is_binary: false,
+            content: String::new(),
+            error: Some("path escapes repository root".to_string()),
+        };
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for p in rel_path.split('/') {
+        if p.is_empty() || p == "." {
+            continue;
+        }
+        if p == ".." {
+            parts.pop();
+            continue;
+        }
+        parts.push(p);
+    }
+    let clean_rel = parts.join("/");
+    let spec = format!("{rev}:{clean_rel}");
+    match run_git(cwd, &["cat-file", "-s", &spec]).await {
+        Ok(sz) => {
+            if sz.trim().parse::<usize>().unwrap_or(0) > MAX_DIFF_BYTES {
+                return GitFileAtRev {
+                    ok: false,
+                    exists: true,
+                    is_binary: false,
+                    content: String::new(),
+                    error: Some("file too large to diff (>2 MB)".to_string()),
+                };
+            }
+        }
+        Err(_) => {
+            return GitFileAtRev {
+                ok: true,
+                exists: false,
+                is_binary: false,
+                content: String::new(),
+                error: None,
+            };
+        }
+    }
+    match run_git(cwd, &["show", &spec]).await {
+        Ok(content) => {
+            if content.contains('\0') {
+                GitFileAtRev {
+                    ok: true,
+                    exists: true,
+                    is_binary: true,
+                    content: String::new(),
+                    error: None,
+                }
+            } else {
+                GitFileAtRev {
+                    ok: true,
+                    exists: true,
+                    is_binary: false,
+                    content,
+                    error: None,
+                }
+            }
+        }
+        Err(_) => GitFileAtRev {
+            ok: true,
+            exists: false,
+            is_binary: false,
+            content: String::new(),
+            error: None,
+        },
+    }
+}
+
+pub async fn compare_refs(cwd: &str, base: &str, head: &str, mode: &str) -> Result<GitCompare, String> {
+    if !is_safe_rev(base) || !is_safe_rev(head) {
+        return Err("invalid revision".to_string());
+    }
+    let spec_dots = format!("{base}...{head}");
+    let counts = run_git(cwd, &["rev-list", "--left-right", "--count", &spec_dots]).await?;
+    let mut parts = counts.trim().split('\t');
+    let behind = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let ahead = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let merge_base = run_git(cwd, &["merge-base", base, head])
+        .await
+        .ok()
+        .map(|s| s.trim().to_string());
+    let out = if mode == "two" {
+        run_git(cwd, &["diff", "-z", "-M", "--name-status", base, head, "--"]).await?
+    } else {
+        run_git(cwd, &["diff", "-z", "-M", "--name-status", &spec_dots, "--"]).await?
+    };
+    Ok(GitCompare {
+        ahead,
+        behind,
+        merge_base,
+        files: parse_name_status_z(&out),
+    })
 }
 
 pub fn directory_size_bytes(path: &Path) -> u64 {

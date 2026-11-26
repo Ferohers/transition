@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use thiserror::Error;
 use tokio::sync::broadcast;
 
-const TAIL_MAX: usize = 8192;
+const TAIL_MAX: usize = 262_144;
 const REDRAW_STEP_MS: u64 = 80;
 
 #[derive(Debug, Error)]
@@ -41,6 +41,12 @@ pub struct SpawnOptions {
     #[serde(default)]
     pub env: HashMap<String, String>,
     pub shell_script: Option<String>,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub resume: Option<bool>,
+    #[serde(default)]
+    pub hive: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -53,6 +59,12 @@ pub struct SpawnResult {
     pub cli_missing: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub seed_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resumed: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_not_found: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,9 +100,11 @@ pub enum PtyEvent {
     },
     Exit {
         id: String,
+        #[serde(rename = "exitCode")]
         exit_code: u32,
         signal: Option<String>,
         tail: String,
+        #[serde(rename = "startedAt")]
         started_at: u64,
     },
 }
@@ -146,6 +160,9 @@ impl PtyManager {
                 cwd: None,
                 cli_missing: None,
                 error: Some(format!("cwd does not exist: {}", cwd_path.display())),
+                seed_prompt: None,
+                resumed: None,
+                resume_not_found: None,
             };
         }
 
@@ -160,6 +177,9 @@ impl PtyManager {
                         cwd: Some(cwd_path.to_string_lossy().into_owned()),
                         cli_missing: Some(true),
                         error: Some(format!("command not found: {}", opts.command)),
+                        seed_prompt: None,
+                        resumed: None,
+                        resume_not_found: None,
                     };
                 }
             }
@@ -173,6 +193,9 @@ impl PtyManager {
                     cwd: None,
                     cli_missing: None,
                     error: Some(format!("pty already exists for id {}", opts.id)),
+                    seed_prompt: None,
+                    resumed: None,
+                    resume_not_found: None,
                 };
             }
             guard.wanted.get(&opts.id).copied().unwrap_or((
@@ -195,6 +218,9 @@ impl PtyManager {
                     cwd: None,
                     cli_missing: None,
                     error: Some(e.to_string()),
+                    seed_prompt: None,
+                    resumed: None,
+                    resume_not_found: None,
                 };
             }
         };
@@ -210,8 +236,28 @@ impl PtyManager {
             b
         };
         cmd.cwd(&cwd_path);
+        // Strip parent session/package-manager markers that break nested agent CLIs
+        // (matching upstream `src/main/ptyEnv.ts`).
+        for (k, _) in std::env::vars_os() {
+            let ks = k.to_string_lossy();
+            if ks.starts_with("CLAUDE") || ks.starts_with("npm_") {
+                cmd.env_remove(&k);
+            }
+        }
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        cmd.env("FORCE_COLOR", "1");
+        #[cfg(not(windows))]
+        {
+            let lang = std::env::var("LANG").unwrap_or_default();
+            if lang.is_empty() || lang == "C" || lang == "POSIX" {
+                cmd.env("LANG", "en_US.UTF-8");
+            }
+            let lc = std::env::var("LC_CTYPE").unwrap_or_default();
+            if lc.is_empty() || !lc.to_ascii_lowercase().contains("utf") {
+                cmd.env("LC_CTYPE", "en_US.UTF-8");
+            }
+        }
         for (k, v) in &opts.env {
             cmd.env(k, v);
         }
@@ -224,6 +270,9 @@ impl PtyManager {
                     cwd: None,
                     cli_missing: None,
                     error: Some(e.to_string()),
+                    seed_prompt: None,
+                    resumed: None,
+                    resume_not_found: None,
                 };
             }
         };
@@ -239,6 +288,9 @@ impl PtyManager {
                     cwd: None,
                     cli_missing: None,
                     error: Some(e.to_string()),
+                    seed_prompt: None,
+                    resumed: None,
+                    resume_not_found: None,
                 };
             }
         };
@@ -250,6 +302,9 @@ impl PtyManager {
                     cwd: None,
                     cli_missing: None,
                     error: Some(e.to_string()),
+                    seed_prompt: None,
+                    resumed: None,
+                    resume_not_found: None,
                 };
             }
         };
@@ -264,6 +319,9 @@ impl PtyManager {
                     cwd: None,
                     cli_missing: None,
                     error: Some(format!("pty already exists for id {}", opts.id)),
+                    seed_prompt: None,
+                    resumed: None,
+                    resume_not_found: None,
                 };
             }
             guard.next_gen += 1;
@@ -297,11 +355,16 @@ impl PtyManager {
         std::thread::spawn(move || {
             let mut reader = reader;
             let mut buf = [0u8; 4096];
+            let mut pending: Vec<u8> = Vec::new();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) | Err(_) => break,
                     Ok(n) => {
-                        let chunk = String::from_utf8_lossy(&buf[..n]).into_owned();
+                        pending.extend_from_slice(&buf[..n]);
+                        let chunk = drain_valid_utf8(&mut pending);
+                        if chunk.is_empty() {
+                            continue;
+                        }
                         {
                             let mut guard = inner_reader.lock().unwrap();
                             let Some(sess) = guard.sessions.get_mut(&id_reader) else {
@@ -359,6 +422,9 @@ impl PtyManager {
             cwd: Some(cwd_str),
             cli_missing: None,
             error: None,
+            seed_prompt: None,
+            resumed: None,
+            resume_not_found: None,
         }
     }
 
@@ -507,6 +573,105 @@ impl Default for PtyManager {
     }
 }
 
+fn drain_valid_utf8(pending: &mut Vec<u8>) -> String {
+    let mut out = String::new();
+    while !pending.is_empty() {
+        match std::str::from_utf8(pending) {
+            Ok(s) => {
+                out.push_str(s);
+                pending.clear();
+                break;
+            }
+            Err(e) => {
+                let valid = e.valid_up_to();
+                if valid > 0 {
+                    // Safety: `valid_up_to` guarantees valid UTF-8 prefix.
+                    out.push_str(std::str::from_utf8(&pending[..valid]).unwrap());
+                    pending.drain(..valid);
+                }
+                if let Some(err_len) = e.error_len() {
+                    out.push('\u{FFFD}');
+                    pending.drain(..err_len);
+                } else {
+                    // Incomplete trailing UTF-8 byte sequence; wait for next read.
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn find_csi_or_osc_end_spanning(bytes: &[u8], cut: usize) -> Option<usize> {
+    let lookback_start = cut.saturating_sub(256);
+    let mut i = lookback_start;
+    let mut last_esc = None;
+    while i < cut {
+        if bytes[i] == 0x1b {
+            last_esc = Some(i);
+        }
+        i += 1;
+    }
+    let esc = last_esc?;
+    let next = *bytes.get(esc + 1)?;
+    if next == b'[' {
+        // CSI: \x1b[ [params 0x30..=0x3f] [intermediates 0x20..=0x2f] <final 0x40..=0x7e>
+        let mut p = esc + 2;
+        while p < bytes.len() {
+            let b = bytes[p];
+            if (0x40..=0x7e).contains(&b) {
+                if p >= cut {
+                    return Some(p + 1);
+                }
+                return None;
+            }
+            if !((0x20..=0x3f).contains(&b)) {
+                return None;
+            }
+            p += 1;
+        }
+        return Some(bytes.len());
+    }
+    if next == b']' {
+        // OSC: terminated by BEL (\x07) or ST (\x1b\\)
+        let mut p = esc + 2;
+        while p < bytes.len() {
+            if bytes[p] == 0x07 {
+                if p >= cut {
+                    return Some(p + 1);
+                }
+                return None;
+            }
+            if bytes[p] == 0x1b && bytes.get(p + 1) == Some(&b'\\') {
+                if p + 1 >= cut {
+                    return Some(p + 2);
+                }
+                return None;
+            }
+            p += 1;
+        }
+        return Some(bytes.len());
+    }
+    if esc + 1 >= cut {
+        return Some((esc + 2).min(bytes.len()));
+    }
+    None
+}
+
+fn discarded_prefix_left_alt_screen(prefix: &str, kept: &str) -> bool {
+    let last_enter = prefix
+        .rfind("\x1b[?1049h")
+        .or_else(|| prefix.rfind("\x1b[?47h"));
+    let Some(enter_idx) = last_enter else {
+        return false;
+    };
+    let last_exit = prefix
+        .rfind("\x1b[?1049l")
+        .or_else(|| prefix.rfind("\x1b[?47l"));
+    let active_at_cut = last_exit.is_none_or(|ex| enter_idx > ex);
+    active_at_cut && !kept.starts_with("\x1b[?1049h") && !kept.starts_with("\x1b[?47h")
+}
+
 fn append_tail(tail: &mut String, chunk: &str) {
     tail.push_str(chunk);
     if tail.len() > TAIL_MAX {
@@ -514,7 +679,19 @@ fn append_tail(tail: &mut String, chunk: &str) {
         while cut < tail.len() && !tail.is_char_boundary(cut) {
             cut += 1;
         }
+        // Advance past any CSI / OSC / two-byte escape sequence spanning `cut`
+        // so partial SGR fragments like `0;10;10m` never leak on reconnect.
+        if let Some(after_seq) = find_csi_or_osc_end_spanning(tail.as_bytes(), cut) {
+            cut = after_seq;
+        }
+        while cut < tail.len() && !tail.is_char_boundary(cut) {
+            cut += 1;
+        }
+        let restore_alt = discarded_prefix_left_alt_screen(&tail[..cut], &tail[cut..]);
         tail.drain(..cut);
+        if restore_alt {
+            tail.insert_str(0, "\x1b[?1049h");
+        }
     }
 }
 
@@ -549,6 +726,7 @@ pub fn resolve_command(command: &str) -> Option<PathBuf> {
     }
     let mut extra = vec![
         PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/home/linuxbrew/.linuxbrew/bin"),
         PathBuf::from("/usr/local/bin"),
         PathBuf::from("/usr/bin"),
         PathBuf::from("/bin"),
@@ -556,6 +734,9 @@ pub fn resolve_command(command: &str) -> Option<PathBuf> {
     if let Some(home) = dirs::home_dir() {
         extra.push(home.join(".local/bin"));
         extra.push(home.join(".cargo/bin"));
+        extra.push(home.join(".bun/bin"));
+        extra.push(home.join(".npm-global/bin"));
+        extra.push(home.join(".grok/bin"));
     }
     for dir in extra {
         let candidate = dir.join(command);
@@ -570,6 +751,27 @@ pub fn resolve_command(command: &str) -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn append_tail_never_leaks_partial_sgr_or_loses_alt_screen() {
+        let mut tail = String::new();
+        let pad = "a".repeat(TAIL_MAX - 5);
+        tail.push_str("\x1b[?1049h\x1b[2J");
+        tail.push_str(&pad);
+        // Push an RGB background escape that straddles TAIL_MAX boundary.
+        append_tail(&mut tail, "\x1b[48;2;0;10;10mHello TUI");
+        assert!(
+            !tail.starts_with("0;10;10m") && !tail.contains(";10;10mHello") || tail.contains("\x1b[48;2;0;10;10m"),
+            "partial SGR leaked into tail prefix: {:?}",
+            &tail[..tail.len().min(64)]
+        );
+        assert!(
+            tail.starts_with("\x1b[?1049h"),
+            "alt-screen header was not preserved across trim: {:?}",
+            &tail[..tail.len().min(64)]
+        );
+        assert!(tail.ends_with("Hello TUI"));
+    }
+
     #[tokio::test]
     async fn spawn_write_resize_and_exit_work() {
         let mgr = PtyManager::new();
@@ -583,6 +785,9 @@ mod tests {
             rows: Some(24),
             env: HashMap::new(),
             shell_script: None,
+            provider: None,
+            resume: None,
+            hive: None,
         });
         assert!(res.ok, "spawn failed: {:?}", res.error);
 

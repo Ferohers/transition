@@ -54,7 +54,7 @@ Hive root (`$HIVE_ROOT`): `{root_str}`.
 
 Host environment: `{platform}` (`{arch}`).
 Hive root (`$HIVE_ROOT`): `{root_str}`.
-Every agent runs with environment variables: `AGENT_ID`, `AGENT_NAME`, `AGENT_DIR`, `HIVE_ROOT`, `MEMPALACE_PALACE_PATH`, `MD_SERVER_URL`, `MD_HOOK_URL`, `MD_HOOK_TOKEN`.
+Every agent runs with environment variables: `AGENT_ID`, `AGENT_NAME`, `AGENT_DIR`, `HIVE_ROOT`, `MEMPALACE_PALACE_PATH`, `MD_SERVER_URL`, `MD_HOOK_URL`, `MD_HOOK_TOKEN`, `MD_BROKER_URL`, `MD_BROKER_TOKEN` (and user-defined custom secret env vars, plus `$AGENT_DIR/.broker`).
 
 ## 1. Receiving & Sending Mail (`inbox/` & `outbox/`)
 - **Read mail**: `$HIVE_ROOT/agents/$AGENT_ID/inbox/*.json` -> move processed files into `inbox/.done/`.
@@ -86,6 +86,7 @@ Every agent runs with environment variables: `AGENT_ID`, `AGENT_NAME`, `AGENT_DI
 - Omit `"model"` (or leave empty) to use the default configured model. Omit `"provider"` to use the floor default.
 - If a project folder does not exist yet, create one under `{projects_hint}/<short-name>` (`mkdir -p`) and pass that path in `"cwd"`.
 - The harness spawns `worker-<id>`, briefs it with the objective, moves accepted requests to `.done/` and rejected ones to `.failed/` with `{{"error": "..."}}`.
+- NEVER use CLI-internal subagent tools (`Task`, `Agent`, `General Task`) for delegated floor work — internal subagents are invisible on the office floor and bypass token caps, circuit breakers, and worker history. Always start managed temps via `spawn-requests/<id>.json`.
 - Note: Respects Settings -> Autonomy & Budgets (`orchestratorMaySpawn` & `maxConcurrentWorkers`).
 
 ## 3. Fleet Status, Board, Tasks & Memory
@@ -93,6 +94,10 @@ Every agent runs with environment variables: `AGENT_ID`, `AGENT_NAME`, `AGENT_DI
 - **Shared board**: `$HIVE_ROOT/board.md` (`god` acts as scribe).
 - **Kanban tasks**: `$HIVE_ROOT/tasks.json` (`{{"tasks":[{{"id":"...","title":"...","status":"todo|doing|done|blocked","assignee":"...","humanQA":[]}}]}}`).
 - **Memory & Index**: `$HIVE_ROOT/agents/$AGENT_ID/memory.md` and `$HIVE_ROOT/memory-index.md`.
+- **Integration Broker & Secrets**: use `$MD_BROKER_URL` with `Authorization: Bearer $MD_BROKER_TOKEN` (or read `$AGENT_DIR/.broker`):
+  - `GET $MD_BROKER_URL/integrations` or `GET $MD_BROKER_URL/i` — list enabled integrations your token can reach.
+  - `<METHOD> $MD_BROKER_URL/i/<id>/<path>` — call a configured REST API integration; the broker injects credentials upstream without revealing secrets.
+  - `GET $MD_BROKER_URL/secrets` and `POST $MD_BROKER_URL/secrets/read` (`{{"name":"..."}}`) — list/read secrets if permitted; custom user secrets are also injected directly into your environment.
 - Full protocol rules: `$HIVE_ROOT/PROTOCOL.md`.
 "#,
     );
@@ -142,6 +147,14 @@ pub fn sync_fleet_json(state: &AppState) {
     let models = state.hooks.model_by_id.lock().unwrap().clone();
     let breakers = state.breaker.lock().unwrap();
     let ptys = state.pty.list();
+    let usage_by_id: std::collections::HashMap<String, md_hive::usage::AgentUsage> =
+        crate::routes_usage_memory_kg::collect_agent_usage_rows(state)
+            .into_iter()
+            .collect();
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
 
     let mut god_id: Option<String> = None;
     let mut rows = Vec::new();
@@ -157,39 +170,92 @@ pub fn sync_fleet_json(state: &AppState) {
             let is_temp = info.get("isTemp").and_then(|v| v.as_bool()).unwrap_or(false)
                 || id.starts_with("worker-");
             let archived = info.get("archived").and_then(|v| v.as_bool()).unwrap_or(false);
+            let sleeping = info.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false);
             let name = info.get("name").and_then(|v| v.as_str()).unwrap_or(id);
             if !archived {
                 ensure_agent_hive_dirs(&hive_root, id, name);
             }
             let pty_running = ptys.iter().any(|p| p.id == format!("pty-{id}"));
-            let stopped = info
-                .get("stopped")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(!pty_running);
-            let ctx = contexts.get(id);
+            let stopped = !pty_running && !sleeping;
+            if archived || stopped {
+                continue;
+            }
+            let provider = info.get("provider").and_then(|v| v.as_str()).unwrap_or("claude");
+            let cwd_str = info.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+            let oc_usage = if provider == "opencode" && !cwd_str.is_empty() {
+                crate::routes_usage_memory_kg::read_opencode_usage(
+                    &expand_tilde(cwd_str).to_string_lossy(),
+                )
+            } else {
+                None
+            };
+            let u = usage_by_id
+                .get(id)
+                .cloned()
+                .or_else(|| oc_usage.as_ref().map(|(x, _)| x.clone()));
+            let tokens = u
+                .as_ref()
+                .map(|x| x.input_tokens + x.output_tokens + x.cache_read_tokens + x.cache_write_tokens)
+                .unwrap_or(0);
+            let usd = u
+                .as_ref()
+                .map(|x| (x.estimated_cost_usd * 10_000.0).round() / 10_000.0)
+                .unwrap_or(0.0);
+            let ctx = contexts.get(id).cloned().or_else(|| {
+                oc_usage.as_ref().and_then(|(_, latest)| {
+                    latest.map(|tok| md_hive::hooks::ContextSnapshot {
+                        agent_id: id.clone(),
+                        tokens: tok,
+                        limit: 200_000,
+                        ts: now_ms,
+                    })
+                })
+            });
+            let ctx_pct = ctx.as_ref().and_then(|c| {
+                if c.limit > 0 {
+                    Some(((c.tokens as f64 / c.limit as f64) * 100.0).round() as u64)
+                } else {
+                    None
+                }
+            });
             let inbox_backlog = state.hive.lock().unwrap().inbox(id).len();
+            let status = if sleeping {
+                "sleeping"
+            } else {
+                info.get("status").and_then(|v| v.as_str()).unwrap_or("idle")
+            };
             rows.push(json!({
                 "id": id,
                 "name": name,
                 "role": info.get("role").and_then(|v| v.as_str()).unwrap_or(""),
-                "provider": info.get("provider").and_then(|v| v.as_str()).unwrap_or("claude"),
-                "model": models.get(id).cloned().or_else(|| info.get("model").and_then(|v| v.as_str()).map(ToString::to_string)),
-                "status": info.get("status").and_then(|v| v.as_str()).unwrap_or("idle"),
-                "sleeping": info.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false),
+                "provider": provider,
+                "model": models
+                    .get(id)
+                    .cloned()
+                    .or_else(|| u.as_ref().and_then(|x| x.model.clone()))
+                    .or_else(|| info.get("model").and_then(|v| v.as_str()).map(ToString::to_string)),
+                "status": status,
+                "sleeping": sleeping,
                 "stopped": stopped,
                 "archived": archived,
+                "onHold": info.get("onHold").and_then(|v| v.as_bool()).unwrap_or(false),
                 "isGod": is_god,
                 "isTemp": is_temp,
                 "cwd": info.get("cwd").cloned().unwrap_or(Value::Null),
                 "breaker": breakers.state_for(id).level,
-                "contextTokens": ctx.map(|c| c.tokens),
-                "contextLimit": ctx.map(|c| c.limit),
+                "tokens": tokens,
+                "usd": usd,
+                "sessionUsd": usd,
+                "contextTokens": ctx.as_ref().map(|c| c.tokens),
+                "contextLimit": ctx.as_ref().map(|c| c.limit),
+                "contextPct": ctx_pct,
                 "inboxBacklog": inbox_backlog,
             }));
         }
     }
 
     let doc = json!({
+        "ts": now_ms,
         "godId": god_id,
         "hiveRoot": hive_root.to_string_lossy().into_owned(),
         "agents": rows,
@@ -259,11 +325,27 @@ fn install_opencode_config_content(
   } catch {}
 }
 
-export const HiveBridge = async () => ({
+export const HiveBridge = async () => {
+  void postHook({ hook_event_name: "SessionStart" });
+  return {
   event: async (input) => {
     try {
       if (input?.event?.type === "session.idle") {
         await postHook({ hook_event_name: "Stop" });
+      } else if (input?.event?.type === "message.updated") {
+        const info = input?.event?.properties?.info;
+        if (info?.role === "assistant" && info?.tokens) {
+          const t = info.tokens;
+          const total = typeof t.total === "number" ? t.total : (t.input || 0) + (t.output || 0) + (t.cache?.read || 0);
+          await postHook({
+            hook_event_name: "Status",
+            model: info.modelID || undefined,
+            context_window: {
+              total_input_tokens: total,
+              context_window_size: 200000,
+            },
+          });
+        }
       }
     } catch {}
   },
@@ -297,7 +379,7 @@ export const HiveBridge = async () => ({
       }
     } catch {}
   },
-});
+}; };
 export default HiveBridge;
 "#;
     let _ = atomic_write_string(&plugin_path, plugin_src);
@@ -494,6 +576,40 @@ pub fn prepare_agent_spawn(
     opts.env
         .entry("MD_HOOK_TOKEN".to_string())
         .or_insert_with(|| state.hooks.http_token.clone());
+
+    let broker_url = format!("http://127.0.0.1:{port}/broker");
+    let broker_tok = {
+        let mut broker = state.broker.lock().unwrap();
+        let allowed_ids: Vec<String> = broker
+            .list_records()
+            .into_iter()
+            .filter(|r| r.enabled)
+            .map(|r| r.id.clone())
+            .collect();
+        broker.grant_capability(agent_id, allowed_ids, true)
+    };
+    opts.env
+        .entry("MD_BROKER_URL".to_string())
+        .or_insert_with(|| broker_url.clone());
+    opts.env
+        .entry("MD_BROKER_TOKEN".to_string())
+        .or_insert_with(|| broker_tok.clone());
+    let broker_file = agent_dir_path.join(".broker");
+    if let Ok(payload) = serde_json::to_string(&serde_json::json!({
+        "url": broker_url,
+        "token": broker_tok,
+    })) && atomic_write_string(&broker_file, &payload).is_ok()
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&broker_file, fs::Permissions::from_mode(0o600));
+        }
+    }
+    let custom_env = state.secrets.lock().unwrap().custom_secret_env(&opts.env);
+    for (k, v) in custom_env {
+        opts.env.entry(k).or_insert(v);
+    }
     if !opts.env.contains_key("PATH") {
         opts.env.insert(
             "PATH".to_string(),
@@ -603,24 +719,56 @@ pub fn build_hook_context_for_agent(
             "AGENT_ID={agent_id}, AGENT_NAME={name}, HIVE_ROOT={hive_root}"
         ))
     };
-    let peers: Vec<String> = agents
-        .map(|m| {
-            m.iter()
-                .filter(|(id, v)| {
-                    *id != agent_id
-                        && !v.get("archived").and_then(|x| x.as_bool()).unwrap_or(false)
-                })
-                .map(|(id, v)| {
-                    let pname = v.get("name").and_then(|x| x.as_str()).unwrap_or(id);
-                    format!("{id} ({pname})")
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let roster_ctx = if peers.is_empty() {
+    let ptys = state.pty.list();
+    let contexts = state.hooks.context_by_id.lock().unwrap().clone();
+    let fleet_path = if hive_root.is_empty() {
+        "fleet.json".to_string()
+    } else {
+        format!("{hive_root}/fleet.json")
+    };
+    let mut rows: Vec<String> = Vec::new();
+    if let Some(m) = agents {
+        let mut keys: Vec<&String> = m.keys().collect();
+        keys.sort();
+        for id in keys {
+            let v = &m[id];
+            if v.get("archived").and_then(|x| x.as_bool()).unwrap_or(false) {
+                continue;
+            }
+            let sleeping = v.get("sleeping").and_then(|x| x.as_bool()).unwrap_or(false);
+            let pty_live = ptys.iter().any(|p| p.id == format!("pty-{id}"));
+            if !pty_live && !sleeping {
+                continue;
+            }
+            let pname = v.get("name").and_then(|x| x.as_str()).unwrap_or(id);
+            let role = v.get("role").and_then(|x| x.as_str()).unwrap_or("agent");
+            let mut bits = vec![role.to_string()];
+            if sleeping {
+                bits.push("Sleeping".to_string());
+            }
+            if v.get("onHold").and_then(|x| x.as_bool()).unwrap_or(false) {
+                bits.push("ON HOLD — 1:1 with the human".to_string());
+            }
+            if id == agent_id {
+                bits.push("you".to_string());
+            }
+            if let Some(cw) = contexts.get(id)
+                && cw.limit > 0
+            {
+                let pct = ((cw.tokens as f64 / cw.limit as f64) * 100.0).round() as u64;
+                bits.push(format!("ctx {}%", pct.min(100)));
+            }
+            rows.push(format!("{id} \"{pname}\" ({})", bits.join(", ")));
+        }
+    }
+    let roster_ctx = if rows.is_empty() {
         None
     } else {
-        Some(format!("Active teammates: {}", peers.join(", ")))
+        Some(format!(
+            "[LIVE ROSTER — auto-injected from {fleet_path}] {} ACTIVE agent(s): {}. This is the CURRENT floor and it SUPERSEDES any roster earlier in this conversation — agents you remember that are absent here have been archived or stopped, so do not message them. Route work to someone on this list before spawning anyone new; when hiring temps for parallel/unmatched work, write $HIVE_ROOT/spawn-requests/<id>.json (never use CLI-internal Task/Agent subagent tools).",
+            rows.len(),
+            rows.join("; ")
+        ))
     };
     (standing_goal, response_style, identity, roster_ctx)
 }

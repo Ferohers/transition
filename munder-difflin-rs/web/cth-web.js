@@ -967,6 +967,7 @@
     capabilitiesCatalogLook: () => req('/api/v1/catalog/capabilities').then((r) => r || { version: 1, entries: [], purposes: [] }),
     capabilitiesInstalled: (body) => req('/api/v1/catalog/capabilities/installed', { method: 'POST', body: JSON.stringify(body || {}) }).then((r) => r || { plugins: [], servers: [], tools: [] }),
     capabilitiesInstall: (entryId, _officeId) => req('/api/v1/capabilities/install', { method: 'POST', body: JSON.stringify({ entryId }) }).then((r) => r || { ok: false, lines: [] }),
+    onCapabilitiesInstallLine: (fn) => addListener('capabilities:installLine', fn),
     capabilitiesUnavailable: () => Promise.resolve([]),
     setAgentMcp: (agentId, serverId, value) => req('/api/v1/agents/settings', { method: 'POST', body: JSON.stringify({ agentId, kind: 'mcp', key: serverId, value }) }),
     setAgentSkillOff: (agentId, folder, off) => req('/api/v1/agents/settings', { method: 'POST', body: JSON.stringify({ agentId, kind: 'skillOff', key: folder, value: !!off }) }),
@@ -1003,8 +1004,8 @@
     hiveWakeRetry: (agentId) => req('/api/v1/hive/wake-retry', { method: 'POST', body: JSON.stringify({ agentId }) }).then((r) => r || { ok: false }),
     hiveWakeText: (agentId) => req(`/api/v1/hive/wake-text/${encodeURIComponent(agentId)}`),
     hiveWakeUnconfirmed: (agentId) => req(`/api/v1/hive/wake-unconfirmed/${encodeURIComponent(agentId)}`).then((r) => (Array.isArray(r) ? r : [])),
-    hiveSwitchClearGate: () => Promise.resolve('go'),
-    hiveCodexSizeClearText: () => Promise.resolve(null),
+    hiveSwitchClearGate: (id) => req(`/api/v1/hive/switch-clear-gate/${encodeURIComponent(id)}`).catch(() => 'drop'),
+    hiveCodexSizeClearText: (id) => req(`/api/v1/hive/codex-size-clear-text/${encodeURIComponent(id)}`).catch(() => null),
     hiveEndedAgents: () => req('/api/v1/hive/ended-agents').then((r) => (Array.isArray(r) ? r : [])).catch(() => []),
     voiceTerminal: (ptyId, _rows, lines = 40) => req('/api/v1/pty/screen-lines', { method: 'POST', body: JSON.stringify({ ptyId, lines }) }).then((r) => r || { ok: false, lines: [] }),
     ideAttach: (handoff) => {

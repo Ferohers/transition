@@ -6,7 +6,14 @@ use axum::{
     routing::{get, patch, post},
 };
 use md_core::config::expand_tilde;
-use md_hive::breaker::BreakerState;
+use md_hive::{
+    breaker::BreakerState,
+    switch_clear::{
+        ClearGate, HookFacts, SwitchClearRule, WakeFacts, WakeStep, handoff_request_text,
+        oldest_waking_work, size_handoff_request_text, switch_clear_command, typed_kind,
+        with_cleared_lead,
+    },
+};
 use md_pty::manager::SpawnOptions;
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -109,6 +116,30 @@ async fn handle_hook(
         roster_ctx.as_deref(),
     );
 
+    let now = now_ms();
+    state.switch_clear.lock().unwrap().note_hook(&HookFacts {
+        agent_id: eff_agent_id.clone(),
+        event: event_name.to_string(),
+        session_id: payload
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        tool: payload
+            .get("tool_name")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        tool_use_id: payload
+            .get("tool_use_id")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        subagent_id: payload
+            .get("subagent_id")
+            .or_else(|| payload.get("agent_id"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        at_ms: now,
+    });
+
     let source = payload.get("source").and_then(|v| v.as_str());
     let seen_prompts = state
         .hooks
@@ -121,7 +152,7 @@ async fn handle_hook(
         event_name,
         source,
         &seen_prompts,
-        now_ms(),
+        now,
     );
     if !to_file.is_empty() {
         state.sync_hive_home();
@@ -439,9 +470,13 @@ fn deliver_or_enqueue_inner(
             let tid_done = target_id.to_string();
             let text_done = text.clone();
             let prov = provider_hint.unwrap_or("opencode").to_string();
+            let st_hooks = st_done.clone();
+            let st_probe = st_done.clone();
             tokio::spawn(async move {
+                let probe = AppScreenProbe::new(&st_probe);
+                let hooks = AppSubmitHooks(&st_hooks);
                 if let Ok(res) = sub
-                    .submit(
+                    .submit_with_context(
                         md_pty::submitter::PtySubmitRequest {
                             pty_id,
                             agent_id: Some(tid),
@@ -450,8 +485,11 @@ fn deliver_or_enqueue_inner(
                             source: "server-enqueue".to_string(),
                             settle_ms: Some(250),
                             press_only: false,
+                            idle: Some(true),
                             ref_id: None,
                         },
+                        Some(&probe),
+                        &hooks,
                         move |r| {
                             st_clone.emit("pty:began", serde_json::json!(r.pty_id));
                         },
@@ -571,11 +609,9 @@ async fn hive_directory(State(state): State<AppState>) -> Json<Value> {
                     None
                 }
             });
+            let sleeping = info.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false);
             let pty_running = ptys.iter().any(|p| p.id == format!("pty-{id}"));
-            let stopped = info
-                .get("stopped")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(!pty_running);
+            let stopped = !pty_running && !sleeping;
             let inbox_backlog = state.hive.lock().unwrap().inbox(id).len();
             rows.push(serde_json::json!({
                 "id": id,
@@ -744,41 +780,65 @@ fn worker_history_row(
     })
 }
 
-pub(crate) fn prune_exited_workers(state: &AppState) {
-    let ptys = state.pty.list();
-    let mut workers = state.workers.lock().unwrap();
-    let mut history = state.workers_history.lock().unwrap();
+fn finish_worker_record(state: &AppState, w: WorkerRecord, result: &str, kill_pty: bool) {
+    let tokens = worker_tokens_used(state, &w.worker_id, &w.cwd);
+    let final_resp = extract_final_response(state, &w.pty_id);
+    if kill_pty {
+        let _ = state.pty.kill(&w.pty_id);
+    }
     let now = now_ms();
-    let mut exited_ids = Vec::new();
-    workers.retain(|w| {
-        if ptys.iter().any(|p| p.id == w.pty_id) {
-            true
-        } else {
-            let tokens = worker_tokens_used(state, &w.worker_id, &w.cwd);
-            let final_resp = extract_final_response(state, &w.pty_id);
-            history.push(worker_history_row(w, "exited", now, tokens, final_resp));
-            exited_ids.push(w.worker_id.clone());
-            false
-        }
-    });
-    if !exited_ids.is_empty() {
+    {
+        let mut history = state.workers_history.lock().unwrap();
+        history.push(worker_history_row(&w, result, now, tokens, final_resp));
         if history.len() > 200 {
             let drain_n = history.len() - 200;
             history.drain(..drain_n);
         }
         persist_workers_history(state, &history);
-        state.sync_hive_home();
-        {
-            let mut hive = state.hive.lock().unwrap();
-            for aid in &exited_ids {
-                let _ = hive.patch_agent_field(aid, "sleeping", Some(Value::Bool(false)));
-                let _ = hive.patch_agent_field(aid, "stopped", Some(Value::Bool(true)));
-                let _ = hive.patch_agent_field(
-                    aid,
-                    "status",
-                    Some(Value::String("exited".to_string())),
-                );
+    }
+    state.sync_hive_home();
+    {
+        let mut hive = state.hive.lock().unwrap();
+        if result == "done" {
+            let ids: Vec<String> = hive
+                .inbox(&w.worker_id)
+                .iter()
+                .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(ToString::to_string))
+                .collect();
+            if !ids.is_empty() {
+                let _ = hive.file_inbox_messages(&w.worker_id, &ids);
             }
+        }
+        let _ = hive.patch_agent_field(&w.worker_id, "sleeping", Some(Value::Bool(false)));
+        let _ = hive.patch_agent_field(&w.worker_id, "stopped", Some(Value::Bool(true)));
+        let _ = hive.patch_agent_field(&w.worker_id, "archived", Some(Value::Bool(true)));
+        let _ = hive.patch_agent_field(
+            &w.worker_id,
+            "status",
+            Some(Value::String(result.to_string())),
+        );
+    }
+    state.emit("hive:agentArchived", serde_json::json!({ "id": w.worker_id }));
+}
+
+pub(crate) fn prune_exited_workers(state: &AppState) {
+    let ptys = state.pty.list();
+    let exited_records = {
+        let mut workers = state.workers.lock().unwrap();
+        let mut exited = Vec::new();
+        let mut i = 0;
+        while i < workers.len() {
+            if ptys.iter().any(|p| p.id == workers[i].pty_id) {
+                i += 1;
+            } else {
+                exited.push(workers.remove(i));
+            }
+        }
+        exited
+    };
+    if !exited_records.is_empty() {
+        for w in exited_records {
+            finish_worker_record(state, w, "exited", false);
         }
         crate::hive_bootstrap::sync_fleet_json(state);
     }
@@ -871,27 +931,8 @@ async fn worker_stop(
     let Some(w) = worker else {
         return Json(serde_json::json!({ "ok": false, "error": "not found" }));
     };
-    let tokens = worker_tokens_used(&state, &w.worker_id, &w.cwd);
-    let final_resp = extract_final_response(&state, &w.pty_id);
-    let _ = state.pty.kill(&w.pty_id);
-    {
-        state.sync_hive_home();
-        let _ = state.hive.lock().unwrap().patch_agent_field(
-            &w.worker_id,
-            "archived",
-            Some(Value::Bool(true)),
-        );
-    }
-    {
-        let mut history = state.workers_history.lock().unwrap();
-        history.push(worker_history_row(&w, "stopped", now_ms(), tokens, final_resp));
-        if history.len() > 200 {
-            let drain_n = history.len() - 200;
-            history.drain(..drain_n);
-        }
-        persist_workers_history(&state, &history);
-    }
-    state.emit("hive:agentArchived", serde_json::json!({ "id": w.worker_id }));
+    finish_worker_record(&state, w, "stopped", true);
+    crate::hive_bootstrap::sync_fleet_json(&state);
     Json(serde_json::json!({ "ok": true }))
 }
 
@@ -1561,6 +1602,99 @@ fn run_context_trigger_tick(
     }
 }
 
+pub(crate) struct AppSubmitHooks<'a>(pub &'a AppState);
+
+impl md_pty::submitter::SubmitHooks for AppSubmitHooks<'_> {
+    fn prompt_seen(&self, agent_id: &str, since_ms: u64, tail: &str) -> bool {
+        self.0
+            .hooks
+            .proof
+            .lock()
+            .unwrap()
+            .prompt_seen(agent_id, since_ms, tail)
+    }
+
+    fn activity_seen(&self, agent_id: &str, since_ms: u64) -> bool {
+        self.0
+            .hooks
+            .proof
+            .lock()
+            .unwrap()
+            .activity_seen(agent_id, since_ms)
+    }
+
+    fn event_seen(&self, agent_id: &str, since_ms: u64, events: &[&str]) -> bool {
+        self.0
+            .hooks
+            .proof
+            .lock()
+            .unwrap()
+            .event_seen(agent_id, since_ms, events)
+    }
+
+    fn ask_open(&self, agent_id: &str) -> bool {
+        self.0.hooks.proof.lock().unwrap().ask_open(agent_id)
+    }
+
+    fn compact_running_since(
+        &self,
+        agent_id: &str,
+        since_ms: u64,
+        max_ms: u64,
+        now_ms: u64,
+    ) -> u64 {
+        self.0
+            .hooks
+            .proof
+            .lock()
+            .unwrap()
+            .compact_running_since(agent_id, since_ms, max_ms, now_ms)
+    }
+}
+
+pub(crate) struct AppScreenProbe<'a> {
+    state: &'a AppState,
+    timed_out: std::sync::atomic::AtomicBool,
+}
+
+impl<'a> AppScreenProbe<'a> {
+    pub(crate) fn new(state: &'a AppState) -> Self {
+        Self {
+            state,
+            timed_out: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+}
+
+impl md_pty::submitter::ScreenProbe for AppScreenProbe<'_> {
+    fn probe<'a>(
+        &'a self,
+        pty_id: &'a str,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Option<md_pty::submitter::TerminalProbeReply>> + Send + 'a>,
+    > {
+        Box::pin(async move {
+            if self.state.events_tx.receiver_count() == 0
+                || self.timed_out.load(std::sync::atomic::Ordering::Relaxed)
+            {
+                return None;
+            }
+            let info = self.state.pty.info(pty_id)?;
+            let (probe_req, rx) = self.state.probes.register(pty_id, info.cols, info.rows);
+            let probe_id = probe_req.id.clone();
+            if let Ok(val) = serde_json::to_value(&probe_req) {
+                self.state.emit("terminal:probe", val);
+            }
+            let reply = self.state.probes.wait_with_timeout(&probe_id, rx).await;
+            if reply.is_none() {
+                self.timed_out
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            reply
+        })
+    }
+}
+
 pub(crate) async fn probe_terminal_safe(state: &AppState, pty_id: &str) -> bool {
     if state.events_tx.receiver_count() == 0 {
         return true;
@@ -1609,6 +1743,134 @@ fn run_wake_filing_quiet_tick(state: &AppState) {
         let hive = state.hive.lock().unwrap();
         for (agent_id, ids) in to_file {
             let _ = hive.file_inbox_messages(&agent_id, &ids);
+        }
+    }
+}
+
+const WORKER_WAKE_STALL_MS: u64 = 180_000;
+
+fn handoff_path_for(state: &AppState, agent_id: &str) -> String {
+    state
+        .harness_home()
+        .map(|h| {
+            h.join("hive")
+                .join("agents")
+                .join(agent_id)
+                .join("handoff.md")
+                .to_string_lossy()
+                .into_owned()
+        })
+        .unwrap_or_else(|| format!("hive/agents/{agent_id}/handoff.md"))
+}
+
+fn last_session_kept(state: &AppState, agent_id: &str) -> bool {
+    state.harness_home().is_some_and(|h| {
+        h.join("hive")
+            .join("agents")
+            .join(agent_id)
+            .join("last-session.md")
+            .is_file()
+    })
+}
+
+fn switch_facts_for(state: &AppState, provider: &str, mail: &[Value]) -> WakeFacts {
+    let ct = {
+        let cfg = state.config.lock().unwrap().read();
+        crate::routes_catalog::merged_context_trigger(cfg.extra.get("contextTrigger"))
+    };
+    WakeFacts {
+        rule: SwitchClearRule::from_json(ct.get("switchClear")),
+        wake_work: oldest_waking_work(mail),
+        can_clear: switch_clear_command(provider).is_some(),
+    }
+}
+
+fn inbox_wake_for(
+    state: &AppState,
+    agent_id: &str,
+    provider: &str,
+    inbox: &[Value],
+) -> Option<String> {
+    let pending = state.wake_filing.lock().unwrap().pending(agent_id, inbox);
+    if pending.is_empty() {
+        return None;
+    }
+    let inbox_path = state.harness_home().map(|h| {
+        h.join("hive")
+            .join("agents")
+            .join(agent_id)
+            .join("inbox")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let (one_line, self_file) = md_hive::wake_filing::wake_options_for_provider(provider);
+    let (wake_text, _) = md_hive::wake_filing::build_inbox_wake(
+        &pending,
+        inbox_path.as_deref(),
+        one_line,
+        self_file,
+    );
+    let handoff_path = handoff_path_for(state, agent_id);
+    let facts = switch_facts_for(state, provider, &pending);
+    let step = state
+        .switch_clear
+        .lock()
+        .unwrap()
+        .wake_step(agent_id, &facts, now_ms());
+    match step {
+        WakeStep::Handoff { work } => Some(handoff_request_text(work.as_deref(), &handoff_path)),
+        WakeStep::Send { cleared: true } => Some(with_cleared_lead(
+            &wake_text,
+            &handoff_path,
+            one_line,
+            last_session_kept(state, agent_id),
+        )),
+        WakeStep::Send { cleared: false } => Some(wake_text),
+    }
+}
+
+fn run_codex_size_beat(state: &AppState) {
+    if state.harness_home().is_none() {
+        return;
+    }
+    state.sync_hive_home();
+    let reg = state.hive.lock().unwrap().registry();
+    let agents_map = reg.get("agents").and_then(|v| v.as_object());
+    let ptys = state.pty.list();
+    let now = now_ms();
+    for pty in ptys {
+        if !pty.id.starts_with("pty-") {
+            continue;
+        }
+        let agent_id = pty.id.strip_prefix("pty-").unwrap_or(&pty.id);
+        let provider = agents_map
+            .and_then(|m| m.get(agent_id))
+            .and_then(|a| a.get("provider"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let is_codex = provider == "codex" || pty.command.to_lowercase().contains("codex");
+        if !is_codex {
+            continue;
+        }
+        let tp = state
+            .hooks
+            .transcript_paths
+            .lock()
+            .unwrap()
+            .get(agent_id)
+            .cloned();
+        let due = state.codex_size.lock().unwrap().check(
+            agent_id,
+            tp.as_deref(),
+            true,
+            |path| std::fs::metadata(path).ok().map(|m| m.len()),
+            now,
+        );
+        if due {
+            state.emit(
+                "hive:codexSizeClear",
+                serde_json::json!({ "agentId": agent_id }),
+            );
         }
     }
 }
@@ -1678,33 +1940,45 @@ fn run_worker_wake_tick(state: &AppState, last_wake_by_agent: &mut HashMap<Strin
             .and_then(|v| v.as_str())
             .unwrap_or("claude")
             .to_string();
-        let inbox_path = state.harness_home().map(|h| {
-            h.join("hive")
-                .join("agents")
-                .join(agent_id)
-                .join("inbox")
-                .to_string_lossy()
-                .into_owned()
-        });
-        let (one_line, self_file) = md_hive::wake_filing::wake_options_for_provider(&provider);
-        let (wake_text, _) = md_hive::wake_filing::build_inbox_wake(
-            &pending,
-            inbox_path.as_deref(),
-            one_line,
-            self_file,
-        );
+        let facts = switch_facts_for(state, &provider, &pending);
+        let oldest_ms = pending
+            .iter()
+            .filter_map(|m| {
+                m.get("created_at")
+                    .and_then(|v| v.as_str())
+                    .and_then(md_hive::switch_clear::parse_iso_ms)
+            })
+            .min()
+            .unwrap_or(0);
+        if state.switch_clear.lock().unwrap().left_to_window(
+            agent_id,
+            &facts,
+            oldest_ms,
+            WORKER_WAKE_STALL_MS,
+            now,
+        ) {
+            continue;
+        }
+        let Some(wake_text) = inbox_wake_for(state, agent_id, &provider, &inbox) else {
+            continue;
+        };
 
         last_wake_by_agent.insert(agent_id.clone(), now);
         let st_clone = state.clone();
         let aid = agent_id.clone();
+        let clear_cmd = switch_clear_command(&provider);
+        let wake_work = oldest_waking_work(&pending);
         tokio::spawn(async move {
             if !probe_terminal_safe(&st_clone, &pty_id).await {
+                st_clone.switch_clear.lock().unwrap().abandon(&aid);
                 return;
             }
             let st_began = st_clone.clone();
+            let probe = AppScreenProbe::new(&st_clone);
+            let hooks = AppSubmitHooks(&st_clone);
             if let Ok(res) = st_clone
                 .submitter
-                .submit(
+                .submit_with_context(
                     md_pty::submitter::PtySubmitRequest {
                         pty_id,
                         agent_id: Some(aid.clone()),
@@ -1713,21 +1987,25 @@ fn run_worker_wake_tick(state: &AppState, last_wake_by_agent: &mut HashMap<Strin
                         source: "nudge".to_string(),
                         settle_ms: Some(250),
                         press_only: false,
+                        idle: Some(true),
                         ref_id: None,
                     },
+                    Some(&probe),
+                    &hooks,
                     move |r| {
                         st_began.emit("pty:began", serde_json::json!(r.pty_id));
                     },
                 )
                 .await
             {
+                let done_at = now_ms();
                 let to_file = st_clone.wake_filing.lock().unwrap().note_typed(
                     &aid,
                     &wake_text,
                     &res.outcome,
                     res.ms,
                     false,
-                    now_ms(),
+                    done_at,
                 );
                 if !to_file.is_empty() {
                     st_clone.sync_hive_home();
@@ -1737,6 +2015,15 @@ fn run_worker_wake_tick(state: &AppState, last_wake_by_agent: &mut HashMap<Strin
                         .unwrap()
                         .file_inbox_messages(&aid, &to_file);
                 }
+                let kind = typed_kind(&wake_text, clear_cmd);
+                st_clone.switch_clear.lock().unwrap().note_typed(
+                    Some(&aid),
+                    kind,
+                    &res.outcome,
+                    false,
+                    wake_work,
+                    done_at,
+                );
             }
         });
     }
@@ -1770,6 +2057,19 @@ pub fn spawn_hive_poller(state: AppState) {
                         }
                     }
                 }
+                if from.starts_with("worker-") && act == "done" {
+                    let done_worker = {
+                        let mut workers = state.workers.lock().unwrap();
+                        workers
+                            .iter()
+                            .position(|w| w.worker_id == from)
+                            .map(|idx| workers.remove(idx))
+                    };
+                    if let Some(w) = done_worker {
+                        finish_worker_record(&state, w, "done", true);
+                        crate::hive_bootstrap::sync_fleet_json(&state);
+                    }
+                }
             }
             process_spawn_requests(&state);
             prune_exited_workers(&state);
@@ -1783,6 +2083,9 @@ pub fn spawn_hive_poller(state: AppState) {
                 run_worker_wake_tick(&state, &mut last_wake_by_agent);
                 evaluate_circuit_breaker_tick(&state);
                 crate::hive_bootstrap::sync_fleet_json(&state);
+            }
+            if ticks.is_multiple_of(20) {
+                run_codex_size_beat(&state);
             }
         }
     });
@@ -1959,27 +2262,59 @@ async fn hive_wake_text(Path(id): Path<String>, State(state): State<AppState>) -
             .to_string();
         (inbox, provider)
     };
-    let pending = state.wake_filing.lock().unwrap().pending(&id, &inbox);
-    if pending.is_empty() {
+    match inbox_wake_for(&state, &id, &provider, &inbox) {
+        Some(text) => Json(Value::String(text)),
+        None => Json(Value::Null),
+    }
+}
+
+async fn hive_switch_clear_gate(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Json<Value> {
+    let gate = state.switch_clear.lock().unwrap().clear_gate(&id, now_ms());
+    let s = match gate {
+        ClearGate::Go => "go",
+        ClearGate::Hold => "hold",
+        ClearGate::Drop => "drop",
+    };
+    Json(Value::String(s.to_string()))
+}
+
+async fn hive_codex_size_clear_text(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Json<Value> {
+    state.sync_hive_home();
+    let provider = {
+        let mut hive = state.hive.lock().unwrap();
+        hive.registry()
+            .get("agents")
+            .and_then(|a| a.get(&id))
+            .and_then(|info| info.get("provider"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("claude")
+            .to_string()
+    };
+    if provider != "codex" {
         return Json(Value::Null);
     }
-    let inbox_path = state
-        .harness_home()
-        .map(|h| {
-            h.join("hive")
-                .join("agents")
-                .join(&id)
-                .join("inbox")
-                .to_string_lossy()
-                .into_owned()
-        });
-    let (one_line, self_file) = md_hive::wake_filing::wake_options_for_provider(&provider);
-    let (text, _) = md_hive::wake_filing::build_inbox_wake(
-        &pending,
-        inbox_path.as_deref(),
-        one_line,
-        self_file,
+    let now = now_ms();
+    let sc = state.switch_clear.lock().unwrap();
+    let phase = sc.phase(&id);
+    let open_bg = sc.background.open(&id, now);
+    let on_work = sc.on_work(&id).map(ToString::to_string);
+    drop(sc);
+    let due = state.codex_size.lock().unwrap().handoff_due(
+        &id,
+        phase,
+        open_bg,
+        switch_clear_command(&provider).is_some(),
     );
+    if !due {
+        return Json(Value::Null);
+    }
+    let text = size_handoff_request_text(on_work.as_deref(), &handoff_path_for(&state, &id));
     Json(Value::String(text))
 }
 
@@ -2055,6 +2390,8 @@ pub fn hive_router() -> Router<AppState> {
         .route("/api/v1/hive/wake-retry", post(hive_wake_retry))
         .route("/api/v1/hive/wake-text/{id}", get(hive_wake_text))
         .route("/api/v1/hive/wake-unconfirmed/{id}", get(hive_wake_unconfirmed))
+        .route("/api/v1/hive/switch-clear-gate/{id}", get(hive_switch_clear_gate))
+        .route("/api/v1/hive/codex-size-clear-text/{id}", get(hive_codex_size_clear_text))
         .route("/api/v1/hive/ended-agents", get(hive_ended_agents))
         .route("/api/v1/pty/screen-lines", post(pty_screen_lines))
         .route("/api/v1/workers", get(workers_list))

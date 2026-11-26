@@ -105,20 +105,26 @@ impl HiveManager {
             .unwrap();
 
         let mut changed = false;
+        let mut present: HashSet<String> = HashSet::new();
         for (list, is_archived) in [(agents, false), (archived, true)] {
             for item in list {
                 let Some(obj) = item.as_object() else { continue };
                 let Some(id) = obj.get("id").and_then(|v| v.as_str()).filter(|s| is_safe_id(s)) else {
                     continue;
                 };
+                present.insert(id.to_string());
                 if let Some(existing) = agents_map.get_mut(id).and_then(|v| v.as_object_mut()) {
-                    for k in ["name", "provider", "cwd", "isGod"] {
+                    for k in ["name", "provider", "cwd", "isGod", "sleeping", "status", "onHold"] {
                         if let Some(v) = obj.get(k).cloned()
                             && existing.get(k) != Some(&v)
                         {
                             existing.insert(k.to_string(), v);
                             changed = true;
                         }
+                    }
+                    if existing.get("archived").and_then(|v| v.as_bool()) != Some(is_archived) {
+                        existing.insert("archived".to_string(), Value::Bool(is_archived));
+                        changed = true;
                     }
                     continue;
                 }
@@ -143,6 +149,25 @@ impl HiveManager {
                         let _ = fs::create_dir_all(adir.join(sub));
                     }
                 }
+                changed = true;
+            }
+        }
+        // Mark removed non-temp agents as archived & stopped so registry/fleet stay accurate.
+        for (id, val) in agents_map.iter_mut() {
+            if present.contains(id) {
+                continue;
+            }
+            let Some(obj) = val.as_object_mut() else {
+                continue;
+            };
+            let is_temp = obj.get("isTemp").and_then(|v| v.as_bool()).unwrap_or(false)
+                || id.starts_with("worker-");
+            if is_temp {
+                continue;
+            }
+            if obj.get("archived").and_then(|v| v.as_bool()) != Some(true) {
+                obj.insert("archived".to_string(), Value::Bool(true));
+                obj.insert("stopped".to_string(), Value::Bool(true));
                 changed = true;
             }
         }
@@ -488,14 +513,24 @@ impl HiveManager {
                         .cloned()
                         .collect()
                 } else if to_raw == "human" {
-                    vec!["god".to_string()]
+                    obj.entry("needsHuman".to_string())
+                        .or_insert(Value::Bool(true));
+                    if from_id == "god" {
+                        Vec::new()
+                    } else {
+                        vec!["god".to_string()]
+                    }
                 } else if is_safe_id(&to_raw) {
-                    vec![to_raw.clone()]
+                    if to_raw == from_id {
+                        Vec::new()
+                    } else {
+                        vec![to_raw.clone()]
+                    }
                 } else {
                     Vec::new()
                 };
 
-                if targets.is_empty() && to_raw != "broadcast" {
+                if targets.is_empty() && !matches!(to_raw.as_str(), "broadcast" | "human") {
                     let _ = fs::create_dir_all(&sent_dir);
                     let _ = fs::rename(&path, sent_dir.join(format!("bad-{fname}")));
                     continue;
@@ -828,6 +863,31 @@ mod tests {
         assert_eq!(mgr.inbox("eng-1").len(), 1);
         assert!(!outbox_dir.join("order.json").exists());
         assert!(outbox_dir.join(".sent/order.json").exists());
+
+        // god -> human must NOT loop back into god/inbox; worker -> human routes to god
+        fs::write(
+            outbox_dir.join("ask-human.json"),
+            r#"{"to":"human","act":"ask","subject":"Status?","body":"What next?"}"#,
+        )
+        .unwrap();
+        let worker_outbox = dir.join("hive/agents/eng-1/outbox");
+        fs::create_dir_all(&worker_outbox).unwrap();
+        fs::write(
+            worker_outbox.join("worker-human.json"),
+            r#"{"to":"human","act":"inform","subject":"Review","body":"Ready"}"#,
+        )
+        .unwrap();
+        let routed_human = mgr.drain_outboxes();
+        assert_eq!(routed_human.len(), 2);
+        let god_inbox = mgr.inbox("god");
+        assert_eq!(god_inbox.len(), 1);
+        assert_eq!(god_inbox[0]["from"], "eng-1");
+        assert!(outbox_dir.join(".sent/ask-human.json").exists());
+
+        // Removing a non-temp agent from roster archives it in registry.json
+        mgr.sync_roster(&[], &[]).unwrap();
+        let reg2 = mgr.registry();
+        assert_eq!(reg2["agents"]["eng-1"]["archived"], true);
 
         fs::remove_dir_all(&dir).ok();
     }

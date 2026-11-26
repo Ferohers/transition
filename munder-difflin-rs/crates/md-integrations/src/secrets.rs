@@ -201,6 +201,63 @@ impl SecretStore {
         }
         out
     }
+
+    /// Return custom user-defined secrets (`kind == "custom"`) validated for env injection
+    /// without overriding keys already present in `existing`.
+    pub fn custom_secret_env(&self, existing: &HashMap<String, String>) -> HashMap<String, String> {
+        let mut out = HashMap::new();
+        for (name, entry) in &self.entries {
+            if entry.kind != "custom"
+                || existing.contains_key(name)
+                || !is_valid_custom_secret_name(name)
+            {
+                continue;
+            }
+            if let Some(val) = self.reveal_for_broker(name) {
+                out.insert(name.clone(), val);
+            }
+        }
+        out
+    }
+}
+
+const RESERVED_SECRET_NAMES: &[&str] = &[
+    "PATH",
+    "HOME",
+    "SHELL",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "PWD",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "AGENT_ID",
+    "AGENT_NAME",
+    "AGENT_DIR",
+    "HIVE_ROOT",
+    "MD_BROKER_URL",
+    "MD_BROKER_TOKEN",
+    "MD_SERVER_URL",
+    "MD_HOOK_URL",
+    "MD_HOOK_TOKEN",
+    "MEMPALACE_PALACE_PATH",
+    "HIVE_AUTO_APPROVE",
+    "ANTHROPIC_API_KEY",
+    "OPENAI_API_KEY",
+    "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GROQ_API_KEY",
+];
+
+pub fn is_valid_custom_secret_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && !RESERVED_SECRET_NAMES.contains(&name)
 }
 
 fn default_kind() -> String {
@@ -246,6 +303,103 @@ pub struct IntegrationRecord {
     pub created_at: i64,
     #[serde(default)]
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokerForwardRequest {
+    pub method: String,
+    pub path: String,
+    pub query: Option<String>,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BrokerForwardResponse {
+    pub status: u16,
+    pub content_type: Option<String>,
+    pub body: Vec<u8>,
+}
+
+pub fn resolve_upstream_url(
+    base_url: &str,
+    rel_path: &str,
+    query: Option<&str>,
+) -> Result<reqwest::Url, String> {
+    let base = reqwest::Url::parse(base_url.trim()).map_err(|e| format!("invalid baseUrl: {e}"))?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err("baseUrl must be http or https".to_string());
+    }
+    let trimmed = rel_path.trim_start_matches('/');
+    if rel_path.starts_with("//")
+        || trimmed.starts_with("http://")
+        || trimmed.starts_with("https://")
+        || trimmed.contains('\\')
+        || trimmed.split('/').any(|seg| seg == ".." || seg == ".")
+    {
+        return Err("invalid or out-of-bounds path".to_string());
+    }
+    let mut joined_str = if trimmed.is_empty() {
+        base_url.trim().trim_end_matches('/').to_string()
+    } else {
+        format!("{}/{}", base_url.trim().trim_end_matches('/'), trimmed)
+    };
+    if let Some(q) = query.filter(|s| !s.is_empty()) {
+        let sep = if joined_str.contains('?') { '&' } else { '?' };
+        joined_str.push(sep);
+        joined_str.push_str(q);
+    }
+    let resolved = reqwest::Url::parse(&joined_str).map_err(|e| format!("invalid path: {e}"))?;
+    if resolved.origin() != base.origin() {
+        return Err("upstream origin mismatch".to_string());
+    }
+    Ok(resolved)
+}
+
+fn apply_auth_to_request(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    record: &IntegrationRecord,
+    mut url: reqwest::Url,
+    secret: Option<&str>,
+) -> Result<reqwest::RequestBuilder, (u16, String)> {
+    if record.auth_type != "none" && secret.unwrap_or("").is_empty() {
+        return Err((503, "no secret set".to_string()));
+    }
+    let sec = secret.unwrap_or("");
+    if record.auth_type == "query"
+        && let Some(param) = record.auth_query.as_deref().filter(|s| !s.is_empty())
+    {
+        url.query_pairs_mut().append_pair(param, sec);
+    }
+    let mut builder = client.request(method, url).header("User-Agent", "munder-difflin");
+    match record.auth_type.as_str() {
+        "bearer" | "github" => {
+            builder = builder.bearer_auth(sec);
+        }
+        "header" => {
+            if let Some(h) = record.auth_header.as_deref().filter(|s| !s.is_empty()) {
+                builder = builder.header(h, sec);
+            }
+        }
+        "prefix" => {
+            if let Some(h) = record.auth_header.as_deref().filter(|s| !s.is_empty()) {
+                let prefix = record.auth_prefix.as_deref().unwrap_or("");
+                let val = if prefix.is_empty() {
+                    sec.to_string()
+                } else {
+                    format!("{prefix} {sec}")
+                };
+                builder = builder.header(h, val);
+            }
+        }
+        "basic" => {
+            let user = record.auth_user.as_deref().unwrap_or("");
+            builder = builder.basic_auth(user, Some(sec));
+        }
+        _ => {}
+    }
+    Ok(builder)
 }
 
 #[derive(Debug, Clone)]
@@ -335,18 +489,10 @@ impl IntegrationBroker {
     }
 
     pub async fn test_connection(record: &IntegrationRecord, secret: Option<&str>) -> serde_json::Value {
-        if record.auth_type != "none" && secret.unwrap_or("").is_empty() {
-            return serde_json::json!({ "ok": false, "status": 503, "error": "no secret set" });
-        }
-        let base = record.base_url.trim_end_matches('/');
-        let probe = record
-            .probe_path
-            .as_deref()
-            .map(|p| p.trim_start_matches('/'))
-            .filter(|p| !p.is_empty());
-        let mut url = match probe {
-            Some(p) => format!("{base}/{p}"),
-            None => base.to_string(),
+        let probe = record.probe_path.as_deref().unwrap_or("");
+        let url = match resolve_upstream_url(&record.base_url, probe, None) {
+            Ok(u) => u,
+            Err(e) => return serde_json::json!({ "ok": false, "error": e }),
         };
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(12))
@@ -355,44 +501,13 @@ impl IntegrationBroker {
             Ok(c) => c,
             Err(e) => return serde_json::json!({ "ok": false, "error": e.to_string() }),
         };
-        let sec = secret.unwrap_or("");
-        if record.auth_type == "query"
-            && let Some(param) = record.auth_query.as_deref().filter(|s| !s.is_empty())
+        let builder = match apply_auth_to_request(&client, reqwest::Method::GET, record, url, secret)
         {
-            if let Ok(parsed) = reqwest::Url::parse_with_params(&url, &[(param, sec)]) {
-                url = parsed.into();
-            } else {
-                let sep = if url.contains('?') { '&' } else { '?' };
-                url = format!("{url}{sep}{param}={sec}");
+            Ok(b) => b,
+            Err((status, msg)) => {
+                return serde_json::json!({ "ok": false, "status": status, "error": msg });
             }
-        }
-        let mut builder = client.get(&url).header("User-Agent", "munder-difflin");
-        match record.auth_type.as_str() {
-            "bearer" | "github" => {
-                builder = builder.bearer_auth(sec);
-            }
-            "header" => {
-                if let Some(h) = record.auth_header.as_deref().filter(|s| !s.is_empty()) {
-                    builder = builder.header(h, sec);
-                }
-            }
-            "prefix" => {
-                if let Some(h) = record.auth_header.as_deref().filter(|s| !s.is_empty()) {
-                    let prefix = record.auth_prefix.as_deref().unwrap_or("");
-                    let val = if prefix.is_empty() {
-                        sec.to_string()
-                    } else {
-                        format!("{prefix} {sec}")
-                    };
-                    builder = builder.header(h, val);
-                }
-            }
-            "basic" => {
-                let user = record.auth_user.as_deref().unwrap_or("");
-                builder = builder.basic_auth(user, Some(sec));
-            }
-            _ => {}
-        }
+        };
         match builder.send().await {
             Ok(resp) => {
                 let status = resp.status().as_u16();
@@ -405,6 +520,62 @@ impl IntegrationBroker {
             }
             Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
         }
+    }
+
+    /// Proxy an API request to an integration upstream, keeping credentials inside the broker.
+    pub async fn forward_call(
+        record: &IntegrationRecord,
+        secret: Option<&str>,
+        req: BrokerForwardRequest,
+    ) -> Result<BrokerForwardResponse, (u16, String)> {
+        if !record.enabled {
+            return Err((403, "integration is disabled".to_string()));
+        }
+        let method = reqwest::Method::from_bytes(req.method.as_bytes())
+            .map_err(|_| (405, "unsupported method".to_string()))?;
+        let url = resolve_upstream_url(&record.base_url, &req.path, req.query.as_deref())
+            .map_err(|e| (400, e))?;
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(25))
+            .build()
+            .map_err(|e| (500, e.to_string()))?;
+        let mut builder = apply_auth_to_request(&client, method, record, url, secret)?;
+        for (k, v) in req.headers {
+            let lower = k.to_ascii_lowercase();
+            if matches!(
+                lower.as_str(),
+                "host"
+                    | "authorization"
+                    | "x-md-broker-token"
+                    | "content-length"
+                    | "connection"
+                    | "transfer-encoding"
+                    | "accept-encoding"
+            ) {
+                continue;
+            }
+            builder = builder.header(&k, &v);
+        }
+        if !req.body.is_empty() {
+            builder = builder.body(req.body);
+        }
+        let resp = builder.send().await.map_err(|e| (502, e.to_string()))?;
+        let status = resp.status().as_u16();
+        let content_type = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
+        let body = resp
+            .bytes()
+            .await
+            .map_err(|e| (502, e.to_string()))?
+            .to_vec();
+        Ok(BrokerForwardResponse {
+            status,
+            content_type,
+            body,
+        })
     }
 
     pub fn grant_capability(
@@ -487,5 +658,32 @@ mod tests {
         let cap = broker.validate_token(&tok).unwrap();
         assert_eq!(cap.worker_id, "michael");
         assert!(cap.allowed_ids.contains("github"));
+    }
+
+    #[test]
+    fn custom_secret_env_and_upstream_url_guard_work() {
+        let mut store = SecretStore::open_in_memory();
+        store.set_secret("MY_CUSTOM_TOKEN", "custom", "val-123456").unwrap();
+        store.set_secret("OPENAI_API_KEY", "custom", "reserved-skip").unwrap();
+        store.set_secret("bad-name", "custom", "invalid-skip").unwrap();
+        store.set_secret("int:gh", "integration", "not-custom").unwrap();
+        store.set_secret("ALREADY_SET", "custom", "dont-override").unwrap();
+
+        let mut existing = HashMap::new();
+        existing.insert("ALREADY_SET".to_string(), "keep-me".to_string());
+
+        let env = store.custom_secret_env(&existing);
+        assert_eq!(env.get("MY_CUSTOM_TOKEN").map(String::as_str), Some("val-123456"));
+        assert!(!env.contains_key("OPENAI_API_KEY"));
+        assert!(!env.contains_key("bad-name"));
+        assert!(!env.contains_key("int:gh"));
+        assert!(!env.contains_key("ALREADY_SET"));
+
+        let ok = resolve_upstream_url("https://api.example.com/v1", "items/42", Some("q=1"))
+            .unwrap();
+        assert_eq!(ok.as_str(), "https://api.example.com/v1/items/42?q=1");
+        assert!(resolve_upstream_url("https://api.example.com", "../secret", None).is_err());
+        assert!(resolve_upstream_url("https://api.example.com", "//evil.com/x", None).is_err());
+        assert!(resolve_upstream_url("https://api.example.com", "https://evil.com/x", None).is_err());
     }
 }

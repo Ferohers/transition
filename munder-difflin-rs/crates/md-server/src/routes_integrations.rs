@@ -4,15 +4,17 @@
 use crate::state::AppState;
 use axum::{
     Json, Router,
-    body::Body,
-    extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    body::{Body, Bytes},
+    extract::{Path, Query, RawQuery, State},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{any, delete, get, post},
 };
 use md_integrations::{
     file_share::ShareCreateReq,
-    secrets::IntegrationRecord,
+    secrets::{
+        BrokerForwardRequest, IntegrationBroker, IntegrationRecord, is_valid_custom_secret_name,
+    },
     voice::{has_openai_key, mint_realtime_token},
     webhooks::{WebhookEndpointInput, WebhookInboundPayload},
 };
@@ -65,6 +67,7 @@ fn default_true() -> bool {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BrokerSecretReadReq {
+    #[serde(alias = "name")]
     key_ref: String,
 }
 
@@ -134,6 +137,14 @@ async fn secrets_apply(
 ) -> Json<Value> {
     let mut secrets = state.secrets.lock().unwrap();
     for item in req.set {
+        if !is_valid_custom_secret_name(&item.name) {
+            return Json(json!({
+                "ok": false,
+                "code": "bad_name",
+                "name": item.name,
+                "error": "Secret name must be 1-64 characters of A-Z, 0-9, _ and not a reserved environment variable"
+            }));
+        }
         if let Err(error) = secrets.set_secret(&item.name, "custom", &item.value) {
             return Json(json!({ "ok": false, "code": "bad_value", "name": item.name, "error": error }));
         }
@@ -341,6 +352,183 @@ async fn broker_secrets_read(
     }
     let value = state.secrets.lock().unwrap().reveal_for_broker(&req.key_ref);
     Ok(Json(json!({ "ok": value.is_some(), "value": value })))
+}
+
+async fn broker_list_ids(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    let Some(tok) = extract_broker_token(&headers) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let broker = state.broker.lock().unwrap();
+    let Some(cap) = broker.validate_token(tok).cloned() else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let mut ids: Vec<String> = cap
+        .allowed_ids
+        .into_iter()
+        .filter(|id| broker.get_record(id).is_some_and(|r| r.enabled))
+        .collect();
+    ids.sort();
+    Ok(Json(json!({ "ids": ids })))
+}
+
+async fn broker_list_integrations(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, StatusCode> {
+    let Some(tok) = extract_broker_token(&headers) else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let broker = state.broker.lock().unwrap();
+    let Some(cap) = broker.validate_token(tok).cloned() else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+    let mut ids: Vec<String> = cap.allowed_ids.into_iter().collect();
+    ids.sort();
+    let integrations: Vec<Value> = ids
+        .into_iter()
+        .filter_map(|id| broker.get_record(&id))
+        .filter(|r| r.enabled)
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "label": r.label,
+                "kind": r.kind,
+                "baseUrl": r.base_url,
+                "authType": r.auth_type,
+                "enabled": r.enabled,
+                "probePath": r.probe_path,
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "integrations": integrations })))
+}
+
+async fn broker_call_root(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    RawQuery(raw_query): RawQuery,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    broker_call_inner(state, id, String::new(), raw_query, method, headers, body).await
+}
+
+async fn broker_call_path(
+    State(state): State<AppState>,
+    Path((id, path)): Path<(String, String)>,
+    RawQuery(raw_query): RawQuery,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    broker_call_inner(state, id, path, raw_query, method, headers, body).await
+}
+
+async fn broker_call_inner(
+    state: AppState,
+    id: String,
+    path: String,
+    raw_query: Option<String>,
+    method: Method,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let json_err = |status: StatusCode, code: &str, msg: &str| -> Response {
+        (status, Json(json!({ "ok": false, "code": code, "error": msg }))).into_response()
+    };
+    let Some(tok) = extract_broker_token(&headers) else {
+        return json_err(StatusCode::UNAUTHORIZED, "unauthorized", "missing broker token");
+    };
+    let (worker_id, record) = {
+        let broker = state.broker.lock().unwrap();
+        let Some(cap) = broker.validate_token(tok).cloned() else {
+            return json_err(StatusCode::UNAUTHORIZED, "unauthorized", "invalid broker token");
+        };
+        if !cap.allowed_ids.contains(&id) {
+            return json_err(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "integration not in this worker capability",
+            );
+        }
+        let Some(rec) = broker.get_record(&id).cloned() else {
+            return json_err(StatusCode::NOT_FOUND, "not_found", "unknown integration");
+        };
+        if !rec.enabled {
+            return json_err(StatusCode::FORBIDDEN, "forbidden", "integration is disabled");
+        }
+        (cap.worker_id, rec)
+    };
+
+    let secret = if record.auth_type == "none" {
+        None
+    } else {
+        record
+            .secret_ref
+            .as_deref()
+            .and_then(|r| state.secrets.lock().unwrap().reveal_for_broker(r))
+    };
+
+    let fwd_headers = headers
+        .iter()
+        .filter_map(|(k, v)| {
+            v.to_str()
+                .ok()
+                .map(|vs| (k.as_str().to_string(), vs.to_string()))
+        })
+        .collect();
+    let path_for_log = path.clone();
+    let fwd_req = BrokerForwardRequest {
+        method: method.as_str().to_string(),
+        path,
+        query: raw_query,
+        headers: fwd_headers,
+        body: body.to_vec(),
+    };
+
+    match IntegrationBroker::forward_call(&record, secret.as_deref(), fwd_req).await {
+        Ok(resp) => {
+            push_activity(
+                &state,
+                "integration:call",
+                &id,
+                json!({
+                    "workerId": worker_id,
+                    "method": method.as_str(),
+                    "path": path_for_log,
+                    "status": resp.status,
+                }),
+            );
+            let status = StatusCode::from_u16(resp.status).unwrap_or(StatusCode::BAD_GATEWAY);
+            let mut resp_headers = HeaderMap::new();
+            if let Some(ct) = resp.content_type
+                && let Ok(val) = HeaderValue::from_str(&ct)
+            {
+                resp_headers.insert(header::CONTENT_TYPE, val);
+            }
+            (status, resp_headers, Body::from(resp.body)).into_response()
+        }
+        Err((code, msg)) => {
+            push_activity(
+                &state,
+                "integration:call",
+                &id,
+                json!({
+                    "workerId": worker_id,
+                    "method": method.as_str(),
+                    "path": path_for_log,
+                    "status": code,
+                    "error": msg,
+                }),
+            );
+            let status = StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY);
+            json_err(status, "broker_error", &msg)
+        }
+    }
 }
 
 async fn webhooks_list(State(state): State<AppState>) -> Json<Value> {
@@ -791,6 +979,10 @@ pub fn integrations_router() -> Router<AppState> {
         .route("/api/v1/integrations/activity", get(integrations_activity))
         .route("/api/v1/integrations/{id}", delete(broker_integrations_remove))
         .route("/api/v1/broker/capabilities", post(broker_grant_cap))
+        .route("/broker/i", get(broker_list_ids))
+        .route("/broker/integrations", get(broker_list_integrations))
+        .route("/broker/i/{id}", any(broker_call_root))
+        .route("/broker/i/{id}/{*path}", any(broker_call_path))
         .route("/broker/secrets", get(broker_secrets_list).post(broker_secrets_list))
         .route("/broker/secrets/read", post(broker_secrets_read))
         .route(

@@ -401,6 +401,8 @@ async fn capabilities_installed() -> Json<Value> {
         ("node", "node"),
         ("python3", "python3"),
         ("cargo", "cargo"),
+        ("uv", "uv"),
+        ("graphify", "graphify"),
     ] {
         if let Some(p) = md_pty::manager::resolve_command(bin)
             && p.is_file()
@@ -715,6 +717,97 @@ async fn capabilities_install(
     State(state): State<AppState>,
     Json(req): Json<CapabilityInstallReq>,
 ) -> Json<Value> {
+    let steps: Vec<(String, Vec<String>)> = resources_root()
+        .and_then(|root| std::fs::read_to_string(root.join("capabilities").join("catalog.json")).ok())
+        .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+        .and_then(|cat| {
+            cat.get("entries")?
+                .as_array()?
+                .iter()
+                .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(&req.entry_id))
+                .and_then(|e| e.get("install"))
+                .and_then(|ins| ins.get("steps"))
+                .and_then(|s| s.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|step| {
+                            let label = step
+                                .get("label")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("Install step")
+                                .to_string();
+                            let argv: Vec<String> = step
+                                .get("argv")?
+                                .as_array()?
+                                .iter()
+                                .filter_map(|a| a.as_str().map(ToString::to_string))
+                                .collect();
+                            if argv.is_empty() {
+                                None
+                            } else {
+                                Some((label, argv))
+                            }
+                        })
+                        .collect()
+                })
+        })
+        .unwrap_or_default();
+
+    let mut lines: Vec<String> = Vec::new();
+    let emit_line = |line: String, out: &mut Vec<String>| {
+        out.push(line.clone());
+        state.emit(
+            "capabilities:installLine",
+            json!({ "entryId": req.entry_id, "line": line }),
+        );
+    };
+
+    let path_env = crate::hive_bootstrap::ensure_extra_path_entries(std::env::var("PATH").ok());
+    for (label, argv) in &steps {
+        let bin = &argv[0];
+        let args = &argv[1..];
+        emit_line(format!("$ {} ({label})", argv.join(" ")), &mut lines);
+        let Some(resolved) = md_pty::manager::resolve_command(bin) else {
+            let msg = format!("Command not found on PATH: {bin}");
+            emit_line(msg.clone(), &mut lines);
+            return Json(json!({ "ok": false, "lines": lines, "error": msg }));
+        };
+        let out = tokio::process::Command::new(resolved)
+            .args(args)
+            .env("PATH", &path_env)
+            .output()
+            .await;
+        match out {
+            Ok(o) => {
+                for chunk in [
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr),
+                ] {
+                    for l in chunk.lines() {
+                        let trimmed = l.trim_end();
+                        if !trimmed.is_empty() {
+                            emit_line(trimmed.to_string(), &mut lines);
+                        }
+                    }
+                }
+                if !o.status.success() {
+                    let msg = format!("{bin} exited with status {}", o.status);
+                    emit_line(msg.clone(), &mut lines);
+                    return Json(json!({ "ok": false, "lines": lines, "error": msg }));
+                }
+            }
+            Err(e) => {
+                let msg = format!("Failed to run {bin}: {e}");
+                emit_line(msg.clone(), &mut lines);
+                return Json(json!({ "ok": false, "lines": lines, "error": msg }));
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        emit_line("Registered in local configuration".to_string(), &mut lines);
+    }
+
     let mut store = state.config.lock().unwrap();
     let cfg = store.read();
     let mut caps = cfg
@@ -727,8 +820,8 @@ async fn capabilities_install(
         caps.push(json!(req.entry_id));
     }
     match store.update(json!({ "installedCapabilities": caps })) {
-        Ok(_) => Json(json!({ "ok": true, "lines": ["Registered in local configuration"] })),
-        Err(e) => Json(json!({ "ok": false, "error": e.to_string() })),
+        Ok(_) => Json(json!({ "ok": true, "lines": lines })),
+        Err(e) => Json(json!({ "ok": false, "lines": lines, "error": e.to_string() })),
     }
 }
 

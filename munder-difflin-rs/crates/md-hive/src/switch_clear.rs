@@ -6,7 +6,11 @@ use std::collections::{HashMap, HashSet};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::wake_filing::{is_wake_worthy, wake_options_for_provider};
+use crate::wake_filing::wake_options_for_provider;
+
+fn is_wake_worthy(msg: &Value) -> bool {
+    msg.get("type").and_then(|v| v.as_str()) != Some("note")
+}
 
 pub const DEFAULT_MIN_WAIT_MS: u64 = 10 * 60_000;
 pub const DEFAULT_COOLDOWN_MS: u64 = 10 * 60_000;
@@ -88,7 +92,7 @@ pub fn clear_command_for_provider(provider: &str) -> Option<&'static str> {
 }
 
 pub fn switch_clear_command(provider: &str) -> Option<&'static str> {
-    if wake_options_for_provider(provider).self_file {
+    if wake_options_for_provider(provider).1 {
         None
     } else {
         clear_command_for_provider(provider)
@@ -178,8 +182,32 @@ pub fn with_cleared_lead(
     }
 }
 
+pub fn parse_iso_ms(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if let Ok(ms) = s.parse::<u64>() {
+        return Some(ms);
+    }
+    if s.len() < 19 {
+        return None;
+    }
+    let y: i64 = s.get(0..4)?.parse().ok()?;
+    let m: i64 = s.get(5..7)?.parse().ok()?;
+    let d: i64 = s.get(8..10)?.parse().ok()?;
+    let hh: i64 = s.get(11..13)?.parse().ok()?;
+    let mm: i64 = s.get(14..16)?.parse().ok()?;
+    let ss: i64 = s.get(17..19)?.parse().ok()?;
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    let secs = ((days * 24 + hh) * 60 + mm) * 60 + ss;
+    u64::try_from(secs.saturating_mul(1000)).ok()
+}
+
 pub fn oldest_waking_work(mail: &[Value]) -> Option<String> {
-    let mut best: Option<(i64, String)> = None;
+    let mut best: Option<(u64, String)> = None;
     for msg in mail {
         if !is_wake_worthy(msg) {
             continue;
@@ -197,29 +225,13 @@ pub fn oldest_waking_work(mail: &[Value]) -> Option<String> {
             .get("created_at")
             .and_then(|v| v.as_str())
             .and_then(parse_iso_ms)
-            .unwrap_or(i64::MAX);
+            .unwrap_or(u64::MAX);
         match &best {
             Some((best_ts, _)) if ts >= *best_ts => {}
             _ => best = Some((ts, work)),
         }
     }
     best.map(|(_, w)| w)
-}
-
-fn parse_iso_ms(s: &str) -> Option<i64> {
-    // Handles RFC3339 timestamps if present; falls back lexicographically when equal precision isn't needed.
-    // Using simple parser avoids adding extra crates.
-    let s = s.trim();
-    if s.len() < 19 {
-        return None;
-    }
-    let y: i64 = s.get(0..4)?.parse().ok()?;
-    let m: i64 = s.get(5..7)?.parse().ok()?;
-    let d: i64 = s.get(8..10)?.parse().ok()?;
-    let hh: i64 = s.get(11..13)?.parse().ok()?;
-    let mm: i64 = s.get(14..16)?.parse().ok()?;
-    let ss: i64 = s.get(17..19)?.parse().ok()?;
-    Some(((((y * 366 + m * 31 + d) * 24 + hh) * 60 + mm) * 60 + ss) * 1000)
 }
 
 #[derive(Debug, Clone)]
@@ -418,13 +430,13 @@ impl SwitchClear {
     }
 
     pub fn wake_step(&mut self, agent_id: &str, facts: &WakeFacts, now_ms: u64) -> WakeStep {
-        let Some(st) = self.by_agent.get_mut(agent_id) else {
+        let Some(st) = self.by_agent.get(agent_id) else {
             return WakeStep::Send { cleared: false };
         };
         if st.cleared_lead_pending {
             return WakeStep::Send { cleared: true };
         }
-        if self.due(st, facts, now_ms) && !self.background.open(agent_id, now_ms) {
+        if Self::due(st, facts, now_ms) && !self.background.open(agent_id, now_ms) {
             return WakeStep::Handoff {
                 work: st.on_work.clone(),
             };
@@ -432,7 +444,7 @@ impl SwitchClear {
         WakeStep::Send { cleared: false }
     }
 
-    fn due(&self, st: &AgentSwitchState, facts: &WakeFacts, now_ms: u64) -> bool {
+    fn due(st: &AgentSwitchState, facts: &WakeFacts, now_ms: u64) -> bool {
         if !facts.rule.enabled || !facts.can_clear || st.phase != SwitchPhase::Idle {
             return false;
         }
@@ -475,7 +487,7 @@ impl SwitchClear {
         {
             return true;
         }
-        self.due(st, facts, now_ms)
+        Self::due(st, facts, now_ms)
             && mail_oldest_ms > 0
             && now_ms.saturating_sub(mail_oldest_ms) < stall_ms
     }

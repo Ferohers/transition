@@ -32,6 +32,10 @@ use md_hive::{
     hooks::HookEngine,
     manager::HiveManager,
     roster::{RosterSnapshot, RosterStore, RosterWriteResult},
+    switch_clear::{
+        CodexSizeClear, SwitchClear, TypedKind, oldest_waking_work, switch_clear_command,
+        typed_kind,
+    },
     wake_filing::WakeFiling,
 };
 use md_pty::{
@@ -53,6 +57,8 @@ fn spawn_pty_event_forwarder(
     pty: &PtyManager,
     workers: Arc<Mutex<Vec<state::WorkerRecord>>>,
     wake_filing: Arc<Mutex<WakeFiling>>,
+    switch_clear: Arc<Mutex<SwitchClear>>,
+    codex_size: Arc<Mutex<CodexSizeClear>>,
     ended_agents: Arc<Mutex<HashMap<String, EndedAgentRecord>>>,
     events_tx: broadcast::Sender<ServerEvent>,
 ) {
@@ -82,6 +88,8 @@ fn spawn_pty_event_forwarder(
                         .map(|w| w.worker_id.clone())
                         .unwrap_or_else(|| id.strip_prefix("pty-").unwrap_or(&id).to_string());
                     wake_filing.lock().unwrap().forget(&agent_id);
+                    switch_clear.lock().unwrap().forget(&agent_id);
+                    codex_size.lock().unwrap().forget(&agent_id);
                     if !is_worker {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -416,7 +424,14 @@ async fn pty_spawn(
     );
     let mut res = state.pty.spawn(opts);
     if res.ok {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
         state.ended_agents.lock().unwrap().remove(&agent_id);
+        state.switch_clear.lock().unwrap().note_spawn(&agent_id, now);
+        state.codex_size.lock().unwrap().forget(&agent_id);
+        crate::hive_bootstrap::sync_fleet_json(&state);
         res.seed_prompt = seed_prompt;
         res.resumed = Some(false);
     }
@@ -532,11 +547,14 @@ async fn pty_submit(
         .agent_id
         .clone()
         .or_else(|| req.pty_id.strip_prefix("pty-").map(ToString::to_string));
+    let provider = req.provider.clone();
     let text = req.text.clone();
     let press_only = req.press_only;
+    let probe = routes_hive::AppScreenProbe::new(&state);
+    let hooks = routes_hive::AppSubmitHooks(&state);
     match state
         .submitter
-        .submit(req, move |r| {
+        .submit_with_context(req, Some(&probe), &hooks, move |r| {
             state_clone.emit("pty:began", serde_json::json!(r.pty_id));
         })
         .await
@@ -559,10 +577,39 @@ async fn pty_submit(
                     state.sync_hive_home();
                     let _ = state.hive.lock().unwrap().file_inbox_messages(aid, &to_file);
                 }
+                let kind = typed_kind(&text, switch_clear_command(&provider));
+                let wake_work = if kind == TypedKind::Wake {
+                    state.sync_hive_home();
+                    let inbox = state.hive.lock().unwrap().inbox(aid);
+                    oldest_waking_work(&inbox)
+                } else {
+                    None
+                };
+                state.switch_clear.lock().unwrap().note_typed(
+                    Some(aid),
+                    kind,
+                    &res.outcome,
+                    press_only,
+                    wake_work,
+                    now,
+                );
+                if let Some(rotated_bytes) = state.codex_size.lock().unwrap().note_typed(
+                    Some(aid),
+                    kind,
+                    &res.outcome,
+                    press_only,
+                ) {
+                    state.sync_hive_home();
+                    state.hive.lock().unwrap().append_log(&serde_json::json!({
+                        "kind": "codex-session-rotated",
+                        "agentId": aid,
+                        "bytes": rotated_bytes,
+                    }));
+                }
             }
             Json(serde_json::json!({
-                "ok": res.ok,
-                "sent": res.outcome == "submitted",
+                "ok": true,
+                "sent": res.outcome == "submitted" || res.outcome == "unconfirmed",
                 "result": res,
             }))
         }
@@ -918,6 +965,8 @@ async fn main() -> anyhow::Result<()> {
     let control = Arc::new(Mutex::new(ControlRegistry::new()));
     let breaker = Arc::new(Mutex::new(CircuitBreaker::new()));
     let wake_filing = Arc::new(Mutex::new(WakeFiling::new()));
+    let switch_clear = Arc::new(Mutex::new(SwitchClear::new()));
+    let codex_size = Arc::new(Mutex::new(CodexSizeClear::new()));
     let hook_token = uuid::Uuid::new_v4().to_string();
     let hooks = HookEngine::new(control.clone(), breaker.clone(), hook_token);
     let (events_tx, _) = broadcast::channel(256);
@@ -927,6 +976,8 @@ async fn main() -> anyhow::Result<()> {
         &pty,
         workers.clone(),
         wake_filing.clone(),
+        switch_clear.clone(),
+        codex_size.clone(),
         ended_agents.clone(),
         events_tx.clone(),
     );
@@ -956,6 +1007,8 @@ async fn main() -> anyhow::Result<()> {
         control,
         breaker,
         wake_filing,
+        switch_clear,
+        codex_size,
         hooks,
         pty,
         submitter,
@@ -978,6 +1031,18 @@ async fn main() -> anyhow::Result<()> {
         let init_cfg = state.config.lock().unwrap().read();
         state.sync_config_runtime(&init_cfg);
     }
+    let boot_roster = state
+        .harness_home()
+        .and_then(|home_dir| state.roster.lock().unwrap().read(Some(&home_dir)));
+    if let Some(snap) = boot_roster {
+        state.sync_hive_home();
+        let _ = state
+            .hive
+            .lock()
+            .unwrap()
+            .sync_roster(&snap.agents, &snap.archived);
+        crate::hive_bootstrap::sync_fleet_json(&state);
+    }
     routes_hive::spawn_hive_poller(state.clone());
 
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -996,10 +1061,15 @@ mod tests {
 
     fn test_state(dir: &std::path::Path) -> AppState {
         let pty = PtyManager::new();
-        let submitter = PtySubmitter::new(pty.clone());
+        let submitter = PtySubmitter::with_timings(
+            pty.clone(),
+            md_pty::submitter::SubmitTimings::fast_for_test(),
+        );
         let control = Arc::new(Mutex::new(ControlRegistry::new()));
         let breaker = Arc::new(Mutex::new(CircuitBreaker::new()));
         let wake_filing = Arc::new(Mutex::new(WakeFiling::new()));
+        let switch_clear = Arc::new(Mutex::new(SwitchClear::new()));
+        let codex_size = Arc::new(Mutex::new(CodexSizeClear::new()));
         let hooks = HookEngine::new(control.clone(), breaker.clone(), "test-hook-token".into());
         let (events_tx, _) = broadcast::channel(32);
         AppState {
@@ -1012,6 +1082,8 @@ mod tests {
             control,
             breaker,
             wake_filing,
+            switch_clear,
+            codex_size,
             hooks,
             pty,
             submitter,
@@ -2199,7 +2271,7 @@ mod tests {
                             "id": "pty-god",
                             "cwd": dir.to_string_lossy().into_owned(),
                             "command": "/bin/sh",
-                            "args": ["-c", "echo ready; sleep 10"],
+                            "args": ["-c", "echo ready; cat >/dev/null"],
                             "provider": "opencode",
                             "resume": true,
                             "hive": { "id": "god", "name": "Michael", "provider": "opencode", "isGod": true }
@@ -2296,6 +2368,66 @@ mod tests {
         assert!(wake_str.contains("You have new hive inbox message(s): 1, printed below."));
         assert!(wake_str.contains("These messages are filed for you when your turn ends:"));
 
+        let submit_stuck = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/pty/submit")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "ptyId": "pty-god",
+                            "agentId": "god",
+                            "provider": "opencode",
+                            "text": wake_str,
+                            "source": "queue"
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let stuck_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(submit_stuck.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stuck_json["ok"], true);
+        assert_eq!(stuck_json["sent"], false);
+        assert_eq!(stuck_json["result"]["outcome"], "stuck");
+
+        // Now deliver with a simulated UserPromptSubmit hook triggered on `pty:began`
+        let app_hook = app.clone();
+        let wake_for_hook = wake_str.to_string();
+        let mut began_rx = state.events_tx.subscribe();
+        tokio::spawn(async move {
+            while let Ok(ev) = began_rx.recv().await {
+                if ev.channel == "pty:began" {
+                    let _ = app_hook
+                        .oneshot(
+                            Request::builder()
+                                .method("POST")
+                                .uri("/hook/god")
+                                .header("authorization", "Bearer test-hook-token")
+                                .header("content-type", "application/json")
+                                .body(Body::from(
+                                    serde_json::json!({
+                                        "hook_event_name": "UserPromptSubmit",
+                                        "prompt": wake_for_hook
+                                    })
+                                    .to_string(),
+                                ))
+                                .unwrap(),
+                        )
+                        .await;
+                    break;
+                }
+            }
+        });
+
         let submit_res = app
             .clone()
             .oneshot(
@@ -2325,6 +2457,8 @@ mod tests {
         .unwrap();
         assert_eq!(submit_json["ok"], true);
         assert_eq!(submit_json["sent"], true);
+        assert_eq!(submit_json["result"]["outcome"], "submitted");
+        assert_eq!(submit_json["result"]["proof"], "hook");
 
         let hook_stop_after = app
             .clone()
@@ -2723,6 +2857,92 @@ mod tests {
             .unwrap()
             .iter()
             .any(|e| e["agentId"] == "analyst-1"));
+
+        // 10. switch-clear-gate holds when a subagent tool call is open and releases on PostToolUse
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hook/god")
+                    .header("authorization", "Bearer test-hook-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"hook_event_name":"PreToolUse","tool_name":"Agent","tool_use_id":"sub-1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let gate_hold = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/hive/switch-clear-gate/god")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let gate_hold_val: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(gate_hold.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(gate_hold_val, "hold");
+
+        let _ = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/hook/god")
+                    .header("authorization", "Bearer test-hook-token")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"hook_event_name":"PostToolUse","tool_name":"Agent","tool_use_id":"sub-1"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let gate_go = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/hive/switch-clear-gate/god")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let gate_go_val: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(gate_go.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(gate_go_val, "go");
+
+        // 11. codex-size-clear-text returns null for non-codex or under-threshold codex agents
+        let size_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/hive/codex-size-clear-text/god")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let size_val: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(size_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(size_val.is_null());
 
         std::fs::remove_dir_all(&dir).ok();
     }

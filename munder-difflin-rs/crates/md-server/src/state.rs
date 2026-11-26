@@ -6,6 +6,7 @@ use md_hive::{
     hooks::HookEngine,
     manager::HiveManager,
     roster::RosterStore,
+    switch_clear::{CodexSizeClear, SwitchClear},
     wake_filing::WakeFiling,
 };
 use md_integrations::{
@@ -80,6 +81,8 @@ pub struct AppState {
     pub control: Arc<Mutex<ControlRegistry>>,
     pub breaker: Arc<Mutex<CircuitBreaker>>,
     pub wake_filing: Arc<Mutex<WakeFiling>>,
+    pub switch_clear: Arc<Mutex<SwitchClear>>,
+    pub codex_size: Arc<Mutex<CodexSizeClear>>,
     pub hooks: HookEngine,
     pub pty: PtyManager,
     pub submitter: PtySubmitter,

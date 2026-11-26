@@ -251,9 +251,89 @@ fn resolve_kg_root(state: &AppState) -> (PathBuf, bool) {
     (root, enabled)
 }
 
+pub(crate) fn read_opencode_usage(
+    cwd: &str,
+) -> Option<(md_hive::usage::AgentUsage, Option<u64>)> {
+    let home = dirs::home_dir()?;
+    let db_path = home.join(".local").join("share").join("opencode").join("opencode.db");
+    if !db_path.is_file() {
+        return None;
+    }
+    let flags =
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    let conn = rusqlite::Connection::open_with_flags(&db_path, flags).ok()?;
+    let mut stmt = conn
+        .prepare("SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1")
+        .ok()?;
+    let (ses_id, ses_updated): (String, i64) = stmt
+        .query_row([cwd], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()?;
+
+    let mut msg_stmt = conn
+        .prepare("SELECT data, time_created FROM message WHERE session_id = ?1 ORDER BY time_created ASC")
+        .ok()?;
+    let rows = msg_stmt
+        .query_map([ses_id], |r| {
+            let data: String = r.get(0)?;
+            let ts: i64 = r.get(1)?;
+            Ok((data, ts))
+        })
+        .ok()?;
+
+    let mut usage = md_hive::usage::AgentUsage {
+        as_of: u64::try_from(ses_updated.max(0)).unwrap_or(0),
+        ..Default::default()
+    };
+    let mut latest_context: Option<u64> = None;
+    for row in rows.flatten() {
+        let Ok(v) = serde_json::from_str::<Value>(&row.0) else {
+            continue;
+        };
+        if v.get("role").and_then(|x| x.as_str()) != Some("assistant") {
+            continue;
+        }
+        if let Some(m) = v.get("modelID").and_then(|x| x.as_str()) {
+            usage.model = Some(m.to_string());
+        }
+        if let Some(c) = v.get("cost").and_then(|x| x.as_f64()) {
+            usage.estimated_cost_usd += c;
+        }
+        if let Some(t) = v.get("tokens") {
+            let inp = t.get("input").and_then(|x| x.as_u64()).unwrap_or(0);
+            let out = t.get("output").and_then(|x| x.as_u64()).unwrap_or(0);
+            let cw = t
+                .get("cache")
+                .and_then(|c| c.get("write"))
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            let cr = t
+                .get("cache")
+                .and_then(|c| c.get("read"))
+                .and_then(|x| x.as_u64())
+                .unwrap_or(0);
+            usage.input_tokens = usage.input_tokens.saturating_add(inp);
+            usage.output_tokens = usage.output_tokens.saturating_add(out);
+            usage.cache_write_tokens = usage.cache_write_tokens.saturating_add(cw);
+            usage.cache_read_tokens = usage.cache_read_tokens.saturating_add(cr);
+            if let Some(total) = t.get("total").and_then(|x| x.as_u64()) {
+                latest_context = Some(total);
+            } else {
+                latest_context = Some(inp.saturating_add(cr).saturating_add(out));
+            }
+        }
+    }
+    Some((usage, latest_context))
+}
+
 async fn usage_agent(Query(q): Query<UsageQuery>) -> Json<Value> {
     let root = default_projects_root();
     let res = read_agent_usage_in(&root, &q.cwd, q.session_id.as_deref());
+    let total = res.input_tokens + res.output_tokens + res.cache_read_tokens + res.cache_write_tokens;
+    if total == 0
+        && let Some((oc, _)) = read_opencode_usage(&q.cwd)
+    {
+        return Json(serde_json::to_value(oc).unwrap_or(Value::Null));
+    }
     Json(serde_json::to_value(res).unwrap_or(Value::Null))
 }
 
@@ -282,8 +362,19 @@ pub(crate) fn collect_agent_usage_rows(
             if cwd.is_empty() {
                 continue;
             }
+            let provider = a.get("provider").and_then(|v| v.as_str()).unwrap_or("");
             let sid = a.get("sessionId").and_then(|v| v.as_str());
-            let u = read_agent_usage_in(&root, &cwd, sid);
+            let mut u = if provider == "opencode" {
+                read_opencode_usage(&cwd).map(|(oc, _)| oc).unwrap_or_default()
+            } else {
+                read_agent_usage_in(&root, &cwd, sid)
+            };
+            if u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens == 0
+                && provider != "opencode"
+                && let Some((oc, _)) = read_opencode_usage(&cwd)
+            {
+                u = oc;
+            }
             rows.push((id.to_string(), u));
         }
     }
@@ -395,6 +486,18 @@ async fn token_limits_view(
         .cloned()
         .unwrap_or_default();
     let contexts = state.hooks.context_by_id.lock().unwrap().clone();
+    let usage_totals: HashMap<String, u64> = collect_agent_usage_rows(&state)
+        .into_iter()
+        .map(|(id, u)| {
+            (
+                id,
+                u.input_tokens
+                    .saturating_add(u.output_tokens)
+                    .saturating_add(u.cache_write_tokens)
+                    .saturating_add(u.cache_read_tokens),
+            )
+        })
+        .collect();
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -414,7 +517,11 @@ async fn token_limits_view(
             .and_then(|p| p.as_str())
             .unwrap_or("day")
             .to_string();
-        let used = contexts.get(id).map(|c| c.tokens).unwrap_or(0);
+        let used = contexts
+            .get(id)
+            .map(|c| c.tokens)
+            .or_else(|| usage_totals.get(id).copied())
+            .unwrap_or(0);
         office_used = office_used.saturating_add(used);
         agents_out.insert(
             id.clone(),

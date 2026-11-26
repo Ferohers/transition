@@ -83,13 +83,35 @@ impl RosterStore {
             && text.contains("inbox/.done")
     }
 
-    fn sanitize_queues(queues: &HashMap<String, Value>) -> HashMap<String, Value> {
+    fn inbox_has_pending_json(home: Option<&Path>, agent_id: &str) -> Option<bool> {
+        let h = home?;
+        if !md_core::repo_fs::is_safe_id(agent_id) {
+            return None;
+        }
+        let inbox = h.join("hive").join("agents").join(agent_id).join("inbox");
+        if !inbox.is_dir() {
+            return None;
+        }
+        let Ok(entries) = fs::read_dir(&inbox) else {
+            return None;
+        };
+        let has_json = entries
+            .flatten()
+            .any(|e| e.path().is_file() && e.path().extension().and_then(|s| s.to_str()) == Some("json"));
+        Some(has_json)
+    }
+
+    fn sanitize_queues(
+        home: Option<&Path>,
+        queues: &HashMap<String, Value>,
+    ) -> HashMap<String, Value> {
         let mut out = HashMap::new();
         for (aid, val) in queues {
             let Some(arr) = val.as_array() else {
                 out.insert(aid.clone(), val.clone());
                 continue;
             };
+            let inbox_pending = Self::inbox_has_pending_json(home, aid);
             let wake_texts: Vec<&str> = arr
                 .iter()
                 .filter_map(|item| item.get("text").and_then(|v| v.as_str()))
@@ -100,6 +122,11 @@ impl RosterStore {
                 .filter(|item| {
                     let txt = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
                     if Self::is_wake_spam(txt) {
+                        return false;
+                    }
+                    if item.get("precondition").and_then(|v| v.as_str()) == Some("inbox-nonempty")
+                        && inbox_pending == Some(false)
+                    {
                         return false;
                     }
                     if !wake_texts.is_empty() && txt.starts_with("[HIVE ") {
@@ -126,7 +153,7 @@ impl RosterStore {
         let path = Self::roster_path(home?);
         let raw = fs::read_to_string(path).ok()?;
         let mut snap = serde_json::from_str::<RosterSnapshot>(&raw).ok()?;
-        snap.queues = Self::sanitize_queues(&snap.queues);
+        snap.queues = Self::sanitize_queues(Some(home?), &snap.queues);
         Some(snap)
     }
 
@@ -170,7 +197,7 @@ impl RosterStore {
             agents: snap.agents.clone(),
             archived: snap.archived.clone(),
             restorable: snap.restorable.clone(),
-            queues: Self::sanitize_queues(&snap.queues),
+            queues: Self::sanitize_queues(Some(home), &snap.queues),
             selected_id: snap.selected_id.clone(),
         };
 
@@ -280,6 +307,24 @@ mod tests {
         assert!(!blocked.ok);
         assert_eq!(blocked.skipped.as_deref(), Some("empty-first-write"));
         assert_eq!(fresh_boot.read(Some(&dir)).unwrap().agents.len(), 1);
+
+        // Stale inbox-nonempty queue item is scrubbed once the inbox dir is empty on disk.
+        let inbox_dir = dir.join("hive").join("agents").join("michael").join("inbox");
+        fs::create_dir_all(&inbox_dir).unwrap();
+        let with_stale = RosterSnapshot {
+            version: 1,
+            saved_at: None,
+            agents: initial.agents.clone(),
+            archived: vec![],
+            restorable: vec![],
+            queues: HashMap::from([(
+                "michael".to_string(),
+                serde_json::json!([{ "id": "q1", "precondition": "inbox-nonempty", "text": "stale" }]),
+            )]),
+            selected_id: None,
+        };
+        assert!(writer.write(Some(&dir), &with_stale).ok);
+        assert!(writer.read(Some(&dir)).unwrap().queues.is_empty());
 
         fs::remove_dir_all(&dir).ok();
     }

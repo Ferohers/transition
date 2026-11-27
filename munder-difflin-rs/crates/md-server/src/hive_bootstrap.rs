@@ -1139,6 +1139,25 @@ pub fn prepare_agent_spawn(
                 }
             }
             "opencode" => {
+                // OpenCode 2.x CLI rejects `--model` (`Unrecognized flag: --model`);
+                // strip any stale `--model <val>` or `--model=<val>` before spawning.
+                let mut cleaned = Vec::with_capacity(opts.args.len());
+                let mut skip_next = false;
+                for arg in opts.args.drain(..) {
+                    if skip_next {
+                        skip_next = false;
+                        continue;
+                    }
+                    if arg == "--model" {
+                        skip_next = true;
+                        continue;
+                    }
+                    if arg.starts_with("--model=") {
+                        continue;
+                    }
+                    cleaned.push(arg);
+                }
+                opts.args = cleaned;
                 if !opts.args.iter().any(|a| a == "--standalone") {
                     opts.args.push("--standalone".to_string());
                 }

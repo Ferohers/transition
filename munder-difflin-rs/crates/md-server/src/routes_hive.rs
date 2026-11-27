@@ -866,7 +866,7 @@ fn provider_default_command(provider: &str, model: Option<&str>) -> (String, Vec
     if let Some(m) = model.map(str::trim).filter(|s| !s.is_empty())
         && matches!(
             provider,
-            "opencode" | "claude" | "codex" | "gemini" | "cursor" | "grok" | "kimi" | "antigravity" | "qwen" | "crush" | "pi" | "copilot"
+            "claude" | "codex" | "gemini" | "cursor" | "grok" | "kimi" | "antigravity" | "qwen" | "crush" | "pi" | "copilot"
         )
     {
         args.push("--model".to_string());
@@ -3352,5 +3352,14 @@ mod tests {
             Value::String("Deliverable written to strategy/platform-and-slogan.md".to_string())
         );
         assert_eq!(clean_pty_tail_response("⬝⬝⬝■■■ ⠏ spinner only"), Value::Null);
+    }
+
+    #[test]
+    fn provider_default_command_omits_cli_model_for_opencode() {
+        let (bin, args) = provider_default_command("opencode", Some("hy4-flash-free"));
+        assert_eq!(bin, "opencode");
+        assert!(!args.iter().any(|a| a == "--model" || a.starts_with("--model=")));
+        assert!(args.iter().any(|a| a == "--auto"));
+        assert!(args.iter().any(|a| a == "--standalone"));
     }
 }

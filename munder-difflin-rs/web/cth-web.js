@@ -111,6 +111,7 @@
 
   let notificationsEnabled = false;
   const agentNames = new Map();
+  const backupPausedIds = new Set();
   let agentNamesRefresh = null;
 
   function recordAgentEntry(entry) {
@@ -210,7 +211,7 @@
         title = `${who || 'Agent'} needs input`;
         body = String(payload.message || '');
       }
-    } else if (channel === 'hive:agentExited' && (payload.exitCode !== 0 || String(payload.agentId || '').startsWith('worker-'))) {
+    } else if (channel === 'hive:agentExited' && !backupPausedIds.has(String(payload.agentId || '')) && (payload.exitCode !== 0 || String(payload.agentId || '').startsWith('worker-'))) {
       const who = await resolveAgentName(payload.agentId, payload.agentName);
       title = `${who || 'Agent'} finished (exit ${payload.exitCode ?? 0})`;
       body = payload.exitCode === 0 ? 'Task completed' : 'Exited with non-zero status';
@@ -236,6 +237,15 @@
         const msg = JSON.parse(ev.data);
         if (msg && msg.channel) {
           if (msg.channel === 'config:changed') refreshNotificationSetting(msg.payload);
+          if (msg.channel === 'backup:pausing' && Array.isArray(msg.payload?.ptys)) {
+            for (const p of msg.payload.ptys) {
+              const aid = String(p || '').replace(/^pty-/, '');
+              if (aid) backupPausedIds.add(aid);
+            }
+          } else if (msg.channel === 'backup:resumed' && Array.isArray(msg.payload?.ptys)) {
+            const ids = msg.payload.ptys.map((p) => String(p || '').replace(/^pty-/, '')).filter(Boolean);
+            setTimeout(() => { for (const aid of ids) backupPausedIds.delete(aid); }, 3000);
+          }
           if (msg.channel === 'app:reset' && !resettingLocally) {
             clearLocalStorageAndReload();
             return;

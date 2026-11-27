@@ -578,15 +578,33 @@ async fn backup_create(
         }));
     }
 
+    let resume_ptys: Vec<String> = if running_count > 0 {
+        ptys.iter()
+            .map(|p| p.id.clone())
+            .filter(|id| !id.starts_with("pty-worker-"))
+            .collect()
+    } else {
+        Vec::new()
+    };
     let stopped_count = if running_count > 0 {
+        if !resume_ptys.is_empty() {
+            state.emit("backup:pausing", serde_json::json!({ "ptys": resume_ptys }));
+        }
         let n = stop_all_runtime(&state);
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         n
     } else {
         0
     };
+    let resume_paused = |ptys_to_resume: &[String]| {
+        if !ptys_to_resume.is_empty() {
+            state.emit("backup:resumed", serde_json::json!({ "ptys": ptys_to_resume }));
+            state.emit("power:resume", serde_json::json!({ "dead": ptys_to_resume }));
+        }
+    };
 
     if let Err(err) = state.db.lock().unwrap().checkpoint_truncate() {
+        resume_paused(&resume_ptys);
         return Json(serde_json::json!({
             "ok": false,
             "error": format!("SQLite checkpoint failed: {err}"),
@@ -595,6 +613,7 @@ async fn backup_create(
 
     let bdir = backups_dir(&state);
     if let Err(err) = fs::create_dir_all(&bdir) {
+        resume_paused(&resume_ptys);
         return Json(serde_json::json!({ "ok": false, "error": err.to_string() }));
     }
 
@@ -608,6 +627,7 @@ async fn backup_create(
     let stage_data = stage.join("data");
     let stage_home = stage.join("home");
     if let Err(err) = fs::create_dir_all(&stage_data) {
+        resume_paused(&resume_ptys);
         return Json(serde_json::json!({ "ok": false, "error": err.to_string() }));
     }
 
@@ -671,11 +691,13 @@ async fn backup_create(
         Ok(s) => s,
         Err(e) => {
             let _ = fs::remove_dir_all(&stage);
+            resume_paused(&resume_ptys);
             return Json(serde_json::json!({ "ok": false, "error": e.to_string() }));
         }
     };
     if let Err(err) = fs::write(stage.join("manifest.json"), manifest_json) {
         let _ = fs::remove_dir_all(&stage);
+        resume_paused(&resume_ptys);
         return Json(serde_json::json!({ "ok": false, "error": err.to_string() }));
     }
 
@@ -689,6 +711,7 @@ async fn backup_create(
         .arg(".")
         .output();
     let _ = fs::remove_dir_all(&stage);
+    resume_paused(&resume_ptys);
 
     match tar_out {
         Ok(out) if out.status.success() => {

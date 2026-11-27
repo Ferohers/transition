@@ -14516,6 +14516,8 @@ function useHive(config2) {
   reactExports.useEffect(() => {
     return window.cth.onHiveAgentExited?.(({ agentId, exitCode, signal, printMode }) => {
       if (!agentId) return;
+      const cur = useStore.getState().agents.find((x) => x.id === agentId);
+      if (cur?.backupPaused) return;
       const exit = agentExitOf(exitCode, signal, Date.now(), printMode === true);
       useStore.getState().updateAgent(agentId, { exit, status: "idle", action: exit.verdict, carrying: void 0 });
       openQuestions.forget(agentId);
@@ -15083,9 +15085,9 @@ ${msg.context}` : text2;
         let cwd = a.cwd;
         if (a.worktreePath && await window.cth.gitIsRepo(a.worktreePath)) cwd = a.worktreePath;
         await window.cth.killPty(deadId, "revive");
-        resetTerminal(deadId);
+        resetTerminal(deadId, { preserveScrollback: true });
         const provider = inferAgentProvider(a.command, a.provider);
-        const command2 = commandWithModel(a.command, a.model, provider) || buildSpawnCommand(cfg, a.model, provider);
+        const command2 = a.isGod ? effectiveGodCommand(cfg.godCommand, buildSpawnCommand(cfg, cfg.godModel, provider), provider) : commandWithModel(a.command, a.model, provider) || buildSpawnCommand(cfg, a.model, provider);
         const [exe, ...args] = tokenizeCommand(command2);
         const hive = a.isGod ? { id: a.id, name: a.name, cwd, provider, isGod: true, role: roleForHiveSpawn(a) } : a.isAssistant ? { id: a.id, name: a.name, cwd, provider, isAssistant: true, role: roleForHiveSpawn(a) } : { id: a.id, name: a.name, cwd, provider, role: roleForHiveSpawn(a) };
         const entry = acquireTerminal(deadId);
@@ -15113,21 +15115,43 @@ ${msg.context}` : text2;
         });
         if (res.ok) {
           reviving.current[deadId] = Date.now();
-          useStore.getState().updateAgent(a.id, { status: "idle", action: "revived after sleep" });
+          useStore.getState().updateAgent(a.id, { exit: void 0, backupPaused: false, status: "idle", action: "idle" });
         } else {
           delete reviving.current[deadId];
+          useStore.getState().updateAgent(a.id, { backupPaused: false });
           console.error("[autorevive] respawn failed for", a.id, res.error);
         }
       } catch (err) {
         delete reviving.current[deadId];
+        useStore.getState().updateAgent(a.id, { backupPaused: false });
         console.error("[autorevive] respawn threw for", deadId, err);
       }
     };
-    return window.cth.onPowerResume?.((e) => {
+    const offBackupPausing = window.cth.onBackupPausing?.((e) => {
+      const ptys = Array.isArray(e?.ptys) ? e.ptys : [];
+      for (const ptyId of ptys) {
+        delete reviving.current[ptyId];
+        const a = useStore.getState().agents.find((x) => x.ptyId === ptyId);
+        if (a) useStore.getState().updateAgent(a.id, { exit: void 0, backupPaused: true, status: "idle", action: "pausing…" });
+      }
+    });
+    const offBackupResumed = window.cth.onBackupResumed?.((e) => {
+      const ptys = Array.isArray(e?.ptys) ? e.ptys : [];
+      for (const ptyId of ptys) {
+        const a = useStore.getState().agents.find((x) => x.ptyId === ptyId);
+        if (a?.backupPaused) useStore.getState().updateAgent(a.id, { exit: void 0, action: "resuming…" });
+      }
+    });
+    const offPowerResume = window.cth.onPowerResume?.((e) => {
       const dead = Array.isArray(e?.dead) ? e.dead : [];
       if (!dead.length) return;
       for (const id of dead) void revive(id);
     });
+    return () => {
+      offBackupPausing?.();
+      offBackupResumed?.();
+      offPowerResume?.();
+    };
   }, [config2?.onboardingComplete]);
 }
 function useGodNameSync() {
@@ -105281,9 +105305,9 @@ function AgentRowBody({ agent, active, onSelect, onGo }) {
         background: active ? "var(--cth-surface-active)" : "transparent",
         color: active ? "var(--cth-ink-900)" : "var(--cth-ink-700)",
         boxShadow: beat ? "inset 0 0 0 1px var(--cth-accent), inset 0 0 0 3px var(--cth-accent-soft)" : active ? "inset 0 0 0 1px var(--cth-ink-300)" : void 0,
-        transition: "background 120ms",
+        transition: "opacity 240ms ease, background 120ms",
         // The row that stays where the agent was: grey, so it does not read as a running agent.
-        opacity: lifted ? 0.45 : move.grey ? 0.6 : void 0
+        opacity: lifted ? 0.45 : agent.backupPaused ? 0.45 : move.grey ? 0.6 : void 0
       },
       children: [
         /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "data-agent-moved": move.grey ? "1" : void 0, style: { display: "inline-flex", flexShrink: 0, filter: move.grey ? "grayscale(1)" : void 0 }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(SpritePortrait, { character: agent.character, size: 28, agent }) }),
@@ -115854,7 +115878,6 @@ function ConfigTab({ agent, config: config2 }) {
         ] }),
         /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, flexWrap: "wrap" }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: () => nav2.go("automations"), children: t2("pro.god.config.automations") }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", onClick: () => nav2.go("team"), children: t2("pro.god.config.team") }),
           /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", kind: "ghost", onClick: () => openIntegrations(SLACK_ITEM), children: t2("pro.god.config.connections") })
         ] })
       ] }),
@@ -128348,7 +128371,7 @@ function BackupManagementSection({ chrome: chrome2 }) {
         return;
       }
       setStopConfirm(null);
-      setNote(`Backup created: ${res.backup?.name || "ok"}${res.stoppedAgents ? ` (stopped ${res.stoppedAgents} active session(s))` : ""}`);
+      setNote(`Backup created: ${res.backup?.name || "ok"}${res.stoppedAgents ? ` (paused & resumed ${res.stoppedAgents} active session(s))` : ""}`);
       await load();
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));

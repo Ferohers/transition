@@ -1019,7 +1019,7 @@ const AGENT_PROVIDER_PRESETS = [
     autoModeFlag: "--auto",
     autoFlag: "--auto",
     supportsModel: true,
-    modelFlag: "--model",
+    modelFlag: void 0,
     // value form: provider/model, e.g. anthropic/claude-sonnet-4-5
     hiveAware: false,
     // no --append-system-prompt/--settings; protocol rides in via --prompt

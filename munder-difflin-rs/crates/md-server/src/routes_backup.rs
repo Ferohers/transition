@@ -1047,6 +1047,7 @@ async fn backup_restore(
                 "harnessHome".to_string(),
                 Value::String(home_dir.to_string_lossy().into_owned()),
             );
+            cfg_patch.insert("onboardingComplete".to_string(), Value::Bool(true));
         }
         if preserved_backup_dir.1 {
             cfg_patch.insert(

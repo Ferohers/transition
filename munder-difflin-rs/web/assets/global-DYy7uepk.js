@@ -186864,7 +186864,7 @@ function IdePanel() {
           display: "flex",
           alignItems: "center",
           gap: 10,
-          paddingLeft: 88,
+          paddingLeft: 10,
           paddingRight: 10,
           userSelect: "none"
         },

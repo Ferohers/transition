@@ -4170,4 +4170,228 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+
+    #[tokio::test]
+    async fn fresh_install_backup_import_inspect_and_restore_boots_cleanly() {
+        use base64::Engine as _;
+
+        let root = std::env::temp_dir().join(format!(
+            "md-fresh-restore-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let src_data = root.join("src-data");
+        let src_home = root.join("src-home");
+        let src_backups = root.join("src-backups");
+        let fresh_data = root.join("fresh-data");
+        let fresh_target = root.join("fresh-target");
+        std::fs::create_dir_all(src_home.join("hive/agents")).unwrap();
+        std::fs::create_dir_all(&src_backups).unwrap();
+        std::fs::create_dir_all(&fresh_data).unwrap();
+        std::fs::create_dir_all(&fresh_target).unwrap();
+        std::fs::write(
+            src_home.join("roster.json"),
+            r#"{"agents":[],"archived":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(src_home.join("hive/agents/altan.md"), "# Altan\n").unwrap();
+
+        let src_state = test_state(&src_data);
+        src_state
+            .config
+            .lock()
+            .unwrap()
+            .update(serde_json::json!({
+                "onboardingComplete": true,
+                "harnessHome": src_home.to_string_lossy(),
+                "backupDir": src_backups.to_string_lossy(),
+                "godName": "Dwight",
+            }))
+            .unwrap();
+        let src_app = build_router(src_state);
+
+        let create_res = src_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/create")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"stopFirst":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let create_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(create_json["ok"], true);
+        let archive_name = create_json["backup"]["name"].as_str().unwrap().to_string();
+        let archive_bytes = std::fs::read(src_backups.join(&archive_name)).unwrap();
+
+        // Simulate fresh install (onboardingComplete=false, harnessHome=null) with a dirty target folder.
+        std::fs::write(fresh_target.join("leftover.txt"), "stale").unwrap();
+        let fresh_state = test_state(&fresh_data);
+        let fresh_app = build_router(fresh_state.clone());
+
+        let import_res = fresh_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/import")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": archive_name,
+                            "dataBase64": base64::engine::general_purpose::STANDARD.encode(&archive_bytes),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let import_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(import_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(import_json["ok"], true);
+        let imported_name = import_json["backup"]["name"].as_str().unwrap().to_string();
+
+        let inspect_res = fresh_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/inspect")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": imported_name,
+                            "targetHome": fresh_target.to_string_lossy(),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let inspect_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(inspect_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(inspect_json["ok"], true);
+        assert_eq!(inspect_json["targetDirty"]["dirty"], true);
+        assert_eq!(inspect_json["manifest"]["godName"], "Dwight");
+
+        // Guard rejects without cleanDirty, then succeeds cleanly when cleanDirty=true.
+        let guard_res = fresh_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/restore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": imported_name,
+                            "cleanDirty": false,
+                            "targetHome": fresh_target.to_string_lossy(),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let guard_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(guard_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(guard_json["ok"], false);
+        assert_eq!(guard_json["needsClean"], true);
+
+        let restore_res = fresh_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/restore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "name": imported_name,
+                            "cleanDirty": true,
+                            "targetHome": fresh_target.to_string_lossy(),
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let restore_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(restore_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restore_json["ok"], true);
+        assert!(!fresh_target.join("leftover.txt").exists());
+        assert!(fresh_target.join("roster.json").is_file());
+        assert!(fresh_target.join("hive/agents/altan.md").is_file());
+
+        // Reloaded /api/v1/config boots straight past onboarding with restored state.
+        let cfg_res = fresh_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/config")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let cfg_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(cfg_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(cfg_json["onboardingComplete"], true);
+        assert_eq!(cfg_json["godName"], "Dwight");
+        assert_eq!(cfg_json["harnessHome"], fresh_target.to_string_lossy().as_ref());
+
+        let hive_res = fresh_app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/hive/registry")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(hive_res.status(), 200);
+        let hive_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(hive_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(hive_json.is_object());
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

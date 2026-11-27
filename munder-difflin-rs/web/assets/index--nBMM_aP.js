@@ -94099,7 +94099,7 @@ function nameProblem(raw2) {
   if (/\s/.test(raw2)) return "space";
   return null;
 }
-function WorkspaceStep({ step: step2, orgName, draft, onChange, error, onBack, onContinue }) {
+function WorkspaceStep({ step: step2, orgName, draft, onChange, error, onBack, onContinue, onRestore }) {
   const { t: t2 } = useTranslation();
   const problem = nameProblem(draft.name);
   const home = draftHome(draft);
@@ -94124,7 +94124,15 @@ function WorkspaceStep({ step: step2, orgName, draft, onChange, error, onBack, o
       footer: /* @__PURE__ */ jsxRuntimeExports.jsx(
         OnboardFooter,
         {
-          back: onBack && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "ghost", onClick: onBack, children: t2("pro.onboarding.back") }),
+          back: onBack ? /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "ghost", onClick: onBack, children: t2("pro.onboarding.back") }) : onRestore ? /* @__PURE__ */ jsxRuntimeExports.jsx(
+            Btn,
+            {
+              kind: "ghost",
+              onClick: onRestore,
+              style: { color: "var(--cth-ink-500)", borderColor: "transparent", background: "transparent", paddingLeft: 2, paddingRight: 8 },
+              children: "Restore"
+            }
+          ) : void 0,
           primary: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "primary", disabled: !ready2, onClick: onContinue, children: t2("pro.onboarding.continue") })
         }
       ),
@@ -94172,6 +94180,280 @@ function WorkspaceStep({ step: step2, orgName, draft, onChange, error, onBack, o
     }
   );
 }
+function RestoreStep({ onBack }) {
+  const [status, setStatus] = reactExports.useState(null);
+  const [loading, setLoading] = reactExports.useState(true);
+  const [busy, setBusy] = reactExports.useState("");
+  const [selectedName, setSelectedName] = reactExports.useState("");
+  const [inspectInfo, setInspectInfo] = reactExports.useState(null);
+  const [targetHome, setTargetHome] = reactExports.useState("");
+  const [error, setError] = reactExports.useState();
+  const [notice, setNotice] = reactExports.useState();
+  const fileRef = reactExports.useRef(null);
+  const inspectArchive = reactExports.useCallback(async (name, overrideTarget) => {
+    if (!name) return;
+    setBusy((prev) => prev === "restore" ? prev : "inspect");
+    setError(void 0);
+    try {
+      const info = await window.cth.backupInspect?.(name, overrideTarget?.trim() || void 0);
+      if (!info?.ok) {
+        setInspectInfo(null);
+        setError(info?.error || "Could not read backup archive.");
+        return;
+      }
+      setInspectInfo(info);
+      if (overrideTarget === void 0) {
+        setTargetHome(info.targetHome || info.manifest?.harnessHome || "~/HarnessAgents");
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy((prev) => prev === "restore" ? prev : "");
+    }
+  }, []);
+  const loadBackups = reactExports.useCallback(async (preferredName) => {
+    setLoading(true);
+    setError(void 0);
+    try {
+      const res = await window.cth.backupStatus?.();
+      if (res) {
+        setStatus(res);
+        const list = res.backups ?? [];
+        const pick = preferredName && list.find((b) => b.name === preferredName)?.name || (list.length > 0 ? list[0].name : "");
+        if (pick) {
+          setSelectedName(pick);
+          await inspectArchive(pick);
+        } else {
+          setSelectedName("");
+          setInspectInfo(null);
+        }
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [inspectArchive]);
+  reactExports.useEffect(() => {
+    void loadBackups();
+  }, [loadBackups]);
+  reactExports.useEffect(() => {
+    if (!selectedName || !targetHome.trim()) return;
+    if (inspectInfo && (inspectInfo.targetHome || "") === targetHome.trim()) return;
+    const timer = setTimeout(() => {
+      void inspectArchive(selectedName, targetHome);
+    }, 280);
+    return () => clearTimeout(timer);
+  }, [selectedName, targetHome, inspectInfo, inspectArchive]);
+  const onSelectBackup = (name) => {
+    setSelectedName(name);
+    setNotice(void 0);
+    void inspectArchive(name);
+  };
+  const onImportArchive = async (ev) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";
+    if (!file) return;
+    setError(void 0);
+    setNotice(void 0);
+    setBusy("import");
+    try {
+      const res = await window.cth.backupImportFile?.(file);
+      if (!res?.ok) {
+        setError(res?.error || "Failed to import backup archive.");
+        return;
+      }
+      const importedName = res.backup?.name || file.name;
+      setNotice(`Backup uploaded and verified: ${importedName}`);
+      await loadBackups(importedName);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onChooseBackupFolder = async () => {
+    const pick = await window.cth.chooseFolder?.({ mode: "dir" });
+    if (!pick?.ok || !pick.path) return;
+    setError(void 0);
+    setNotice(void 0);
+    setBusy("dir");
+    try {
+      const res = await window.cth.backupSetDir?.(pick.path);
+      if (!res?.ok) {
+        setError(res?.error || "Selected backup folder is not writable.");
+        return;
+      }
+      setNotice(`Backup folder set to ${res.backupsDir}`);
+      await loadBackups();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onBrowseTarget = async () => {
+    const pick = await window.cth.chooseFolder?.({ mode: "dir" });
+    if (!pick?.ok || !pick.path) return;
+    setTargetHome(pick.path);
+    if (selectedName) void inspectArchive(selectedName, pick.path);
+  };
+  const onConfirmRestore = async () => {
+    if (!selectedName || !targetHome.trim()) return;
+    setError(void 0);
+    setNotice("Stopping active runtime, clearing destination folder, restoring workspace & booting…");
+    setBusy("restore");
+    try {
+      const res = await window.cth.backupRestore?.(selectedName, true, targetHome.trim());
+      if (!res?.ok) {
+        setNotice(void 0);
+        setBusy("");
+        setError(res?.error || "Restore failed.");
+        return;
+      }
+      setNotice("Restore complete — booting into your restored office…");
+    } catch (e) {
+      setNotice(void 0);
+      setBusy("");
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const backups = status?.backups ?? [];
+  const dirWritable = status?.dirCheck ? !!status.dirCheck.writable : true;
+  const manifest = inspectInfo?.manifest;
+  const dirty = inspectInfo?.targetDirty;
+  const runningCount = inspectInfo?.runningCount ?? status?.runningCount ?? 0;
+  const hasNoticeHighlight = !!dirty?.dirty || runningCount > 0;
+  const dirtyPreview = dirty?.entries?.slice(0, 4).join(", ") + ((dirty?.totalCount ?? 0) > 4 ? `, +${dirty.totalCount - 4} more` : "");
+  const isRestoring = busy === "restore";
+  return /* @__PURE__ */ jsxRuntimeExports.jsx(
+    OnboardFrame,
+    {
+      title: "Restore from backup",
+      lead: "Bring back your entire office — agents, settings, database, memory and projects — from a .tar.gz backup archive.",
+      footer: /* @__PURE__ */ jsxRuntimeExports.jsx(
+        OnboardFooter,
+        {
+          back: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "ghost", disabled: isRestoring, onClick: onBack, children: "Back" }),
+          primary: /* @__PURE__ */ jsxRuntimeExports.jsx(
+            Btn,
+            {
+              kind: "primary",
+              disabled: !selectedName || !targetHome.trim() || !inspectInfo || !!busy,
+              onClick: () => void onConfirmRestore(),
+              children: isRestoring ? "Restoring & booting…" : "Restore & boot"
+            }
+          )
+        }
+      ),
+      children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 14 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs(Field$1, { label: "Backup archive", hint: status?.backupsDir ? `Folder: ${status.backupsDir}` : void 0, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("input", { ref: fileRef, type: "file", accept: ".tar.gz,.tgz,application/gzip", style: { display: "none" }, onChange: (e) => void onImportArchive(e) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(Btn, { disabled: !!busy || !dirWritable, onClick: () => fileRef.current?.click(), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "folder", size: 14 }),
+              busy === "import" ? "Uploading…" : "Upload .tar.gz"
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "ghost", disabled: !!busy, onClick: () => void onChooseBackupFolder(), children: "Choose backup folder…" })
+          ] }),
+          loading ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, color: "var(--cth-ink-500)", padding: "8px 0" }, children: "Checking backups…" }) : backups.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", {
+            style: {
+              padding: "12px 14px",
+              borderRadius: 10,
+              border: "1px dashed var(--cth-ink-300)",
+              background: "var(--cth-cream-50)",
+              fontSize: 12,
+              lineHeight: 1.45,
+              color: "var(--cth-ink-500)"
+            },
+            children: "No backup archives in this folder yet. Upload a .tar.gz file or point to an existing backup folder."
+          }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", flexDirection: "column", gap: 6, maxHeight: 148, overflowY: "auto" }, children: backups.map((b) => /* @__PURE__ */ jsxRuntimeExports.jsxs(
+            Card$3,
+            {
+              selected: selectedName === b.name,
+              onClick: () => !isRestoring && onSelectBackup(b.name),
+              style: { padding: "10px 12px", borderRadius: 10, gap: 3 },
+              children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }, children: [
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-mono)", fontSize: 12, fontWeight: 600, color: "var(--cth-ink-900)", overflowWrap: "anywhere" }, children: b.name }),
+                  /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11.5, color: "var(--cth-ink-500)", flexShrink: 0 }, children: formatBytesShort(b.sizeBytes) })
+                ] }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 11.5, color: "var(--cth-ink-500)" }, children: [b.manifest?.godName || "Duman Office", b.createdAtMs ? new Date(b.createdAtMs).toLocaleString() : ""].filter(Boolean).join(" · ") })
+              ]
+            },
+            b.name
+          )) })
+        ] }),
+        selectedName && /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", {
+            style: {
+              padding: "10px 12px",
+              borderRadius: 10,
+              border: "1px solid var(--cth-ink-300)",
+              background: "var(--cth-cream-200)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+              fontSize: 12,
+              lineHeight: 1.45,
+              color: "var(--cth-ink-700)"
+            },
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { style: { color: "var(--cth-ink-900)" }, children: "Archive: " }),
+                manifest?.godName ? `${manifest.godName} · ` : "",
+                manifest?.createdAtMs ? new Date(manifest.createdAtMs).toLocaleString() : selectedName
+              ] }),
+              manifest?.harnessHome && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontFamily: "var(--cth-font-mono)", fontSize: 11.5, color: "var(--cth-ink-500)", overflowWrap: "anywhere" }, children: [
+                "Original folder: ",
+                manifest.harnessHome
+              ] })
+            ]
+          }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx(Field$1, { label: "Restore to folder", hint: "Workspace roster, agents, memories and projects will be unpacked here.", children: /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("input", {
+              "aria-label": "Restore to folder",
+              value: targetHome,
+              disabled: isRestoring,
+              onChange: (e) => setTargetHome(e.target.value),
+              style: { ...monoInputStyle$1, flex: 1, width: "auto" },
+              spellCheck: false
+            }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs(Btn, { disabled: isRestoring, onClick: () => void onBrowseTarget(), children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "folder", size: 14 }),
+              "Browse"
+            ] })
+          ] }) }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", {
+            style: {
+              padding: "12px 14px",
+              borderRadius: 10,
+              border: `1px solid ${hasNoticeHighlight ? "var(--cth-lemon)" : "var(--cth-ink-300)"}`,
+              background: hasNoticeHighlight ? "rgba(255, 209, 59, 0.14)" : "var(--cth-cream-50)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+              fontSize: 12,
+              lineHeight: 1.5,
+              color: "var(--cth-ink-700)"
+            },
+            children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontWeight: 600, color: "var(--cth-ink-900)" }, children: "What happens when you restore" }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("ol", { style: { margin: 0, paddingInlineStart: 18, display: "flex", flexDirection: "column", gap: 4 }, children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: runningCount > 0 ? `Stops ${runningCount} active session(s) cleanly and validates archive integrity.` : "Validates archive integrity and resets local runtime state cleanly." }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: dirty?.dirty ? `Destination currently has ${dirty.totalCount} existing item(s) (${dirtyPreview}). Existing files there will be cleared first so restored agents don't conflict.` : "Prepares the destination folder and unpacks settings, database, roster and hive agents." }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx("li", { children: "Reloads restored configuration and boots straight into your office." })
+              ] }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 11.5, color: "var(--cth-ink-500)" }, children: "Your original .tar.gz archive stays untouched, and local secret keys are preserved." })
+            ]
+          })
+        ] }),
+        notice && /* @__PURE__ */ jsxRuntimeExports.jsx(Note$7, { children: notice }),
+        error && /* @__PURE__ */ jsxRuntimeExports.jsx(ErrorLine, { children: error })
+      ] })
+    }
+  );
+}
 const DEFAULT_DRAFT = {
   dir: "~",
   name: "HarnessAgents",
@@ -94181,6 +94463,7 @@ const DEFAULT_DRAFT = {
 function ProOnboarding({ onComplete, entryOnly }) {
   const { t: t2 } = useTranslation();
   const [step2, setStep] = reactExports.useState(0);
+  const [restoring, setRestoring] = reactExports.useState(false);
   const [selectedTheme, setSelectedTheme] = reactExports.useState("office");
   const [entry, setEntry] = reactExports.useState({ path: "solo", orgName: "" });
   const [draft, setDraft] = reactExports.useState(DEFAULT_DRAFT);
@@ -94273,6 +94556,17 @@ function ProOnboarding({ onComplete, entryOnly }) {
     setBusy(false);
     onComplete?.(next);
   };
+  if (restoring) {
+    return /* @__PURE__ */ jsxRuntimeExports.jsx(
+      RestoreStep,
+      {
+        onBack: () => {
+          setError(void 0);
+          setRestoring(false);
+        }
+      }
+    );
+  }
   if (entryOnly || step2 <= 0 || !entry) {
     const activeEntry = entry ?? { path: "solo", orgName: "" };
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -94286,6 +94580,10 @@ function ProOnboarding({ onComplete, entryOnly }) {
           setError(void 0);
         },
         error,
+        onRestore: () => {
+          setError(void 0);
+          setRestoring(true);
+        },
         onContinue: () => {
           setError(void 0);
           setStep(1);

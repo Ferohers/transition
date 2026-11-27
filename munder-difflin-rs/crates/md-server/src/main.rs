@@ -53,6 +53,7 @@ use tower_http::services::ServeDir;
 
 fn spawn_pty_event_forwarder(state: &AppState) {
     let mut rx = state.pty.subscribe();
+    let st = state.clone();
     let workers = state.workers.clone();
     let wake_filing = state.wake_filing.clone();
     let switch_clear = state.switch_clear.clone();
@@ -116,6 +117,14 @@ fn spawn_pty_event_forwarder(state: &AppState) {
                         {
                             ended.remove(&oldest);
                         }
+                        drop(ended);
+                        crate::routes_hive::handle_agent_pty_exit(
+                            &st,
+                            &agent_id,
+                            exit_code,
+                            signal.as_deref(),
+                            &tail,
+                        );
                     }
                     let payload = serde_json::json!({
                         "exitCode": exit_code,
@@ -241,10 +250,14 @@ fn clear_floor_runtime(state: &AppState) {
 
 async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
     let data_dir = state.data_dir.clone();
+    let prev_home = state.harness_home();
 
     // Kill every live PTY (including `pty-god`) first so post-reset onboarding
     // does not see stale PTYs and skip spawning the new god agent.
     state.pty.kill_all();
+    if let Some(ref home) = prev_home {
+        crate::hive_bootstrap::kill_orphan_codex_daemons_under(&home.join("hive").join("agents"));
+    }
 
     // Wipe config/state files in the data dir before re-creating `ConfigStore`
     // while preserving the encryption master key and SQLite database files.
@@ -351,6 +364,9 @@ async fn floor_switch(
 
     // Stop active PTYs and reset per-floor runtime state cleanly before switching floors.
     state.pty.kill_all();
+    if let Some(ref prev) = prev_path {
+        crate::hive_bootstrap::kill_orphan_codex_daemons_under(&prev.join("hive").join("agents"));
+    }
     clear_floor_runtime(&state);
 
     let next_cfg = {
@@ -509,7 +525,7 @@ async fn roster_get(State(state): State<AppState>) -> Json<Option<RosterSnapshot
 async fn roster_put(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
-    Json(snap): Json<RosterSnapshot>,
+    Json(mut snap): Json<RosterSnapshot>,
 ) -> axum::response::Response {
     if let Some(raw_epoch) = headers.get("x-md-epoch").and_then(|v| v.to_str().ok())
         && let Ok(client_epoch) = raw_epoch.trim().parse::<u64>()
@@ -532,6 +548,31 @@ async fn roster_put(
     let home = state.harness_home();
     let res = {
         let mut store = state.roster.lock().unwrap();
+        if let Some(existing) = store.read(home.as_deref()) {
+            let mut prev_models: std::collections::HashMap<String, (Option<String>, serde_json::Value)> =
+                std::collections::HashMap::new();
+            for a in existing.agents.iter().chain(existing.archived.iter()) {
+                if let Some(id) = a.get("id").and_then(|v| v.as_str())
+                    && let Some(m) = a.get("model")
+                    && !m.is_null()
+                {
+                    let prov = a.get("provider").and_then(|v| v.as_str()).map(ToString::to_string);
+                    prev_models.insert(id.to_string(), (prov, m.clone()));
+                }
+            }
+            for item in &mut snap.agents {
+                if let Some(obj) = item.as_object_mut()
+                    && let Some(id) = obj.get("id").and_then(|v| v.as_str())
+                    && obj.get("model").is_none_or(|m| m.is_null())
+                    && let Some((prev_prov, prev_m)) = prev_models.get(id)
+                {
+                    let cur_prov = obj.get("provider").and_then(|v| v.as_str()).map(ToString::to_string);
+                    if &cur_prov == prev_prov {
+                        obj.insert("model".to_string(), prev_m.clone());
+                    }
+                }
+            }
+        }
         store.write(home.as_deref(), &snap)
     };
     if res.ok {
@@ -694,6 +735,14 @@ async fn pty_kill(
         Ok(()) => {
             state.pty.forget_pty(&req.id);
             state.submitter.forget_pty(&req.id);
+            let agent_id = req.id.strip_prefix("pty-").unwrap_or(&req.id);
+            if md_core::repo_fs::is_safe_id(agent_id)
+                && let Some(home) = state.harness_home()
+            {
+                crate::hive_bootstrap::kill_orphan_codex_daemons_under(
+                    &home.join("hive").join("agents").join(agent_id).join("codex-home"),
+                );
+            }
             Json(serde_json::json!({ "ok": true }))
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e.to_string() })),

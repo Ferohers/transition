@@ -449,11 +449,31 @@ pub(crate) fn read_opencode_usage_for_since(
     allow_cwd_fallback: bool,
     min_updated_ms: Option<u64>,
 ) -> Option<(md_hive::usage::AgentUsage, Option<u64>)> {
-    let home = dirs::home_dir()?;
-    let db_path = home.join(".local").join("share").join("opencode").join("opencode.db");
-    read_opencode_usage_from_db(&db_path, cwd, session_id, allow_cwd_fallback, min_updated_ms)
+    let empty = std::collections::HashSet::new();
+    read_opencode_usage_for_since_excluding(cwd, session_id, allow_cwd_fallback, min_updated_ms, &empty)
+        .map(|(_, u, ctx)| (u, ctx))
 }
 
+pub(crate) fn read_opencode_usage_for_since_excluding(
+    cwd: &str,
+    session_id: Option<&str>,
+    allow_cwd_fallback: bool,
+    min_updated_ms: Option<u64>,
+    exclude_sids: &std::collections::HashSet<String>,
+) -> Option<(String, md_hive::usage::AgentUsage, Option<u64>)> {
+    let home = dirs::home_dir()?;
+    let db_path = home.join(".local").join("share").join("opencode").join("opencode.db");
+    read_opencode_usage_from_db_excluding(
+        &db_path,
+        cwd,
+        session_id,
+        allow_cwd_fallback,
+        min_updated_ms,
+        exclude_sids,
+    )
+}
+
+#[cfg(test)]
 fn read_opencode_usage_from_db(
     db_path: &std::path::Path,
     cwd: &str,
@@ -461,6 +481,26 @@ fn read_opencode_usage_from_db(
     allow_cwd_fallback: bool,
     min_updated_ms: Option<u64>,
 ) -> Option<(md_hive::usage::AgentUsage, Option<u64>)> {
+    let empty = std::collections::HashSet::new();
+    read_opencode_usage_from_db_excluding(
+        db_path,
+        cwd,
+        session_id,
+        allow_cwd_fallback,
+        min_updated_ms,
+        &empty,
+    )
+    .map(|(_, u, ctx)| (u, ctx))
+}
+
+fn read_opencode_usage_from_db_excluding(
+    db_path: &std::path::Path,
+    cwd: &str,
+    session_id: Option<&str>,
+    allow_cwd_fallback: bool,
+    min_updated_ms: Option<u64>,
+    exclude_sids: &std::collections::HashSet<String>,
+) -> Option<(String, md_hive::usage::AgentUsage, Option<u64>)> {
     if !db_path.is_file() {
         return None;
     }
@@ -495,40 +535,43 @@ fn read_opencode_usage_from_db(
     } else if allow_cwd_fallback && !cwd.is_empty() {
         let cutoff = min_updated_ms.map(|m| i64::try_from(m.saturating_sub(5_000)).unwrap_or(i64::MAX));
         if has_v2 {
-            v2_pick = match cutoff {
-                Some(c) => conn
-                    .query_row(
-                        "SELECT id, time_updated, model FROM session_v2 WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 1",
-                        rusqlite::params![cwd, c],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .ok(),
-                None => conn
-                    .query_row(
-                        "SELECT id, time_updated, model FROM session_v2 WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
-                        [cwd],
-                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                    )
-                    .ok(),
-            };
+            let mut candidates: Vec<(String, i64, Option<String>)> = Vec::new();
+            if let Some(c) = cutoff {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT id, time_updated, model FROM session_v2 WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 20",
+                ) && let Ok(rows) = stmt.query_map(rusqlite::params![cwd, c], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+                }) {
+                    candidates.extend(rows.flatten());
+                }
+            } else if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, time_updated, model FROM session_v2 WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 20",
+            ) && let Ok(rows) = stmt.query_map([cwd], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            {
+                candidates.extend(rows.flatten());
+            }
+            v2_pick = candidates
+                .into_iter()
+                .find(|(id, _, _)| !exclude_sids.contains(id));
         }
         if has_v1 {
-            v1_pick = match cutoff {
-                Some(c) => conn
-                    .query_row(
-                        "SELECT id, time_updated FROM session WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 1",
-                        rusqlite::params![cwd, c],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .ok(),
-                None => conn
-                    .query_row(
-                        "SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 1",
-                        [cwd],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .ok(),
-            };
+            let mut candidates: Vec<(String, i64)> = Vec::new();
+            if let Some(c) = cutoff {
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT id, time_updated FROM session WHERE directory = ?1 AND time_updated >= ?2 ORDER BY time_updated DESC LIMIT 20",
+                ) && let Ok(rows) = stmt.query_map(rusqlite::params![cwd, c], |r| Ok((r.get(0)?, r.get(1)?)))
+                {
+                    candidates.extend(rows.flatten());
+                }
+            } else if let Ok(mut stmt) = conn.prepare(
+                "SELECT id, time_updated FROM session WHERE directory = ?1 ORDER BY time_updated DESC LIMIT 20",
+            ) && let Ok(rows) = stmt.query_map([cwd], |r| Ok((r.get(0)?, r.get(1)?)))
+            {
+                candidates.extend(rows.flatten());
+            }
+            v1_pick = candidates
+                .into_iter()
+                .find(|(id, _)| !exclude_sids.contains(id));
         }
     } else {
         return None;
@@ -566,7 +609,7 @@ fn read_opencode_usage_from_db(
     };
     let mut msg_stmt = conn.prepare(sql).ok()?;
     let rows = msg_stmt
-        .query_map([ses_id], |r| {
+        .query_map([ses_id.as_str()], |r| {
             let data: String = r.get(0)?;
             let ts: i64 = r.get(1)?;
             Ok((data, ts))
@@ -630,7 +673,7 @@ fn read_opencode_usage_from_db(
             }
         }
     }
-    Some((usage, latest_context))
+    Some((ses_id, usage, latest_context))
 }
 
 async fn usage_agent(State(state): State<AppState>, Query(q): Query<UsageQuery>) -> Json<Value> {
@@ -683,8 +726,21 @@ pub(crate) fn collect_agent_usage_rows(
     let root = default_projects_root();
     let snap = state.roster.lock().unwrap().read(home.as_deref());
     let reg = state.hive.lock().unwrap().registry();
+    let hook_sessions = state.hooks.session_by_id.lock().unwrap().clone();
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
+    let mut claimed_sids: std::collections::HashSet<String> = hook_sessions
+        .values()
+        .filter(|s| !s.is_empty())
+        .cloned()
+        .collect();
+    if let Some(ref s) = snap {
+        for a in s.agents.iter().chain(s.archived.iter()) {
+            if let Some(sid) = a.get("sessionId").and_then(|v| v.as_str()).filter(|x| !x.is_empty()) {
+                claimed_sids.insert(sid.to_string());
+            }
+        }
+    }
     if let Some(s) = snap {
         for a in s.agents.iter().chain(s.archived.iter()) {
             let Some(id) = a.get("id").and_then(|v| v.as_str()) else {
@@ -705,33 +761,33 @@ pub(crate) fn collect_agent_usage_rows(
             let provider = a.get("provider").and_then(|v| v.as_str()).unwrap_or("");
             let sid = a.get("sessionId").and_then(|v| v.as_str());
             let sleeping = a.get("sleeping").and_then(|v| v.as_bool()).unwrap_or(false);
-            let hook_sid = state
-                .hooks
-                .session_by_id
-                .lock()
-                .unwrap()
-                .get(id)
-                .cloned();
+            let hook_sid = hook_sessions.get(id).cloned();
             let started_at = reg
                 .get("agents")
                 .and_then(|m| m.get(id))
                 .and_then(|info| info.get("startedAt"))
                 .and_then(|v| v.as_u64());
             let eff_sid = sid.or(hook_sid.as_deref());
-            let mut u = if provider == "opencode" {
-                read_opencode_usage_for_since(&cwd, eff_sid, !sleeping, started_at)
-                    .map(|(oc, _)| oc)
-                    .unwrap_or_default()
+            let u = if provider == "opencode" {
+                let mut exclude = claimed_sids.clone();
+                if let Some(own) = eff_sid {
+                    exclude.remove(own);
+                }
+                if let Some((picked_sid, oc, _)) = read_opencode_usage_for_since_excluding(
+                    &cwd,
+                    eff_sid,
+                    !sleeping,
+                    started_at,
+                    &exclude,
+                ) {
+                    claimed_sids.insert(picked_sid);
+                    oc
+                } else {
+                    md_hive::usage::AgentUsage::default()
+                }
             } else {
                 read_agent_usage_in(&root, &cwd, eff_sid)
             };
-            if u.input_tokens + u.output_tokens + u.cache_read_tokens + u.cache_write_tokens == 0
-                && provider != "opencode"
-                && !sleeping
-                && let Some((oc, _)) = read_opencode_usage_for_since(&cwd, eff_sid, true, started_at)
-            {
-                u = oc;
-            }
             rows.push((id.to_string(), u));
         }
     }
@@ -1393,6 +1449,20 @@ mod tests {
         assert_eq!(u_v2.model.as_deref(), Some("hy4-flash-free"));
         assert_eq!(u_v2.cache_read_tokens, 50_000);
         assert_eq!(ctx_v2, Some(51_250));
+
+        // Claimed sessions must be excluded from cwd fallback for sibling agents.
+        let mut excluded = std::collections::HashSet::new();
+        excluded.insert("ses-v2".to_string());
+        let (picked_id, _, _) = read_opencode_usage_from_db_excluding(
+            &db_path,
+            "/tmp/acme",
+            None,
+            true,
+            Some(2_000_000),
+            &excluded,
+        )
+        .unwrap();
+        assert_eq!(picked_id, "ses-new");
 
         std::fs::remove_dir_all(&dir).ok();
     }

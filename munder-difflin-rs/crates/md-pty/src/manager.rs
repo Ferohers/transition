@@ -513,18 +513,14 @@ impl PtyManager {
     }
 
     pub fn kill(&self, id: &str) -> Result<(), PtyError> {
-        let mut removed = {
+        let removed = {
             let mut guard = self.inner.lock().unwrap();
             guard
                 .sessions
                 .remove(id)
                 .ok_or_else(|| PtyError::NotFound(id.to_string()))?
         };
-        removed
-            .killer
-            .kill()
-            .map_err(|e| PtyError::Pty(e.to_string()))?;
-        Ok(())
+        kill_session_tree(removed)
     }
 
     pub fn kill_all(&self) {
@@ -533,8 +529,8 @@ impl PtyManager {
             guard.wanted.clear();
             guard.sessions.drain().map(|(_, s)| s).collect()
         };
-        for mut session in sessions {
-            let _ = session.killer.kill();
+        for session in sessions {
+            let _ = kill_session_tree(session);
         }
     }
 
@@ -586,6 +582,25 @@ impl Default for PtyManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn kill_session_tree(mut session: PtySession) -> Result<(), PtyError> {
+    let pid = session.pid;
+    let res = session
+        .killer
+        .kill()
+        .map_err(|e| PtyError::Pty(e.to_string()));
+    #[cfg(unix)]
+    if let Some(p) = pid
+        && p > 1
+    {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-9", &format!("-{p}")])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    res
 }
 
 fn drain_valid_utf8(pending: &mut Vec<u8>) -> String {

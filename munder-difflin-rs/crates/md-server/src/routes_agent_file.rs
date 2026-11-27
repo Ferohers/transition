@@ -274,7 +274,10 @@ async fn agent_file_plan(
                 };
                 let already = active_mcp
                     .and_then(|m| m.get(name))
-                    .and_then(|v| v.as_bool())
+                    .and_then(|v| {
+                        v.as_bool()
+                            .or_else(|| v.get("enabled").and_then(|b| b.as_bool()))
+                    })
                     .unwrap_or(false);
                 changes.push(make_change(
                     format!("mcp:catalog:{name}"),

@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 const COMPACT_GRACE_MS: u64 = 5 * 60_000;
 const POST_COMPACT_GRACE_MS: u64 = 90_000;
+const VELOCITY_MIN_WINDOW_MS: u64 = 20_000;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
@@ -354,6 +355,8 @@ impl CircuitBreaker {
             let s = self.agents.entry(inp.agent_id.clone()).or_default();
             let mut trip_reason: Option<String> = None;
 
+            let velocity_due = s.last_sample_at == 0
+                || now_ms.saturating_sub(s.last_sample_at) >= VELOCITY_MIN_WINDOW_MS;
             if let Some(&cap) = agent_caps.get(&inp.agent_id).filter(|&&c| c > 0)
                 && inp.work_tokens > cap
             {
@@ -369,6 +372,7 @@ impl CircuitBreaker {
                     inp.usd
                 ));
             } else if now_ms >= s.compacting_until
+                && velocity_due
                 && let Some(prev_out) = s.last_output_tokens
                 && s.last_sample_at > 0
                 && now_ms > s.last_sample_at
@@ -387,8 +391,10 @@ impl CircuitBreaker {
                 }
             }
 
-            s.last_output_tokens = Some(inp.output_tokens);
-            s.last_sample_at = now_ms;
+            if velocity_due {
+                s.last_output_tokens = Some(inp.output_tokens);
+                s.last_sample_at = now_ms;
+            }
 
             let prev_level = s.level;
             let next_level = if let Some(ref r) = trip_reason {
@@ -517,5 +523,59 @@ mod tests {
         assert_eq!(dec.len(), 1);
         assert_eq!(dec[0].state.level, BreakerLevel::Steering);
         assert_eq!(dec[0].action, BreakerAction::Steer);
+    }
+
+    #[test]
+    fn velocity_ignores_sub_window_bursts_and_trips_sustained_velocity() {
+        let mut cb = CircuitBreaker::new();
+        let cfg: md_core::config::HarnessConfig = serde_json::from_value(serde_json::json!({
+            "circuitBreaker": {
+                "enabled": true,
+                "tokenVelocityPerMin": 60000
+            }
+        }))
+        .unwrap();
+        cb.configure_from_harness(&cfg);
+        let caps = HashMap::new();
+
+        // First sample initializes baseline at t = 1_000ms.
+        let d0 = cb.tick_spend_and_velocity(
+            &[BreakerUsageInput {
+                agent_id: "god".into(),
+                work_tokens: 1_000,
+                output_tokens: 1_000,
+                usd: 0.0,
+            }],
+            &caps,
+            1_000,
+        );
+        assert!(d0.is_empty());
+
+        // 6 seconds later (sub-20s window): a 15k output burst must NOT false-trip steering.
+        let d1 = cb.tick_spend_and_velocity(
+            &[BreakerUsageInput {
+                agent_id: "god".into(),
+                work_tokens: 16_000,
+                output_tokens: 16_000,
+                usd: 0.0,
+            }],
+            &caps,
+            7_000,
+        );
+        assert!(d1.is_empty(), "6s startup burst must not trip velocity");
+
+        // At t = 25_000ms (24s elapsed): +40k tokens = 100k/min > 60k/min must trip steering.
+        let d2 = cb.tick_spend_and_velocity(
+            &[BreakerUsageInput {
+                agent_id: "god".into(),
+                work_tokens: 41_000,
+                output_tokens: 41_000,
+                usd: 0.0,
+            }],
+            &caps,
+            25_000,
+        );
+        assert_eq!(d2.len(), 1);
+        assert_eq!(d2[0].state.level, BreakerLevel::Steering);
     }
 }

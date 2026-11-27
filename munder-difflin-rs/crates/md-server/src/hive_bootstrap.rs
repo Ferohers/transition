@@ -7,7 +7,7 @@ use md_core::config::expand_tilde;
 use md_core::repo_fs::is_safe_id;
 use md_pty::manager::SpawnOptions;
 use serde_json::{Map, Value, json};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -133,13 +133,365 @@ fn copy_dir_missing_or_updated(src: &Path, dst: &Path) {
     }
 }
 
-fn ensure_agent_skills(agent_dir: &Path) {
-    let Some(res_root) = crate::routes_catalog::resources_root() else {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedMcpServer {
+    id: String,
+    command: String,
+    args: Vec<String>,
+    env: BTreeMap<String, String>,
+}
+
+const BUILTIN_MCP_CATALOG: &[(&str, &str, &[&str], &[&str], bool)] = &[
+    (
+        "sequential-thinking",
+        "npx",
+        &["-y", "@modelcontextprotocol/server-sequential-thinking@1.0.0"],
+        &[],
+        true,
+    ),
+    ("time", "uvx", &["mcp-server-time@2026.10.10"], &[], true),
+    ("fetch", "uvx", &["mcp-server-fetch@2026.10.10"], &[], true),
+    (
+        "context7",
+        "npx",
+        &["-y", "@upstash/context7-mcp@4.4.1"],
+        &[],
+        true,
+    ),
+    (
+        "terraform",
+        "docker",
+        &["run", "-i", "--rm", "hashicorp/terraform-mcp-server:1.3.0"],
+        &[],
+        false,
+    ),
+    (
+        "filesystem",
+        "npx",
+        &["-y", "@modelcontextprotocol/server-filesystem@1.0.0", "<cwd>"],
+        &[],
+        false,
+    ),
+    (
+        "git",
+        "uvx",
+        &["mcp-server-git@2026.10.10", "--repository", "<cwd>"],
+        &[],
+        false,
+    ),
+    (
+        "playwright",
+        "npx",
+        &["-y", "@playwright/mcp@0.0.83"],
+        &[],
+        false,
+    ),
+    (
+        "chrome-devtools",
+        "npx",
+        &["-y", "chrome-devtools-mcp@1.10.1", "--no-usage-statistics"],
+        &[],
+        false,
+    ),
+    (
+        "github",
+        "docker",
+        &[
+            "run",
+            "-i",
+            "--rm",
+            "-e",
+            "GITHUB_PERSONAL_ACCESS_TOKEN",
+            "ghcr.io/github/github-mcp-server:v2.0.2",
+        ],
+        &["GITHUB_PERSONAL_ACCESS_TOKEN"],
+        false,
+    ),
+    (
+        "dbhub",
+        "npx",
+        &["-y", "@bytebase/dbhub@1.5.0", "--transport", "stdio"],
+        &["DSN"],
+        false,
+    ),
+    (
+        "mcp-toolbox-databases",
+        "npx",
+        &["-y", "@toolbox-sdk/server@1.14.0", "--prebuilt=postgres", "--stdio"],
+        &["POSTGRES_DATABASE", "POSTGRES_USER", "POSTGRES_PASSWORD"],
+        false,
+    ),
+    (
+        "brave-search",
+        "npx",
+        &["-y", "@brave/brave-search-mcp-server@2.1.4", "--transport", "stdio"],
+        &["BRAVE_API_KEY"],
+        false,
+    ),
+    (
+        "firecrawl",
+        "npx",
+        &["-y", "firecrawl-mcp@3.30.0"],
+        &["FIRECRAWL_API_KEY"],
+        false,
+    ),
+];
+
+fn mcp_enabled_flag(val: Option<&Value>) -> Option<bool> {
+    val.and_then(|v| {
+        v.as_bool()
+            .or_else(|| v.get("enabled").and_then(|b| b.as_bool()))
+    })
+}
+
+fn is_safe_mcp_or_skill_name(raw: &str) -> bool {
+    !raw.is_empty()
+        && !raw.contains('/')
+        && !raw.contains('\\')
+        && !raw.contains("..")
+}
+
+fn resolve_agent_mcp_servers(
+    extra: &Map<String, Value>,
+    agent_id: &str,
+    cwd: &str,
+    env_map: &HashMap<String, String>,
+) -> Vec<ResolvedMcpServer> {
+    let floor = extra.get("mcpDefaults").and_then(|v| v.as_object());
+    let per_agent = extra
+        .get("agentMcp")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get(agent_id))
+        .and_then(|v| v.as_object());
+
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+
+    for &(id, cmd, args_tpl, env_keys, default_on) in BUILTIN_MCP_CATALOG {
+        let enabled = mcp_enabled_flag(per_agent.and_then(|m| m.get(id)))
+            .or_else(|| mcp_enabled_flag(floor.and_then(|m| m.get(id))))
+            .unwrap_or(default_on);
+        if !enabled {
+            continue;
+        }
+        let args = args_tpl
+            .iter()
+            .map(|a| if *a == "<cwd>" { cwd.to_string() } else { (*a).to_string() })
+            .collect();
+        let mut env = BTreeMap::new();
+        for &k in env_keys {
+            if let Some(v) = env_map
+                .get(k)
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .or_else(|| std::env::var(k).ok().filter(|s| !s.is_empty()))
+            {
+                env.insert(k.to_string(), v);
+            }
+        }
+        seen.insert(id.to_string());
+        out.push(ResolvedMcpServer {
+            id: id.to_string(),
+            command: cmd.to_string(),
+            args,
+            env,
+        });
+    }
+
+    if let Some(custom_list) = extra
+        .get("agentCustomMcp")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get(agent_id))
+        .and_then(|v| v.as_array())
+    {
+        for item in custom_list {
+            let Some(obj) = item.as_object() else {
+                continue;
+            };
+            if obj.get("enabled").and_then(|v| v.as_bool()) == Some(false) {
+                continue;
+            }
+            let Some(id) = obj
+                .get("name")
+                .or_else(|| obj.get("id"))
+                .and_then(|v| v.as_str())
+                .filter(|s| is_safe_mcp_or_skill_name(s) && !seen.contains(*s))
+            else {
+                continue;
+            };
+            let Some(cmd) = obj
+                .get("command")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let args: Vec<String> = obj
+                .get("args")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str())
+                        .map(|a| if a == "<cwd>" { cwd.to_string() } else { a.to_string() })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut env = BTreeMap::new();
+            if let Some(env_obj) = obj.get("env").and_then(|v| v.as_object()) {
+                for (ek, ev) in env_obj {
+                    if let Some(val) = ev.as_str().filter(|s| !s.is_empty()) {
+                        env.insert(ek.clone(), val.to_string());
+                    } else if let Some(val) = env_map
+                        .get(ek)
+                        .filter(|s| !s.is_empty())
+                        .cloned()
+                        .or_else(|| std::env::var(ek).ok().filter(|s| !s.is_empty()))
+                    {
+                        env.insert(ek.clone(), val);
+                    }
+                }
+            }
+            seen.insert(id.to_string());
+            out.push(ResolvedMcpServer {
+                id: id.to_string(),
+                command: cmd.to_string(),
+                args,
+                env,
+            });
+        }
+    }
+
+    out
+}
+
+fn resolve_agent_skill_prefs(
+    extra: &Map<String, Value>,
+    agent_id: &str,
+) -> (Vec<String>, HashSet<String>) {
+    let strip_skill = |raw: &str| -> Option<String> {
+        let name = raw.trim().strip_prefix("skill:").unwrap_or(raw.trim());
+        is_safe_mcp_or_skill_name(name).then(|| name.to_string())
+    };
+    let requested = extra
+        .get("agentSkills")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get(agent_id))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().and_then(strip_skill))
+                .collect()
+        })
+        .unwrap_or_default();
+    let off = extra
+        .get("agentSkillsOff")
+        .and_then(|v| v.as_object())
+        .and_then(|m| m.get(agent_id))
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().and_then(strip_skill))
+                .collect()
+        })
+        .unwrap_or_default();
+    (requested, off)
+}
+
+fn mcp_servers_stdio_map(servers: &[ResolvedMcpServer]) -> Map<String, Value> {
+    let mut map = Map::new();
+    for s in servers {
+        let mut entry = Map::new();
+        entry.insert("command".to_string(), json!(s.command));
+        entry.insert("args".to_string(), json!(s.args));
+        if !s.env.is_empty() {
+            entry.insert("env".to_string(), json!(s.env));
+        }
+        map.insert(s.id.clone(), Value::Object(entry));
+    }
+    map
+}
+
+fn sync_skills_into_dir(
+    dst_skills: &Path,
+    bundled_root: Option<&Path>,
+    requested: &[String],
+    off: &HashSet<String>,
+) {
+    for disabled in off {
+        let target = dst_skills.join(disabled);
+        if target.is_dir() {
+            let _ = fs::remove_dir_all(&target);
+        }
+    }
+    if let Some(src_skills) = bundled_root
+        && let Ok(rd) = fs::read_dir(src_skills)
+    {
+        for entry in rd.flatten() {
+            let src = entry.path();
+            if !src.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if off.contains(&name) {
+                continue;
+            }
+            copy_dir_missing_or_updated(&src, &dst_skills.join(&name));
+        }
+    }
+    if requested.is_empty() {
+        return;
+    }
+    let Some(user_home) = dirs::home_dir() else {
         return;
     };
-    let src_skills = res_root.join("skills");
-    if src_skills.is_dir() {
-        copy_dir_missing_or_updated(&src_skills, &agent_dir.join(".claude").join("skills"));
+    let candidate_roots = [
+        user_home.join(".claude").join("skills"),
+        user_home.join(".agents").join("skills"),
+        user_home.join(".config").join("opencode").join("skills"),
+        user_home.join(".codex").join("skills"),
+    ];
+    for name in requested {
+        if off.contains(name) {
+            continue;
+        }
+        let dest = dst_skills.join(name);
+        if dest.is_dir() {
+            continue;
+        }
+        for root in &candidate_roots {
+            let src = root.join(name);
+            if src.is_dir() {
+                copy_dir_missing_or_updated(&src, &dest);
+                break;
+            }
+        }
+    }
+}
+
+fn sync_agent_skills(
+    agent_dir: &Path,
+    provider: &str,
+    codex_dir: Option<&Path>,
+    requested: &[String],
+    off: &HashSet<String>,
+) {
+    let bundled_root = crate::routes_catalog::resources_root()
+        .map(|r| r.join("skills"))
+        .filter(|p| p.is_dir());
+    let mut targets = vec![agent_dir.join(".claude").join("skills")];
+    match provider {
+        "opencode" => targets.push(agent_dir.join(".opencode").join("skills")),
+        "gemini" => targets.push(agent_dir.join(".gemini-hive").join("skills")),
+        "codex" => {
+            if let Some(cd) = codex_dir {
+                targets.push(cd.join("skills"));
+            }
+        }
+        _ => {}
+    }
+    for dst in targets {
+        sync_skills_into_dir(&dst, bundled_root.as_deref(), requested, off);
     }
 }
 
@@ -267,26 +619,29 @@ pub fn sync_fleet_json(state: &AppState) {
             let cwd_str = info.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
             let hook_sid = sessions.get(id).map(String::as_str);
             let started_at = info.get("startedAt").and_then(|v| v.as_u64());
-            let oc_usage = if provider == "opencode" && (!cwd_str.is_empty() || hook_sid.is_some())
-            {
+            let mut u = usage_by_id.get(id).cloned();
+            let mut oc_ctx: Option<u64> = None;
+            if provider == "opencode" && (!cwd_str.is_empty() || hook_sid.is_some()) {
                 let expanded = if cwd_str.is_empty() {
                     String::new()
                 } else {
                     expand_tilde(cwd_str).to_string_lossy().into_owned()
                 };
-                crate::routes_usage_memory_kg::read_opencode_usage_for_since(
-                    &expanded,
-                    hook_sid,
-                    !sleeping,
-                    started_at,
-                )
-            } else {
-                None
-            };
-            let u = usage_by_id
-                .get(id)
-                .cloned()
-                .or_else(|| oc_usage.as_ref().map(|(x, _)| x.clone()));
+                if let Some((_, oc_u, latest)) =
+                    crate::routes_usage_memory_kg::read_opencode_usage_for_since_excluding(
+                        &expanded,
+                        hook_sid,
+                        u.is_none() && !sleeping,
+                        started_at,
+                        &std::collections::HashSet::new(),
+                    )
+                {
+                    oc_ctx = latest;
+                    if u.is_none() {
+                        u = Some(oc_u);
+                    }
+                }
+            }
             let tokens = u
                 .as_ref()
                 .map(|x| x.input_tokens + x.output_tokens + x.cache_read_tokens + x.cache_write_tokens)
@@ -296,25 +651,23 @@ pub fn sync_fleet_json(state: &AppState) {
                 .map(|x| (x.estimated_cost_usd * 10_000.0).round() / 10_000.0)
                 .unwrap_or(0.0);
             let ctx = contexts.get(id).cloned().or_else(|| {
-                oc_usage.as_ref().and_then(|(oc_u, latest)| {
-                    latest.map(|tok| {
-                        let model_name = oc_u
-                            .model
-                            .as_deref()
-                            .or_else(|| models.get(id).map(String::as_str))
-                            .or_else(|| info.get("model").and_then(|v| v.as_str()))
-                            .unwrap_or("");
-                        let limit = crate::routes_usage_memory_kg::opencode_model_context_limit(
-                            None,
-                            model_name,
-                        );
-                        md_hive::hooks::ContextSnapshot {
-                            agent_id: id.clone(),
-                            tokens: tok,
-                            limit,
-                            ts: now_ms,
-                        }
-                    })
+                oc_ctx.map(|tok| {
+                    let model_name = u
+                        .as_ref()
+                        .and_then(|x| x.model.as_deref())
+                        .or_else(|| models.get(id).map(String::as_str))
+                        .or_else(|| info.get("model").and_then(|v| v.as_str()))
+                        .unwrap_or("");
+                    let limit = crate::routes_usage_memory_kg::opencode_model_context_limit(
+                        None,
+                        model_name,
+                    );
+                    md_hive::hooks::ContextSnapshot {
+                        agent_id: id.clone(),
+                        tokens: tok,
+                        limit,
+                        ts: now_ms,
+                    }
                 })
             });
             let ctx_pct = ctx.as_ref().and_then(|c| {
@@ -373,7 +726,11 @@ pub fn sync_fleet_json(state: &AppState) {
     }
 }
 
-fn install_claude_hooks_settings(agent_dir: &Path) -> Option<PathBuf> {
+fn install_claude_hooks_settings(
+    agent_dir: &Path,
+    mcp_servers: &[ResolvedMcpServer],
+    skills_off: &HashSet<String>,
+) -> Option<PathBuf> {
     let settings_path = agent_dir.join("claude-settings.json");
     let hook_cmd = "curl -sS -m 5 -X POST \"$MD_HOOK_URL\" -H \"Authorization: Bearer $MD_HOOK_TOKEN\" -H \"Content-Type: application/json\" --data-binary @- || true";
     let hook_entry = |matcher: Option<&str>| -> Value {
@@ -387,8 +744,10 @@ fn install_claude_hooks_settings(agent_dir: &Path) -> Option<PathBuf> {
         );
         Value::Object(obj)
     };
-    let doc = json!({
-        "hooks": {
+    let mut doc = Map::new();
+    doc.insert(
+        "hooks".to_string(),
+        json!({
             "SessionStart": [hook_entry(None)],
             "UserPromptSubmit": [hook_entry(None)],
             "PreToolUse": [hook_entry(Some("*"))],
@@ -397,9 +756,25 @@ fn install_claude_hooks_settings(agent_dir: &Path) -> Option<PathBuf> {
             "PostCompact": [hook_entry(None)],
             "Stop": [hook_entry(None)],
             "Notification": [hook_entry(None)],
+        }),
+    );
+    if !mcp_servers.is_empty() {
+        doc.insert(
+            "mcpServers".to_string(),
+            Value::Object(mcp_servers_stdio_map(mcp_servers)),
+        );
+    }
+    if !skills_off.is_empty() {
+        let mut deny: Vec<String> = Vec::new();
+        let mut sorted: Vec<&String> = skills_off.iter().collect();
+        sorted.sort();
+        for name in sorted {
+            deny.push(format!("Skill({name})"));
+            deny.push(format!("Skill({name}:*)"));
         }
-    });
-    if let Ok(text) = serde_json::to_string_pretty(&doc)
+        doc.insert("permissions".to_string(), json!({ "deny": deny }));
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&Value::Object(doc))
         && atomic_write_string(&settings_path, &text).is_ok()
     {
         return Some(settings_path);
@@ -411,6 +786,7 @@ fn install_opencode_config_content(
     agent_dir: &Path,
     hive_root: &Path,
     auto_mode: bool,
+    mcp_servers: &[ResolvedMcpServer],
 ) -> Option<String> {
     if fs::create_dir_all(agent_dir).is_err() {
         return None;
@@ -754,11 +1130,108 @@ export default {
             }),
         );
     }
+    if !mcp_servers.is_empty() {
+        let mut mcp_map = Map::new();
+        for s in mcp_servers {
+            let mut cmd_arr = Vec::with_capacity(1 + s.args.len());
+            cmd_arr.push(s.command.clone());
+            cmd_arr.extend(s.args.iter().cloned());
+            let mut entry = Map::new();
+            entry.insert("type".to_string(), json!("local"));
+            entry.insert("command".to_string(), json!(cmd_arr));
+            entry.insert("enabled".to_string(), Value::Bool(true));
+            if !s.env.is_empty() {
+                entry.insert("environment".to_string(), json!(s.env));
+            }
+            mcp_map.insert(s.id.clone(), Value::Object(entry));
+        }
+        cfg.insert("mcp".to_string(), Value::Object(mcp_map));
+    }
     serde_json::to_string(&Value::Object(cfg)).ok()
 }
 
-fn install_codex_home(home: &Path, hive_root: &Path, agent_dir: &Path) -> Option<PathBuf> {
+/// Terminate detached `codex app-server` daemon processes whose command line references
+/// `scope_dir` (e.g. a per-agent `codex-home` or `hive/agents/` root). Never touches `~/.codex`.
+pub fn kill_orphan_codex_daemons_under(scope_dir: &Path) {
+    #[cfg(unix)]
+    {
+        let needle = scope_dir.to_string_lossy();
+        if needle.is_empty() || needle == "/" {
+            return;
+        }
+        let Ok(out) = std::process::Command::new("/bin/ps")
+            .args(["-eo", "pid=,args="])
+            .output()
+        else {
+            return;
+        };
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut pids = Vec::new();
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            let Some((pid_str, args)) = trimmed.split_once(char::is_whitespace) else {
+                continue;
+            };
+            if args.contains(needle.as_ref()) && args.contains("codex app-server") {
+                if let Ok(pid) = pid_str.trim().parse::<u32>()
+                    && pid > 1
+                {
+                    pids.push(pid.to_string());
+                }
+            }
+        }
+        if !pids.is_empty() {
+            let mut args = vec!["-9".to_string()];
+            args.extend(pids);
+            let _ = std::process::Command::new("/bin/kill")
+                .args(&args)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = scope_dir;
+}
+
+/// Strip desktop-only plugins, marketplaces, and hardcoded global `node_repl` MCP sections
+/// from `~/.codex/config.toml` so per-agent headless `codex-home` instances boot quickly
+/// without attempting missing marketplace syncs or pointing `CODEX_HOME` back to `~/.codex`.
+fn sanitize_codex_config_toml(raw: &str) -> String {
+    let mut out = Vec::new();
+    let mut skip_section = false;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[") {
+            let header = trimmed[1..trimmed.len() - 1].trim();
+            skip_section = header.starts_with("plugins.")
+                || header == "plugins"
+                || header.starts_with("marketplaces.")
+                || header == "marketplaces"
+                || header.starts_with("mcp_servers.node_repl")
+                || header.starts_with("mcp_servers.computer-use")
+                || header.starts_with("desktop");
+        }
+        if !skip_section {
+            out.push(line);
+        }
+    }
+    let mut joined = out.join("\n");
+    if !joined.is_empty() && !joined.ends_with('\n') {
+        joined.push('\n');
+    }
+    joined
+}
+
+fn install_codex_home(
+    home: &Path,
+    hive_root: &Path,
+    agent_dir: &Path,
+    cwd: &Path,
+    mcp_servers: &[ResolvedMcpServer],
+) -> Option<PathBuf> {
     let codex_dir = agent_dir.join("codex-home");
+    kill_orphan_codex_daemons_under(&codex_dir);
     if fs::create_dir_all(&codex_dir).is_err() {
         return None;
     }
@@ -777,13 +1250,45 @@ fn install_codex_home(home: &Path, hive_root: &Path, agent_dir: &Path) -> Option
             }
         }
         let cfg_src = global_codex.join("config.toml");
-        let mut cfg_text = fs::read_to_string(&cfg_src).unwrap_or_default();
+        let raw_cfg = fs::read_to_string(&cfg_src).unwrap_or_default();
+        let mut cfg_text = sanitize_codex_config_toml(&raw_cfg);
+        let esc = |p: &str| p.replace('\\', "\\\\").replace('"', "\\\"");
+        for root in [home, cwd] {
+            let root_esc = esc(&root.to_string_lossy());
+            let header = format!("[projects.\"{root_esc}\"]");
+            if !cfg_text.contains(&header) {
+                cfg_text.push_str(&format!("\n{header}\ntrust_level = \"trusted\"\n"));
+            }
+        }
         if !cfg_text.contains("[sandbox_workspace_write]") {
-            let h_str = home.to_string_lossy().replace('"', "\\\"");
-            let hr_str = hive_root.to_string_lossy().replace('"', "\\\"");
+            let h_str = esc(&home.to_string_lossy());
+            let hr_str = esc(&hive_root.to_string_lossy());
             cfg_text.push_str(&format!(
                 "\n[sandbox_workspace_write]\nwritable_roots = [\"{h_str}\", \"{hr_str}\"]\n"
             ));
+        }
+        for s in mcp_servers {
+            let section = format!("[mcp_servers.{}]", s.id);
+            let quoted_section = format!("[mcp_servers.\"{}\"]", s.id);
+            if cfg_text.contains(&section) || cfg_text.contains(&quoted_section) {
+                continue;
+            }
+            let args_toml = s
+                .args
+                .iter()
+                .map(|a| format!("\"{}\"", esc(a)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            cfg_text.push_str(&format!(
+                "\n{section}\ncommand = \"{}\"\nargs = [{args_toml}]\n",
+                esc(&s.command)
+            ));
+            if !s.env.is_empty() {
+                cfg_text.push_str(&format!("[mcp_servers.{}.env]\n", s.id));
+                for (ek, ev) in &s.env {
+                    cfg_text.push_str(&format!("{ek} = \"{}\"\n", esc(ev)));
+                }
+            }
         }
         let _ = atomic_write_string(&codex_dir.join("config.toml"), &cfg_text);
     }
@@ -805,7 +1310,10 @@ fn install_codex_home(home: &Path, hive_root: &Path, agent_dir: &Path) -> Option
     Some(codex_dir)
 }
 
-fn install_gemini_hooks(agent_dir: &Path) -> Option<PathBuf> {
+fn install_gemini_hooks(
+    agent_dir: &Path,
+    mcp_servers: &[ResolvedMcpServer],
+) -> Option<PathBuf> {
     let gemini_dir = agent_dir.join(".gemini-hive");
     let settings_path = gemini_dir.join("system-settings.json");
     let hook_cmd = "curl -sS -m 5 -X POST \"$MD_HOOK_URL\" -H \"Authorization: Bearer $MD_HOOK_TOKEN\" -H \"Content-Type: application/json\" --data-binary @- || true";
@@ -826,17 +1334,28 @@ fn install_gemini_hooks(agent_dir: &Path) -> Option<PathBuf> {
         );
         Value::Object(obj)
     };
-    let doc = json!({
-        "hooksConfig": { "enabled": true, "notifications": false },
-        "hooks": {
+    let mut doc = Map::new();
+    doc.insert(
+        "hooksConfig".to_string(),
+        json!({ "enabled": true, "notifications": false }),
+    );
+    doc.insert(
+        "hooks".to_string(),
+        json!({
             "SessionStart": [hook_entry("session-start", None)],
             "BeforeAgent": [hook_entry("before-agent", None)],
             "BeforeTool": [hook_entry("before-tool", Some(".*"))],
             "AfterTool": [hook_entry("after-tool", Some(".*"))],
             "AfterAgent": [hook_entry("after-agent", None)],
-        }
-    });
-    if let Ok(text) = serde_json::to_string_pretty(&doc)
+        }),
+    );
+    if !mcp_servers.is_empty() {
+        doc.insert(
+            "mcpServers".to_string(),
+            Value::Object(mcp_servers_stdio_map(mcp_servers)),
+        );
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&Value::Object(doc))
         && atomic_write_string(&settings_path, &text).is_ok()
     {
         return Some(settings_path);
@@ -1074,7 +1593,6 @@ pub fn prepare_agent_spawn(
         if fs::read_to_string(&id_path).ok().as_deref() != Some(identity_body.as_str()) {
             let _ = atomic_write_string(&id_path, &identity_body);
         }
-        ensure_agent_skills(&agent_dir_path);
     }
 
     // Ensure agent exists in registry.json
@@ -1184,8 +1702,8 @@ pub fn prepare_agent_spawn(
         opts.env.entry("PATH".to_string()).or_insert(cur_path);
     }
 
-    // Apply `maxTurns` and OpenCode non-interactive config/plugin bridge.
-    let (max_turns, auto_mode) = {
+    // Apply `maxTurns`, per-agent MCP servers, skills, and provider config/hook bridges.
+    let (max_turns, auto_mode, cfg_extra) = {
         let mut store = state.config.lock().unwrap();
         let cfg = store.read();
         let mt = cfg
@@ -1198,8 +1716,12 @@ pub fn prepare_agent_spawn(
             .get("autoMode")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        (mt, am)
+        (mt, am, cfg.extra)
     };
+    let cwd_expanded = expand_tilde(&opts.cwd);
+    let cwd_str_resolved = cwd_expanded.to_string_lossy().into_owned();
+    let mcp_servers = resolve_agent_mcp_servers(&cfg_extra, agent_id, &cwd_str_resolved, &opts.env);
+    let (requested_skills, skills_off) = resolve_agent_skill_prefs(&cfg_extra, agent_id);
     if provider == "claude"
         && !opts.args.iter().any(|a| a == "--max-turns")
         && let Some(n) = max_turns
@@ -1210,23 +1732,40 @@ pub fn prepare_agent_spawn(
 
     if is_safe_id(agent_id) {
         let agent_dir = hive_root.join("agents").join(agent_id);
+        let mut codex_dir_for_skills: Option<PathBuf> = None;
         match provider {
             "claude" => {
                 if !opts.args.iter().any(|a| a == "--settings")
-                    && let Some(settings_path) = install_claude_hooks_settings(&agent_dir)
+                    && let Some(settings_path) =
+                        install_claude_hooks_settings(&agent_dir, &mcp_servers, &skills_off)
                 {
+                    let sp = settings_path.to_string_lossy().into_owned();
                     opts.args.push("--settings".to_string());
-                    opts.args.push(settings_path.to_string_lossy().into_owned());
+                    opts.args.push(sp.clone());
+                    if !mcp_servers.is_empty()
+                        && !opts.args.iter().any(|a| a.starts_with("--mcp-config"))
+                    {
+                        opts.args.push(format!("--mcp-config={sp}"));
+                    }
                 }
             }
             "codex" => {
                 if !opts.env.contains_key("CODEX_HOME")
-                    && let Some(codex_home) = install_codex_home(&home, &hive_root, &agent_dir)
+                    && let Some(codex_home) = install_codex_home(
+                        &home,
+                        &hive_root,
+                        &agent_dir,
+                        &cwd_expanded,
+                        &mcp_servers,
+                    )
                 {
                     opts.env.insert(
                         "CODEX_HOME".to_string(),
                         codex_home.to_string_lossy().into_owned(),
                     );
+                    codex_dir_for_skills = Some(codex_home);
+                } else if let Some(ch) = opts.env.get("CODEX_HOME") {
+                    codex_dir_for_skills = Some(PathBuf::from(ch));
                 }
             }
             "opencode" => {
@@ -1253,11 +1792,21 @@ pub fn prepare_agent_spawn(
                     opts.args.push("--standalone".to_string());
                 }
                 if !opts.env.contains_key("OPENCODE_CONFIG_CONTENT")
-                    && let Some(content) =
-                        install_opencode_config_content(&agent_dir, &hive_root, auto_mode)
+                    && let Some(content) = install_opencode_config_content(
+                        &agent_dir,
+                        &hive_root,
+                        auto_mode,
+                        &mcp_servers,
+                    )
                 {
                     opts.env
                         .insert("OPENCODE_CONFIG_CONTENT".to_string(), content);
+                }
+                if !opts.env.contains_key("OPENCODE_CONFIG_DIR") {
+                    opts.env.insert(
+                        "OPENCODE_CONFIG_DIR".to_string(),
+                        agent_dir.join(".opencode").to_string_lossy().into_owned(),
+                    );
                 }
                 if !opts.env.contains_key("OPENCODE_CLI_CONFIG_CONTENT") {
                     opts.env.insert(
@@ -1268,7 +1817,7 @@ pub fn prepare_agent_spawn(
             }
             "gemini" => {
                 if !opts.env.contains_key("GEMINI_CLI_SYSTEM_SETTINGS_PATH")
-                    && let Some(settings_path) = install_gemini_hooks(&agent_dir)
+                    && let Some(settings_path) = install_gemini_hooks(&agent_dir, &mcp_servers)
                 {
                     opts.env.insert(
                         "GEMINI_CLI_SYSTEM_SETTINGS_PATH".to_string(),
@@ -1294,6 +1843,13 @@ pub fn prepare_agent_spawn(
             }
             _ => {}
         }
+        sync_agent_skills(
+            &agent_dir,
+            provider,
+            codex_dir_for_skills.as_deref(),
+            &requested_skills,
+            &skills_off,
+        );
     }
 
     sync_fleet_json(state);
@@ -1426,4 +1982,114 @@ pub fn ensure_extra_path_entries(existing: Option<String>) -> String {
     std::env::join_paths(parts)
         .map(|os| os.to_string_lossy().into_owned())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        install_claude_hooks_settings, install_opencode_config_content, resolve_agent_mcp_servers,
+        resolve_agent_skill_prefs, sanitize_codex_config_toml,
+    };
+    use serde_json::{Map, Value, json};
+    use std::collections::{HashMap, HashSet};
+    use std::fs;
+
+    #[test]
+    fn sanitize_codex_config_strips_desktop_plugins_and_node_repl() {
+        let raw = r#"
+model = "gpt-5.6-luna"
+
+[plugins."documents@openai-primary-runtime"]
+enabled = true
+
+[marketplaces.openai-bundled]
+source_type = "local"
+
+[mcp_servers.node_repl]
+command = "/Applications/ChatGPT.app/node_repl"
+
+[mcp_servers.node_repl.env]
+CODEX_HOME = "/Users/altan/.codex"
+
+[mcp_servers.rust-anything]
+command = "/Users/altan/.cargo/bin/rust-anything"
+
+[desktop]
+dock-icon-preference = "codex-system"
+
+[tui]
+screen_reader_detection_done = true
+"#;
+        let cleaned = sanitize_codex_config_toml(raw);
+        assert!(cleaned.contains("model = \"gpt-5.6-luna\""));
+        assert!(cleaned.contains("[mcp_servers.rust-anything]"));
+        assert!(cleaned.contains("[tui]"));
+        assert!(!cleaned.contains("[plugins."));
+        assert!(!cleaned.contains("[marketplaces."));
+        assert!(!cleaned.contains("[mcp_servers.node_repl"));
+        assert!(!cleaned.contains("[desktop]"));
+    }
+
+    #[test]
+    fn resolve_agent_mcp_and_skills_wires_opencode_and_claude() {
+        let extra_val = json!({
+            "mcpDefaults": {
+                "fetch": { "enabled": true },
+                "time": { "enabled": false },
+                "context7": { "enabled": false },
+                "sequential-thinking": { "enabled": false }
+            },
+            "agentMcp": {
+                "designer": {
+                    "filesystem": true,
+                    "brave-search": { "enabled": true }
+                }
+            },
+            "agentCustomMcp": {
+                "designer": [
+                    { "name": "my-custom", "command": "node", "args": ["srv.js", "<cwd>"], "enabled": true }
+                ]
+            },
+            "agentSkills": {
+                "designer": ["skill:canvas-design", "md-hive-sync"]
+            },
+            "agentSkillsOff": {
+                "designer": ["skill:temporal"]
+            }
+        });
+        let extra: Map<String, Value> = extra_val.as_object().cloned().unwrap();
+        let mut env_map = HashMap::new();
+        env_map.insert("BRAVE_API_KEY".to_string(), "test-key".to_string());
+
+        let servers = resolve_agent_mcp_servers(&extra, "designer", "/tmp/proj", &env_map);
+        let ids: Vec<&str> = servers.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["fetch", "filesystem", "brave-search", "my-custom"]);
+        let fs_srv = servers.iter().find(|s| s.id == "filesystem").unwrap();
+        assert!(fs_srv.args.contains(&"/tmp/proj".to_string()));
+        let brave_srv = servers.iter().find(|s| s.id == "brave-search").unwrap();
+        assert_eq!(brave_srv.env.get("BRAVE_API_KEY").map(String::as_str), Some("test-key"));
+
+        let (req, off) = resolve_agent_skill_prefs(&extra, "designer");
+        assert_eq!(req, vec!["canvas-design", "md-hive-sync"]);
+        assert!(off.contains("temporal"));
+
+        let tmp = std::env::temp_dir().join(format!("md-boot-test-{}", uuid::Uuid::new_v4()));
+        let agent_dir = tmp.join("agents/designer");
+        let hive_root = tmp.join("hive");
+
+        let oc_raw = install_opencode_config_content(&agent_dir, &hive_root, true, &servers).unwrap();
+        let oc_val: Value = serde_json::from_str(&oc_raw).unwrap();
+        assert_eq!(oc_val["mcp"]["fetch"]["type"], "local");
+        assert_eq!(oc_val["mcp"]["filesystem"]["command"][3], "/tmp/proj");
+        assert_eq!(oc_val["mcp"]["brave-search"]["environment"]["BRAVE_API_KEY"], "test-key");
+
+        let mut off_set = HashSet::new();
+        off_set.insert("temporal".to_string());
+        let claude_path = install_claude_hooks_settings(&agent_dir, &servers, &off_set).unwrap();
+        let claude_val: Value = serde_json::from_str(&fs::read_to_string(claude_path).unwrap()).unwrap();
+        assert_eq!(claude_val["mcpServers"]["fetch"]["command"], "uvx");
+        assert_eq!(claude_val["permissions"]["deny"][0], "Skill(temporal)");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
 }

@@ -309,15 +309,44 @@ fn inspect_dir_dirty(dir: &Path) -> DirtyReport {
     }
 }
 
-fn copy_dir_filtered(
+fn should_skip_agent_runtime_entry(in_codex_home: bool, in_agents_tree: bool, name: &str) -> bool {
+    if in_codex_home
+        && (matches!(
+            name,
+            "packages"
+                | "plugins"
+                | "cache"
+                | "tmp"
+                | "shell_snapshots"
+                | "app-server-control"
+                | "app-server-daemon"
+                | "thread-writer-locks"
+                | ".sqlite-maintenance.lock"
+                | "models_cache.json"
+        ) || name.starts_with("logs_"))
+    {
+        return true;
+    }
+    if in_agents_tree && matches!(name, "node_modules" | ".cache") {
+        return true;
+    }
+    false
+}
+
+fn copy_dir_filtered_inner(
     src: &Path,
     dst: &Path,
     skip_entry_names: &[&str],
     skip_broker_files: bool,
+    in_codex_home: bool,
+    in_agents_tree: bool,
 ) -> std::io::Result<()> {
     if !src.is_dir() {
         return Ok(());
     }
+    let dir_name = src.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let next_codex_home = in_codex_home || dir_name == "codex-home";
+    let next_agents_tree = in_agents_tree || dir_name == "agents";
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
@@ -332,6 +361,9 @@ fn copy_dir_filtered(
         if skip_broker_files && name_str == ".broker" {
             continue;
         }
+        if should_skip_agent_runtime_entry(next_codex_home, next_agents_tree, name_str.as_ref()) {
+            continue;
+        }
         let src_path = entry.path();
         let dst_path = dst.join(&name);
         let meta = fs::symlink_metadata(&src_path)?;
@@ -339,12 +371,28 @@ fn copy_dir_filtered(
             continue;
         }
         if meta.is_dir() {
-            copy_dir_filtered(&src_path, &dst_path, &[], skip_broker_files)?;
+            copy_dir_filtered_inner(
+                &src_path,
+                &dst_path,
+                &[],
+                skip_broker_files,
+                next_codex_home,
+                next_agents_tree,
+            )?;
         } else if meta.is_file() {
             fs::copy(&src_path, &dst_path)?;
         }
     }
     Ok(())
+}
+
+fn copy_dir_filtered(
+    src: &Path,
+    dst: &Path,
+    skip_entry_names: &[&str],
+    skip_broker_files: bool,
+) -> std::io::Result<()> {
+    copy_dir_filtered_inner(src, dst, skip_entry_names, skip_broker_files, false, false)
 }
 
 fn clean_dir_contents(dir: &Path) -> std::io::Result<()> {
@@ -522,7 +570,7 @@ async fn backup_status(State(state): State<AppState>) -> Json<Value> {
         "runningPtys": running_ptys,
         "targetDirty": target_dirty,
         "includedSummary": "Settings (config.json), SQLite database (harness.db), knowledge base & agent templates/themes, workspace roster.json, hive agents, memories, board.md, tasks.json, registry.json, and projects/",
-        "excludedSummary": "Secret keys (broker-master.key, integration-secrets.json), live PTY processes, git worktrees, runtime logs (log.jsonl*), hive/bin/, fleet.json, roster-backups/, and .broker session files",
+        "excludedSummary": "Secret keys (broker-master.key, integration-secrets.json), live PTY processes, git worktrees, runtime logs (log.jsonl*), hive/bin/, fleet.json, roster-backups/, .broker session files, and re-downloadable agent runtime caches (codex-home/packages, plugins, cache, node_modules)",
         "backups": backups,
     }))
 }
@@ -1424,7 +1472,7 @@ pub fn backup_router() -> Router<AppState> {
         .route("/api/v1/backups/create", post(backup_create))
         .route(
             "/api/v1/backups/import",
-            post(backup_import).layer(DefaultBodyLimit::max(256 * 1024 * 1024)),
+            post(backup_import).layer(DefaultBodyLimit::max(1024 * 1024 * 1024)),
         )
         .route("/api/v1/backups/inspect", post(backup_inspect))
         .route("/api/v1/backups/restore", post(backup_restore))
@@ -1433,4 +1481,43 @@ pub fn backup_router() -> Router<AppState> {
             axum::routing::delete(backup_delete),
         )
         .route("/api/v1/backups/{name}/download", get(backup_download))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_dir_filtered;
+    use std::fs;
+
+    #[test]
+    fn copy_dir_filtered_skips_codex_runtime_bloat_but_keeps_project_files() {
+        let root = std::env::temp_dir().join(format!("md-backup-filter-{}", uuid::Uuid::new_v4()));
+        let hive = root.join("hive");
+        let codex_home = hive.join("agents/designer-1/codex-home");
+        fs::create_dir_all(codex_home.join("packages/app-server-daemon")).unwrap();
+        fs::create_dir_all(codex_home.join("plugins/cache")).unwrap();
+        fs::create_dir_all(codex_home.join("cache")).unwrap();
+        fs::create_dir_all(codex_home.join("skills/s1")).unwrap();
+        fs::create_dir_all(hive.join("projects/site/packages")).unwrap();
+
+        fs::write(codex_home.join("packages/app-server-daemon/bin"), b"big").unwrap();
+        fs::write(codex_home.join("plugins/cache/item"), b"big").unwrap();
+        fs::write(codex_home.join("cache/tmp"), b"big").unwrap();
+        fs::write(codex_home.join("logs_2.sqlite-wal"), b"log").unwrap();
+        fs::write(codex_home.join("config.toml"), b"model = \"gpt\"").unwrap();
+        fs::write(codex_home.join("skills/s1/SKILL.md"), b"skill").unwrap();
+        fs::write(hive.join("projects/site/packages/kept.txt"), b"ok").unwrap();
+
+        let dst = root.join("dst");
+        copy_dir_filtered(&hive, &dst, &[], true).unwrap();
+
+        assert!(!dst.join("agents/designer-1/codex-home/packages").exists());
+        assert!(!dst.join("agents/designer-1/codex-home/plugins").exists());
+        assert!(!dst.join("agents/designer-1/codex-home/cache").exists());
+        assert!(!dst.join("agents/designer-1/codex-home/logs_2.sqlite-wal").exists());
+        assert!(dst.join("agents/designer-1/codex-home/config.toml").is_file());
+        assert!(dst.join("agents/designer-1/codex-home/skills/s1/SKILL.md").is_file());
+        assert!(dst.join("projects/site/packages/kept.txt").is_file());
+
+        let _ = fs::remove_dir_all(&root);
+    }
 }

@@ -520,6 +520,20 @@ pub fn submit_still_pending(lines: &[String], expected_text: &str) -> Option<boo
     Some(tail_matches(&box_compact, &tail) || box_compact.contains(&needle))
 }
 
+pub fn codex_screen_still_loading(lines: &[String]) -> bool {
+    let has_prompt = lines.iter().any(|l| {
+        let t = l.trim();
+        t.starts_with('›') || t.starts_with('❯')
+    });
+    if has_prompt {
+        return false;
+    }
+    lines.iter().any(|l| {
+        let lower = l.to_ascii_lowercase();
+        lower.contains("openai codex") && lower.contains("loading")
+    })
+}
+
 pub fn prompt_on_screen(lines: &[String]) -> bool {
     let last_rule = lines.iter().rposition(|l| is_box_rule(l));
     let slice = match last_rule {
@@ -750,7 +764,21 @@ impl PtySubmitter {
         let pty_started_at = init_info.started_at;
 
         // Wait for PTY boot settle, active compaction, or open approval prompt.
-        let ready_deadline = Instant::now() + Duration::from_millis(self.timings.boot_wait_ms);
+        let effective_boot_wait_ms = if req.provider == "codex" && self.timings.boot_wait_ms >= 1_000 {
+            self.timings.boot_wait_ms.max(12_000)
+        } else {
+            self.timings.boot_wait_ms
+        };
+        let effective_boot_min_ms = if self.timings.boot_min_ms >= 1_000 {
+            match req.provider.as_str() {
+                "codex" => self.timings.boot_min_ms.max(4_500),
+                "opencode" => self.timings.boot_min_ms.max(2_500),
+                _ => self.timings.boot_min_ms,
+            }
+        } else {
+            self.timings.boot_min_ms
+        };
+        let ready_deadline = Instant::now() + Duration::from_millis(effective_boot_wait_ms);
         loop {
             let Some(info) = self.pty.info(&req.pty_id) else {
                 return Ok(make_res(
@@ -776,7 +804,17 @@ impl PtySubmitter {
             }
             let now = unix_now_ms();
             let elapsed_boot = now.saturating_sub(info.started_at);
-            let booted = info.has_output && elapsed_boot >= self.timings.boot_min_ms;
+            let mut booted = info.has_output && elapsed_boot >= effective_boot_min_ms;
+            if booted
+                && req.provider == "codex"
+                && !req.press_only
+                && let Some(p) = probe
+                && let Some(reply) = p.probe(&req.pty_id).await
+                && let Some(ref lines) = reply.lines
+                && codex_screen_still_loading(lines)
+            {
+                booted = false;
+            }
             let compacting = !req.press_only
                 && eff_agent.is_some_and(|a| {
                     hooks.compact_running_since(a, pty_started_at, COMPACT_WAIT_MAX_MS, now) > 0

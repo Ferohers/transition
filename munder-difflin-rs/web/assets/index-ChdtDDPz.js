@@ -19375,6 +19375,7 @@ const responseStyle$a = {
 };
 const newFloor$a = {
   title: "NEW FLOOR: WHERE TO START?",
+  addTooltip: "ADD A NEW FLOOR",
   blurb: "A floor is one hive in its own window and its own process. Pick a folder that holds a hive, or a new folder and the app lays a fresh hive inside it. The hive this window is on stays here; a hive that is open in another floor cannot be opened twice.",
   remembered: "REMEMBERED",
   free: "open as a floor",

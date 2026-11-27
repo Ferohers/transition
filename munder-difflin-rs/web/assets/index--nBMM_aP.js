@@ -102157,9 +102157,11 @@ function Live({ n, word }) {
   if (!n) return null;
   return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: [
     /* @__PURE__ */ jsxRuntimeExports.jsx("i", { style: { width: 6, height: 6, borderRadius: "50%", background: "var(--cth-status-working)", display: "inline-block" } }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-figures)" }, children: n }),
-    " ",
-    word
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-figures)" }, children: n }),
+      " ",
+      word
+    ] })
   ] });
 }
 function OfficeSubRow({ icon, label: label2, onClick, trailing, title, active = false, data }) {
@@ -105088,8 +105090,8 @@ function ProSidebar({
                       type: "button",
                       "data-add-floor": true,
                       onClick: () => window.dispatchEvent(new CustomEvent("cth:open-floor-picker")),
-                      title: t2("newFloor.title"),
-                      "aria-label": t2("newFloor.title"),
+                      title: t2("newFloor.addTooltip", "ADD A NEW FLOOR"),
+                      "aria-label": t2("newFloor.addTooltip", "ADD A NEW FLOOR"),
                       style: {
                         display: "inline-grid",
                         placeItems: "center",
@@ -129877,7 +129879,7 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
         activeSection === "General" && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 16 }, children: [
           /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: dangerHead, children: t2("settings.general.dangerZone") }),
           /* @__PURE__ */ jsxRuntimeExports.jsx("p", { style: { margin: 0, fontSize: 13, lineHeight: "20px", color: "var(--cth-ink-700)" }, children: t2("settings.general.dangerDesc", { godName }) }),
-          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "danger", onClick: () => setConfirming(true), children: t2("settings.general.resetStartOver") }) })
+          /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", justifyContent: "flex-end" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "danger", onClick: () => setConfirming(true), children: t2("settings.general.resetStartOver") }) })
         ] })
       ] })
     ] }),

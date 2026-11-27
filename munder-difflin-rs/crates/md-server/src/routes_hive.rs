@@ -277,8 +277,38 @@ async fn handle_hook(
         _ => None,
     };
     if let Some(st) = next_reg_status {
-        let mut hive = state.hive.lock().unwrap();
-        let _ = hive.patch_agent_field(&eff_agent_id, "status", Some(Value::String(st.to_string())));
+        {
+            let mut hive = state.hive.lock().unwrap();
+            let _ = hive.patch_agent_field(&eff_agent_id, "status", Some(Value::String(st.to_string())));
+        }
+        let home = state.harness_home();
+        let mut store = state.roster.lock().unwrap();
+        if let Some(mut snap) = store.read(home.as_deref()) {
+            let mut updated = false;
+            for item in &mut snap.agents {
+                if item.get("id").and_then(|v| v.as_str()) == Some(eff_agent_id.as_str())
+                    && let Some(obj) = item.as_object_mut()
+                {
+                    if obj.get("status").and_then(|v| v.as_str()) != Some(st) {
+                        obj.insert("status".to_string(), Value::String(st.to_string()));
+                        updated = true;
+                    }
+                    if st == "idle" {
+                        if obj.get("action").and_then(|v| v.as_str()) != Some("idle") {
+                            obj.insert("action".to_string(), Value::String("idle".to_string()));
+                            updated = true;
+                        }
+                        if obj.remove("carrying").is_some() {
+                            updated = true;
+                        }
+                    }
+                    break;
+                }
+            }
+            if updated {
+                let _ = store.write(home.as_deref(), &snap);
+            }
+        }
     }
 
     for (ch, ev) in side.events {
@@ -1200,6 +1230,143 @@ pub(crate) fn prune_exited_workers(state: &AppState) {
     }
 }
 
+/// Handle unexpected/natural exit of a lasting (non-worker) agent PTY: clean up orphan
+/// Codex daemons, write a crash log on abnormal exit, sync `registry.json`/`roster.json`,
+/// and alert `god` if the agent exited non-zero or left unread inbox / `doing` tasks behind.
+pub(crate) fn handle_agent_pty_exit(
+    state: &AppState,
+    agent_id: &str,
+    exit_code: u32,
+    signal: Option<&str>,
+    tail: &str,
+) {
+    let Some(home) = state.harness_home() else {
+        return;
+    };
+    let hive_root = home.join("hive");
+    if md_core::repo_fs::is_safe_id(agent_id) {
+        crate::hive_bootstrap::kill_orphan_codex_daemons_under(
+            &hive_root.join("agents").join(agent_id).join("codex-home"),
+        );
+    }
+    let crashed = exit_code != 0 || signal.is_some();
+    let ts = now_ms();
+    let mut crash_log_path: Option<String> = None;
+    if crashed && md_core::repo_fs::is_safe_id(agent_id) {
+        let crashes_dir = hive_root.join("crashes");
+        if std::fs::create_dir_all(&crashes_dir).is_ok() {
+            let log_path = crashes_dir.join(format!("{agent_id}-{ts}.log"));
+            let clean_tail = strip_ansi(tail);
+            let snippet: String = clean_tail.chars().rev().take(4000).collect::<String>().chars().rev().collect();
+            let content = format!(
+                "agentId: {agent_id}\nexitCode: {exit_code}\nsignal: {}\natMs: {ts}\n\n--- PTY TAIL ---\n{snippet}\n",
+                signal.unwrap_or("none")
+            );
+            if std::fs::write(&log_path, content).is_ok() {
+                crash_log_path = Some(log_path.to_string_lossy().into_owned());
+            }
+        }
+    }
+
+    state.sync_hive_home();
+    let reg_status = if crashed { "crashed" } else { "idle" };
+    let (unread_count, doing_tasks) = {
+        let mut hive = state.hive.lock().unwrap();
+        let _ = hive.patch_agent_field(agent_id, "stopped", Some(Value::Bool(true)));
+        let _ = hive.patch_agent_field(agent_id, "sleeping", Some(Value::Bool(false)));
+        let _ = hive.patch_agent_field(
+            agent_id,
+            "status",
+            Some(Value::String(reg_status.to_string())),
+        );
+        let unread = hive.inbox(agent_id).len();
+        let tasks_val = hive.tasks();
+        let doing: Vec<String> = tasks_val
+            .get("tasks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter(|t| {
+                        t.get("assignee").and_then(|v| v.as_str()) == Some(agent_id)
+                            && t.get("status").and_then(|v| v.as_str()) == Some("doing")
+                    })
+                    .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(ToString::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        (unread, doing)
+    };
+
+    {
+        let mut store = state.roster.lock().unwrap();
+        if let Some(mut snap) = store.read(Some(&home)) {
+            let mut changed = false;
+            let action_label = if crashed { "crashed" } else { "stopped" };
+            for item in &mut snap.agents {
+                if item.get("id").and_then(|v| v.as_str()) == Some(agent_id)
+                    && let Some(obj) = item.as_object_mut()
+                {
+                    obj.insert("status".to_string(), Value::String("idle".to_string()));
+                    obj.insert("action".to_string(), Value::String(action_label.to_string()));
+                    obj.remove("carrying");
+                    changed = true;
+                    break;
+                }
+            }
+            if changed {
+                let _ = store.write(Some(&home), &snap);
+            }
+        }
+    }
+
+    crate::hive_bootstrap::sync_fleet_json(state);
+
+    if agent_id != "god" && (crashed || unread_count > 0 || !doing_tasks.is_empty()) {
+        let subj = format!("[agent {reg_status}] {agent_id} exited (code {exit_code})");
+        let mut details = vec![format!(
+            "Agent `{agent_id}` exited unexpectedly (exitCode={exit_code}, signal={}).",
+            signal.unwrap_or("none")
+        )];
+        if !doing_tasks.is_empty() {
+            details.push(format!("In-progress tasks still assigned: {}", doing_tasks.join(", ")));
+        }
+        if unread_count > 0 {
+            details.push(format!("Unread inbox messages left behind: {unread_count}"));
+        }
+        if let Some(ref lp) = crash_log_path {
+            details.push(format!("Crash log: {lp}"));
+        }
+        details.push(
+            "Reassign affected work or spawn a temp worker (`spawn-requests/<slug>.json`) to avoid stalling."
+                .to_string(),
+        );
+        let body = details.join("\n");
+        let sent_ok = state
+            .hive
+            .lock()
+            .unwrap()
+            .send_message(
+                serde_json::json!({
+                    "to": "god",
+                    "act": "inform",
+                    "subject": subj,
+                    "body": body,
+                }),
+                "temps",
+            )
+            .is_ok();
+        if sent_ok {
+            deliver_or_enqueue_inner(
+                state,
+                "god",
+                format!("[HIVE inform from temps] {subj}\n{body}"),
+                None,
+                true,
+            );
+        }
+    }
+}
+
 async fn workers_list(State(state): State<AppState>) -> Json<Value> {
     prune_exited_workers(&state);
     let ptys = state.pty.list();
@@ -1427,11 +1594,13 @@ pub(crate) fn process_spawn_requests(state: &AppState) {
                 fail_file("missing required 'objective'");
                 continue;
             }
-            let base_slug: String = fname
+            let raw_slug: String = fname
                 .trim_end_matches(".json")
                 .chars()
                 .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
                 .collect();
+            let base_slug = raw_slug.strip_prefix("worker-").unwrap_or(&raw_slug);
+            let base_slug = if base_slug.is_empty() { "temp" } else { base_slug };
             let mut worker_id = format!("worker-{base_slug}");
             let mut pty_id = format!("pty-{worker_id}");
             let mut n = 2usize;
@@ -3438,5 +3607,114 @@ mod tests {
         assert_eq!(agy_payload["hook_event_name"], "PreToolUse");
         assert_eq!(agy_payload["tool_name"], "bash");
         assert_eq!(agy_payload["session_id"], "conv-9");
+    }
+
+    #[test]
+    fn handle_agent_pty_exit_writes_crash_log_syncs_state_and_alerts_god() {
+        let tmp = std::env::temp_dir().join(format!(
+            "md-crash-alert-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let data_dir = tmp.join("data");
+        let home_dir = tmp.join("home");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(&home_dir).unwrap();
+
+        let mut config = md_core::config::ConfigStore::new(&data_dir);
+        config
+            .update(serde_json::json!({
+                "harnessHome": home_dir.to_string_lossy(),
+                "onboardingComplete": true,
+            }))
+            .unwrap();
+        let db = md_db::PersistStore::open(data_dir.join("harness.db")).unwrap();
+        let pty = md_pty::manager::PtyManager::new();
+        let submitter = md_pty::submitter::PtySubmitter::new(pty.clone());
+        let control = std::sync::Arc::new(std::sync::Mutex::new(md_hive::control::ControlRegistry::new()));
+        let breaker = std::sync::Arc::new(std::sync::Mutex::new(md_hive::breaker::CircuitBreaker::new()));
+        let hooks = md_hive::hooks::HookEngine::new(control.clone(), breaker.clone(), "tok".into());
+        let (events_tx, _) = tokio::sync::broadcast::channel(32);
+        let state = AppState {
+            port: 3110,
+            data_dir: data_dir.clone(),
+            config: std::sync::Arc::new(std::sync::Mutex::new(config)),
+            db: std::sync::Arc::new(std::sync::Mutex::new(db)),
+            roster: std::sync::Arc::new(std::sync::Mutex::new(md_hive::roster::RosterStore::new())),
+            hive: std::sync::Arc::new(std::sync::Mutex::new(md_hive::manager::HiveManager::new(Some(home_dir.clone())))),
+            control,
+            breaker,
+            wake_filing: std::sync::Arc::new(std::sync::Mutex::new(md_hive::wake_filing::WakeFiling::new())),
+            switch_clear: std::sync::Arc::new(std::sync::Mutex::new(md_hive::switch_clear::SwitchClear::new())),
+            codex_size: std::sync::Arc::new(std::sync::Mutex::new(md_hive::switch_clear::CodexSizeClear::new())),
+            asked_compact: std::sync::Arc::new(std::sync::Mutex::new(md_hive::switch_clear::AskedCompact::new())),
+            hooks,
+            pty,
+            submitter,
+            probes: md_pty::submitter::TerminalProbes::new(),
+            ide: std::sync::Arc::new(std::sync::Mutex::new(crate::state::IdeState {
+                unsaved_count: 0,
+                open_files: Vec::new(),
+            })),
+            secrets: std::sync::Arc::new(std::sync::Mutex::new(md_integrations::secrets::SecretStore::open(&data_dir).unwrap())),
+            broker: std::sync::Arc::new(std::sync::Mutex::new(md_integrations::secrets::IntegrationBroker::open(&data_dir))),
+            webhooks: std::sync::Arc::new(std::sync::Mutex::new(md_integrations::webhooks::WebhookRegistry::open(Some(&data_dir)))),
+            file_share: std::sync::Arc::new(std::sync::Mutex::new(md_integrations::file_share::FileShareRegistry::new())),
+            workers: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            workers_history: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            ended_agents: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            integrations_activity: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            hire_runner_ready: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            hire_inflight: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            reset_epoch: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            events_tx,
+        };
+
+        let snap = md_hive::roster::RosterSnapshot {
+            version: 1,
+            saved_at: None,
+            agents: vec![
+                serde_json::json!({"id":"god","isGod":true,"name":"Altan","provider":"opencode","status":"idle","action":"idle","cwd":home_dir}),
+                serde_json::json!({"id":"designer-1","name":"Designer","provider":"codex","status":"working","action":"starting up","cwd":home_dir}),
+            ],
+            archived: vec![],
+            restorable: vec![],
+            queues: HashMap::new(),
+            selected_id: None,
+        };
+        assert!(state.roster.lock().unwrap().write(Some(&home_dir), &snap).ok);
+        state.hive.lock().unwrap().ensure_hive().unwrap();
+        state.hive.lock().unwrap().sync_roster(&snap.agents, &snap.archived).unwrap();
+        state.hive.lock().unwrap().add_task(serde_json::json!({
+            "id": "kuku-03",
+            "title": "Build poster",
+            "status": "doing",
+            "assignee": "designer-1"
+        })).unwrap();
+
+        handle_agent_pty_exit(&state, "designer-1", 1, None, "fatal codex error");
+
+        let crashes_dir = home_dir.join("hive/crashes");
+        let crash_files: Vec<_> = std::fs::read_dir(&crashes_dir).unwrap().flatten().collect();
+        assert_eq!(crash_files.len(), 1);
+
+        let reg = state.hive.lock().unwrap().registry();
+        assert_eq!(reg["agents"]["designer-1"]["status"], "crashed");
+        assert_eq!(reg["agents"]["designer-1"]["stopped"], true);
+
+        let r2 = state.roster.lock().unwrap().read(Some(&home_dir)).unwrap();
+        let d_row = r2.agents.iter().find(|a| a["id"] == "designer-1").unwrap();
+        assert_eq!(d_row["action"], "crashed");
+        assert_eq!(d_row["status"], "idle");
+
+        let god_inbox = state.hive.lock().unwrap().inbox("god");
+        assert_eq!(god_inbox.len(), 1);
+        let body = god_inbox[0]["body"].as_str().unwrap();
+        assert!(body.contains("designer-1"));
+        assert!(body.contains("kuku-03"));
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

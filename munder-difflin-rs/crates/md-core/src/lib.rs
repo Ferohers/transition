@@ -51,7 +51,7 @@ pub struct AppInfo {
 impl Default for AppInfo {
     fn default() -> Self {
         Self {
-            name: "Munder Difflin Web".to_string(),
+            name: "Duman Office".to_string(),
             version: APP_VERSION.to_string(),
             target: "rust-web".to_string(),
             platform: host_node_platform().to_string(),

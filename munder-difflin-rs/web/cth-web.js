@@ -236,6 +236,10 @@
         const msg = JSON.parse(ev.data);
         if (msg && msg.channel) {
           if (msg.channel === 'config:changed') refreshNotificationSetting(msg.payload);
+          if (msg.channel === 'app:reset' && !resettingLocally) {
+            clearLocalStorageAndReload();
+            return;
+          }
           void dispatchUserNotification(msg.channel, msg.payload);
           // PTY data/exit events are delivered exclusively by the ordered per-PTY
           // socket (/ws/pty/:id) so chunks are never written to xterm.js twice.
@@ -378,6 +382,21 @@
   }
 
   const bootInfo = syncGetJson('/api/v1/info', null);
+  let resetEpoch = typeof bootInfo?.resetEpoch === 'number' ? bootInfo.resetEpoch : null;
+  let resettingLocally = false;
+
+  function clearLocalStorageAndReload() {
+    resettingLocally = true;
+    try {
+      const keys = [];
+      for (let i = 0; i < window.localStorage.length; i++) {
+        const k = window.localStorage.key(i);
+        if (k && k.startsWith('cth.')) keys.push(k);
+      }
+      for (const k of keys) window.localStorage.removeItem(k);
+    } catch {}
+    setTimeout(() => window.location.reload(), 200);
+  }
 
   const baseApi = {
     platform: bootInfo?.platform || (/Linux/i.test(navigator.platform || navigator.userAgent) ? 'linux' : /Win/i.test(navigator.platform || '') ? 'win32' : 'darwin'),
@@ -406,9 +425,26 @@
     ensureHarnessHome: (path) => req('/api/v1/config/ensure-home', { method: 'POST', body: JSON.stringify({ path }) }).then((r) => r || { ok: false, error: 'request failed' }),
     integrityIssues: () => req('/api/v1/integrity/issues').then((r) => (Array.isArray(r) ? r : [])),
     rosterReadSync: () => syncGetJson('/api/v1/roster', null),
-    rosterWrite: (snap) => {
+    rosterWrite: async (snap) => {
+      if (resettingLocally) return { ok: false, error: 'resetting' };
       recordAgentSnapshot(snap);
-      return req('/api/v1/roster', { method: 'PUT', body: JSON.stringify(snap) }).then((r) => r || { ok: false, error: 'request failed' });
+      const headers = { 'content-type': 'application/json' };
+      if (resetEpoch !== null) headers['x-md-epoch'] = String(resetEpoch);
+      try {
+        const res = await fetch('/api/v1/roster', {
+          method: 'PUT',
+          headers,
+          body: JSON.stringify(snap),
+        });
+        if (res.status === 409) {
+          clearLocalStorageAndReload();
+          return { ok: false, error: 'stale-session' };
+        }
+        if (!res.ok) return { ok: false, error: 'request failed' };
+        return await res.json();
+      } catch {
+        return { ok: false, error: 'request failed' };
+      }
     },
     historyAdd: (entry) => req('/api/v1/history', { method: 'POST', body: JSON.stringify(entry) }).then((r) => r || { ok: false }),
     historyList: (agentId, limit) => req(`/api/v1/history?${new URLSearchParams({ ...(agentId ? { agentId } : {}), ...(limit ? { limit: String(limit) } : {}) })}`).then((r) => (Array.isArray(r) ? r : [])),
@@ -722,17 +758,22 @@
     folderState: (path) => req('/api/v1/fs/folder-state', { method: 'POST', body: JSON.stringify({ path }) }).then((r) => r || { exists: false, empty: true, path }),
     floorProbe: async (paths) => {
       const list = Array.isArray(paths) ? paths : [];
+      const cfg = await req('/api/v1/config').catch(() => null);
+      const currentHome = String(cfg?.harnessHome || '').replace(/\/+$/, '');
       return Promise.all(list.map(async (p) => {
+        const norm = String(p || '').replace(/\/+$/, '');
         const st = await req('/api/v1/fs/stat-abs', { method: 'POST', body: JSON.stringify({ path: p }) }).catch(() => null);
-        return { path: p, exists: !!st?.exists, isDir: !!st?.isDir };
+        const state = norm && currentHome && norm === currentHome ? 'current' : st?.isDir ? 'free' : 'missing';
+        return { path: p, exists: !!st?.exists, isDir: !!st?.isDir, state, lock: null };
       }));
     },
     floorOpen: async ({ harnessHome } = {}) => {
-      if (!harnessHome) return { ok: false, refusal: 'missing', lock: null };
-      const ensured = await req('/api/v1/config/ensure-home', { method: 'POST', body: JSON.stringify({ path: harnessHome }) });
-      if (!ensured?.ok) return { ok: false, refusal: 'unreadable', detail: ensured?.error || 'failed' };
-      const updated = await baseApi.updateConfig({ harnessHome: ensured.path });
-      return updated ? { ok: true } : { ok: false, refusal: 'failed' };
+      if (!harnessHome) return { ok: false, refusal: 'invalid', lock: null };
+      const res = await req('/api/v1/floor/switch', { method: 'POST', body: JSON.stringify({ harnessHome }) });
+      if (!res?.ok) return res || { ok: false, refusal: 'spawn-failed' };
+      if (typeof res.epoch === 'number') resetEpoch = res.epoch;
+      clearLocalStorageAndReload();
+      return { ok: true };
     },
     resolveSessionCwd: (sessionId) => (
       sessionId
@@ -919,25 +960,52 @@
     hireRunnerReady: () => req('/api/v1/hive/hire-runner-ready', { method: 'POST' }).then((r) => r || { ok: false }),
     onHireRequest: (fn) => addListener('hire:request', fn),
     hireRequestDone: (reqId, answer) => req('/api/v1/hive/hire-done', { method: 'POST', body: JSON.stringify({ reqId, answer }) }).then((r) => r || { ok: false }),
-    changeHome: () => Promise.resolve({ ok: false, error: 'Changing workspace home is desktop-only' }),
+    changeHome: async (nextPath) => {
+      if (!nextPath) return { ok: false, error: 'Path required' };
+      const res = await req('/api/v1/floor/switch', { method: 'POST', body: JSON.stringify({ harnessHome: nextPath }) });
+      if (!res?.ok) return { ok: false, error: res?.detail || res?.refusal || 'Failed to switch folder' };
+      if (typeof res.epoch === 'number') resetEpoch = res.epoch;
+      clearLocalStorageAndReload();
+      return { ok: true };
+    },
 
     resetAll: async () => {
       try {
+        resettingLocally = true;
         const r = await req('/api/v1/reset', { method: 'POST' });
-        // Clear all cth.* localStorage keys
-        const keys = [];
-        for (let i = 0; i < window.localStorage.length; i++) {
-          const k = window.localStorage.key(i);
-          if (k && k.startsWith('cth.')) keys.push(k);
-        }
-        for (const k of keys) window.localStorage.removeItem(k);
-        // Reload the page so the app boots fresh
-        setTimeout(() => window.location.reload(), 300);
+        if (typeof r?.epoch === 'number') resetEpoch = r.epoch;
+        clearLocalStorageAndReload();
         return r ?? { ok: true };
       } catch (e) {
+        resettingLocally = false;
         return { ok: false, error: String(e) };
       }
     },
+
+    backupStatus: () => req('/api/v1/backups/status'),
+    backupSetDir: (path) => req('/api/v1/backups/set-dir', { method: 'POST', body: JSON.stringify({ path: path ?? null }) }),
+    backupCreate: (stopFirst = false) => req('/api/v1/backups/create', { method: 'POST', body: JSON.stringify({ stopFirst: !!stopFirst }) }),
+    backupImportFile: async (file) => {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const dataBase64 = arrayBufferToBase64(buf);
+      return req('/api/v1/backups/import', { method: 'POST', body: JSON.stringify({ name: file.name, dataBase64 }) });
+    },
+    backupInspect: (name, targetHome) => req('/api/v1/backups/inspect', {
+      method: 'POST',
+      body: JSON.stringify({ name, ...(targetHome ? { targetHome } : {}) }),
+    }),
+    backupRestore: (name, cleanDirty = false, targetHome) => req('/api/v1/backups/restore', {
+      method: 'POST',
+      body: JSON.stringify({ name, cleanDirty: !!cleanDirty, ...(targetHome ? { targetHome } : {}) }),
+    }).then((r) => {
+      if (r?.ok) {
+        if (typeof r.epoch === 'number') resetEpoch = r.epoch;
+        clearLocalStorageAndReload();
+      }
+      return r || { ok: false, error: 'restore failed' };
+    }),
+    backupDelete: (name) => req(`/api/v1/backups/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+    backupDownloadUrl: (name) => `/api/v1/backups/${encodeURIComponent(name)}/download`,
 
     // Silenced external/omitted services & safe empty containers
     cloudList: () => Promise.resolve([]),

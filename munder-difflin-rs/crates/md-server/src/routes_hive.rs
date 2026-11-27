@@ -1149,12 +1149,28 @@ async fn workers_list(State(state): State<AppState>) -> Json<Value> {
             let pty_entry = ptys.iter().find(|p| p.id == w.pty_id);
             let idle_ms = pty_entry.map(|p| now.saturating_sub(p.last_output_at));
             let tokens_used = worker_tokens_used(&state, &w.worker_id, &w.cwd);
+            let eff_model = w
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .or_else(|| {
+                    state
+                        .hooks
+                        .model_by_id
+                        .lock()
+                        .unwrap()
+                        .get(&w.worker_id)
+                        .cloned()
+                })
+                .unwrap_or_default();
             serde_json::json!({
                 "workerId": w.worker_id,
                 "ptyId": w.pty_id,
                 "name": w.name,
                 "job": w.job,
-                "model": w.model,
+                "model": eff_model,
                 "cwd": w.cwd,
                 "baseBranch": w.base_branch,
                 "ageMs": now.saturating_sub(w.started_at),

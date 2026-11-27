@@ -1,5 +1,6 @@
 mod hive_bootstrap;
 mod routes_agent_file;
+mod routes_backup;
 mod routes_catalog;
 mod routes_fs_git;
 mod routes_hive;
@@ -31,7 +32,7 @@ use md_hive::{
     control::ControlRegistry,
     hooks::HookEngine,
     manager::HiveManager,
-    roster::{RosterSnapshot, RosterStore, RosterWriteResult},
+    roster::{RosterSnapshot, RosterStore},
     switch_clear::{AskedCompact, CodexSizeClear, SwitchClear},
     wake_filing::WakeFiling,
 };
@@ -216,6 +217,29 @@ async fn health() -> Json<serde_json::Value> {
     }))
 }
 
+fn clear_floor_runtime(state: &AppState) {
+    state.workers.lock().unwrap().clear();
+    state.workers_history.lock().unwrap().clear();
+    state.ended_agents.lock().unwrap().clear();
+    state.integrations_activity.lock().unwrap().clear();
+    state.control.lock().unwrap().clear_all();
+    state.breaker.lock().unwrap().clear_all();
+    state.hooks.clear_all();
+    *state.wake_filing.lock().unwrap() = md_hive::wake_filing::WakeFiling::new();
+    *state.switch_clear.lock().unwrap() = md_hive::switch_clear::SwitchClear::new();
+    *state.codex_size.lock().unwrap() = md_hive::switch_clear::CodexSizeClear::new();
+    *state.asked_compact.lock().unwrap() = md_hive::switch_clear::AskedCompact::new();
+    *state.hire_inflight.lock().unwrap() = None;
+    state
+        .hire_runner_ready
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut ide = state.ide.lock().unwrap();
+        ide.unsaved_count = 0;
+        ide.open_files.clear();
+    }
+}
+
 async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
     let data_dir = state.data_dir.clone();
 
@@ -250,38 +274,140 @@ async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
     state.broker.lock().unwrap().clear_all();
     state.webhooks.lock().unwrap().clear_all();
     state.file_share.lock().unwrap().stop_all();
-    state.workers.lock().unwrap().clear();
-    state.workers_history.lock().unwrap().clear();
-    state.ended_agents.lock().unwrap().clear();
-    state.integrations_activity.lock().unwrap().clear();
-    state.control.lock().unwrap().clear_all();
-    state.breaker.lock().unwrap().clear_all();
-    state.hooks.clear_all();
-    *state.wake_filing.lock().unwrap() = md_hive::wake_filing::WakeFiling::new();
-    *state.switch_clear.lock().unwrap() = md_hive::switch_clear::SwitchClear::new();
-    *state.codex_size.lock().unwrap() = md_hive::switch_clear::CodexSizeClear::new();
-    *state.asked_compact.lock().unwrap() = md_hive::switch_clear::AskedCompact::new();
-    *state.hire_inflight.lock().unwrap() = None;
-    state
-        .hire_runner_ready
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    clear_floor_runtime(&state);
     *state.roster.lock().unwrap() = RosterStore::new();
     *state.hive.lock().unwrap() = md_hive::manager::HiveManager::new(None);
     state.sync_hive_home();
-    {
-        let mut ide = state.ide.lock().unwrap();
-        ide.unsaved_count = 0;
-        ide.open_files.clear();
-    }
     if let Ok(val) = serde_json::to_value(&fresh_cfg) {
         state.emit("config:changed", val);
     }
+    let epoch = state
+        .reset_epoch
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    state.emit("app:reset", serde_json::json!({ "epoch": epoch }));
 
-    Json(serde_json::json!({ "ok": true }))
+    Json(serde_json::json!({ "ok": true, "epoch": epoch }))
 }
 
-async fn app_info() -> Json<AppInfo> {
-    Json(AppInfo::default())
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FloorSwitchReq {
+    harness_home: String,
+    fresh_theme: Option<String>,
+}
+
+async fn floor_switch(
+    State(state): State<AppState>,
+    Json(req): Json<FloorSwitchReq>,
+) -> Json<serde_json::Value> {
+    let raw = req.harness_home.trim();
+    if raw.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "refusal": "invalid" }));
+    }
+    let expanded = md_core::config::expand_tilde(raw);
+    if expanded.as_os_str().is_empty() || expanded == std::path::Path::new("/") {
+        return Json(serde_json::json!({ "ok": false, "refusal": "invalid" }));
+    }
+    let same_data = expanded == state.data_dir;
+    if same_data {
+        return Json(serde_json::json!({ "ok": false, "refusal": "same-data-dir" }));
+    }
+    if let Err(err) = std::fs::create_dir_all(&expanded) {
+        return Json(serde_json::json!({
+            "ok": false,
+            "refusal": "mkdir-failed",
+            "detail": err.to_string(),
+        }));
+    }
+    let next_home = expanded.to_string_lossy().into_owned();
+    let prev_home = state.harness_home().map(|p| p.to_string_lossy().into_owned());
+    if prev_home.as_deref() == Some(next_home.as_str()) {
+        return Json(serde_json::json!({ "ok": false, "refusal": "current" }));
+    }
+
+    // Stop active PTYs and reset per-floor runtime state cleanly before switching floors.
+    state.pty.kill_all();
+    clear_floor_runtime(&state);
+
+    let next_cfg = {
+        let mut store = state.config.lock().unwrap();
+        let cur = store.read();
+        let mut recents: Vec<String> = Vec::new();
+        if let Some(prev) = prev_home.filter(|p| !p.is_empty() && p != &next_home) {
+            recents.push(prev);
+        }
+        for r in cur.recent_hives {
+            if !r.is_empty() && r != next_home && !recents.contains(&r) {
+                recents.push(r);
+            }
+            if recents.len() >= 20 {
+                break;
+            }
+        }
+        let mut patch = serde_json::Map::new();
+        patch.insert(
+            "harnessHome".to_string(),
+            serde_json::Value::String(next_home.clone()),
+        );
+        patch.insert("recentHives".to_string(), serde_json::json!(recents));
+        patch.insert("onboardingComplete".to_string(), serde_json::Value::Bool(true));
+        if let Some(ref theme) = req.fresh_theme
+            && !theme.trim().is_empty()
+        {
+            patch.insert(
+                "officeTheme".to_string(),
+                serde_json::Value::String(theme.trim().to_string()),
+            );
+        }
+        match store.update(serde_json::Value::Object(patch)) {
+            Ok(c) => c,
+            Err(err) => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "refusal": "spawn-failed",
+                    "detail": err.to_string(),
+                }));
+            }
+        }
+    };
+
+    *state.roster.lock().unwrap() = RosterStore::new();
+    *state.hive.lock().unwrap() = HiveManager::new(None);
+    state.sync_hive_home();
+    if let Some(snap) = state
+        .harness_home()
+        .and_then(|home_dir| state.roster.lock().unwrap().read(Some(&home_dir)))
+    {
+        let _ = state
+            .hive
+            .lock()
+            .unwrap()
+            .sync_roster(&snap.agents, &snap.archived);
+        crate::hive_bootstrap::sync_fleet_json(&state);
+    }
+
+    let epoch = state
+        .reset_epoch
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
+    if let Ok(val) = serde_json::to_value(&next_cfg) {
+        state.emit("config:changed", val);
+    }
+    state.emit("app:reset", serde_json::json!({ "epoch": epoch, "harnessHome": next_home }));
+
+    Json(serde_json::json!({ "ok": true, "epoch": epoch, "harnessHome": next_home }))
+}
+
+async fn app_info(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let mut val = serde_json::to_value(AppInfo::default()).unwrap_or_else(|_| serde_json::json!({}));
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert(
+            "resetEpoch".to_string(),
+            serde_json::json!(state.reset_epoch.load(std::sync::atomic::Ordering::SeqCst)),
+        );
+    }
+    Json(val)
 }
 
 async fn floor_box(Query(q): Query<FloorBoxQuery>) -> Json<HomeBox> {
@@ -359,8 +485,27 @@ async fn roster_get(State(state): State<AppState>) -> Json<Option<RosterSnapshot
 
 async fn roster_put(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     Json(snap): Json<RosterSnapshot>,
-) -> Json<RosterWriteResult> {
+) -> axum::response::Response {
+    if let Some(raw_epoch) = headers.get("x-md-epoch").and_then(|v| v.to_str().ok())
+        && let Ok(client_epoch) = raw_epoch.trim().parse::<u64>()
+    {
+        let current = state
+            .reset_epoch
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if client_epoch != current {
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "ok": false,
+                    "error": "stale-session",
+                    "epoch": current,
+                })),
+            )
+                .into_response();
+        }
+    }
     let home = state.harness_home();
     let res = {
         let mut store = state.roster.lock().unwrap();
@@ -379,7 +524,7 @@ async fn roster_put(
             serde_json::json!({ "count": snap.entry_count() }),
         );
     }
-    Json(res)
+    Json(res).into_response()
 }
 
 async fn history_add(
@@ -924,6 +1069,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/ws/pty/{id}", get(ws_pty))
         .route("/api/v1/info", get(app_info))
         .route("/api/v1/floor/box", get(floor_box))
+        .route("/api/v1/floor/switch", post(floor_switch))
         .route("/api/v1/reset", post(reset_all))
         .route("/api/v1/config", get(config_get).patch(config_update))
         .route("/api/v1/config/ensure-home", post(config_ensure_home))
@@ -952,6 +1098,7 @@ pub fn build_router(state: AppState) -> Router {
         .merge(routes_integrations::integrations_router())
         .merge(routes_catalog::catalog_router())
         .merge(routes_agent_file::agent_file_router())
+        .merge(routes_backup::backup_router())
         .with_state(state)
         .layer(axum::middleware::from_fn(security::loopback_origin_guard))
         .layer(TraceLayer::new_for_http())
@@ -1027,6 +1174,7 @@ async fn main() -> anyhow::Result<()> {
         integrations_activity: Arc::new(Mutex::new(Vec::new())),
         hire_runner_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         hire_inflight: Arc::new(Mutex::new(None)),
+        reset_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         events_tx,
     };
     spawn_pty_event_forwarder(&state);
@@ -1048,11 +1196,38 @@ async fn main() -> anyhow::Result<()> {
     }
     routes_hive::spawn_hive_poller(state.clone());
 
+    let shutdown_pty = state.pty.clone();
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
     tracing::info!("listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, build_router(state)).await?;
+    axum::serve(listener, build_router(state))
+        .with_graceful_shutdown(shutdown_signal(shutdown_pty))
+        .await?;
     Ok(())
+}
+
+async fn shutdown_signal(pty: PtyManager) {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut sig) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            sig.recv().await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {}
+        _ = terminate => {}
+    }
+    tracing::info!("shutting down; stopping live PTY sessions");
+    pty.kill_all();
 }
 
 #[cfg(test)]
@@ -1107,6 +1282,7 @@ mod tests {
             integrations_activity: Arc::new(Mutex::new(Vec::new())),
             hire_runner_ready: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             hire_inflight: Arc::new(Mutex::new(None)),
+            reset_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             events_tx,
         }
     }
@@ -3645,6 +3821,280 @@ mod tests {
         }));
 
         state.pty.kill_all();
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn backup_create_inspect_dirty_restore_and_epoch_guard_work() {
+        let dir = std::env::temp_dir().join(format!(
+            "md-srv-backup-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let home_dir = dir.join("home");
+        std::fs::create_dir_all(home_dir.join("hive/projects/demo")).unwrap();
+        std::fs::create_dir_all(home_dir.join("worktrees/temp-wt")).unwrap();
+        std::fs::write(home_dir.join("hive/projects/demo/note.txt"), "important project").unwrap();
+        std::fs::write(home_dir.join("hive/board.md"), "# Board\nSaved plan\n").unwrap();
+        std::fs::write(home_dir.join("hive/log.jsonl"), "{\"kind\":\"noise\"}\n").unwrap();
+
+        let state = test_state(&dir);
+        // Real file-backed DB in data_dir so backup/restore exercises SQLite swap.
+        *state.db.lock().unwrap() = PersistStore::open(dir.join("harness.db")).unwrap();
+        state.db.lock().unwrap().set_kv("k1", &serde_json::json!("v1")).unwrap();
+        std::fs::write(dir.join("broker-master.key"), "secret-key").unwrap();
+        std::fs::write(dir.join("integration-secrets.json"), "{\"openai\":\"sk-secret\"}").unwrap();
+        state
+            .config
+            .lock()
+            .unwrap()
+            .update(serde_json::json!({
+                "onboardingComplete": true,
+                "harnessHome": home_dir.to_string_lossy(),
+                "godName": "Altan"
+            }))
+            .unwrap();
+        state.sync_hive_home();
+        let app = build_router(state.clone());
+
+        // Spawn a live PTY; create without stopFirst must refuse and request stop.
+        let _ = state.pty.spawn(SpawnOptions {
+            id: "pty-god".into(),
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), "sleep 30".into()],
+            cwd: home_dir.to_string_lossy().into_owned(),
+            cols: Some(80),
+            rows: Some(24),
+            env: HashMap::new(),
+            provider: Some("opencode".into()),
+            resume: None,
+            shell_script: None,
+            hive: None,
+        });
+
+        let refuse_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/create")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"stopFirst":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let refuse_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(refuse_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(refuse_json["ok"], false);
+        assert_eq!(refuse_json["needsStop"], true);
+
+        // Create backup with stopFirst=true.
+        let create_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/create")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"stopFirst":true}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let create_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(create_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(create_json["ok"], true, "backup create failed: {create_json}");
+        let bname = create_json["backup"]["name"].as_str().unwrap().to_string();
+        assert!(state.pty.list().is_empty());
+
+        // Verify tar excludes secrets, worktrees, and log.jsonl.
+        let archive_path = dir.join("backups").join(&bname);
+        let tar_ls = std::process::Command::new("/usr/bin/tar")
+            .arg("-tzf")
+            .arg(&archive_path)
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&tar_ls.stdout);
+        assert!(!listing.contains("broker-master.key"));
+        assert!(!listing.contains("integration-secrets.json"));
+        assert!(!listing.contains("worktrees"));
+        assert!(!listing.contains("log.jsonl"));
+        assert!(listing.contains("home/hive/projects/demo/note.txt"));
+
+        // Make target folder dirty with leftover file, modify board & DB, test restore guard.
+        std::fs::write(home_dir.join("leftover-dirty.txt"), "stale").unwrap();
+        std::fs::write(home_dir.join("hive/board.md"), "corrupted").unwrap();
+        state.db.lock().unwrap().clear_all().unwrap();
+
+        let dirty_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/restore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "name": bname, "cleanDirty": false }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let dirty_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(dirty_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(dirty_json["ok"], false);
+        assert_eq!(dirty_json["needsClean"], true);
+
+        // Clean restore wipes dirty file, restores board/project/db, preserves secrets, bumps epoch.
+        let restore_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/restore")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "name": bname, "cleanDirty": true }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let restore_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(restore_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restore_json["ok"], true, "restore failed: {restore_json}");
+        assert!(!home_dir.join("leftover-dirty.txt").exists());
+        assert_eq!(
+            std::fs::read_to_string(home_dir.join("hive/board.md")).unwrap(),
+            "# Board\nSaved plan\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("broker-master.key")).unwrap(),
+            "secret-key"
+        );
+        assert_eq!(
+            state.db.lock().unwrap().get_kv("k1").unwrap(),
+            Some(serde_json::json!("v1"))
+        );
+
+        // Stale x-md-epoch header on PUT /api/v1/roster is rejected with 409 Conflict.
+        let stale_put = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/v1/roster")
+                    .header("content-type", "application/json")
+                    .header("x-md-epoch", "0")
+                    .body(Body::from(r#"{"agents":[],"archived":[],"restorable":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stale_put.status(), StatusCode::CONFLICT);
+
+        // Custom backup folder validation: reject file path, accept writable directory.
+        let bad_file = dir.join("not-a-dir.txt");
+        std::fs::write(&bad_file, "x").unwrap();
+        let bad_dir_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/set-dir")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "path": bad_file.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bad_dir_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(bad_dir_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(bad_dir_json["ok"], false);
+        assert_eq!(bad_dir_json["dirCheck"]["writable"], false);
+
+        let custom_dir = dir.join("custom-backups");
+        let good_dir_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/backups/set-dir")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "path": custom_dir.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let good_dir_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(good_dir_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(good_dir_json["ok"], true);
+        assert_eq!(good_dir_json["dirCheck"]["writable"], true);
+        assert!(custom_dir.is_dir());
+
+        // Switching to a second floor creates the folder, records recentHives, and bumps resetEpoch.
+        let floor2 = dir.join("floor-two");
+        let switch_res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/floor/switch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "harnessHome": floor2.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let switch_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(switch_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(switch_json["ok"], true);
+        assert!(floor2.is_dir());
+        let cfg_after_switch = state.config.lock().unwrap().read();
+        assert_eq!(
+            cfg_after_switch.harness_home.as_deref(),
+            Some(floor2.to_string_lossy().as_ref())
+        );
+        assert!(cfg_after_switch
+            .recent_hives
+            .contains(&home_dir.to_string_lossy().to_string()));
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

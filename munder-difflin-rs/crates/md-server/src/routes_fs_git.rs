@@ -676,7 +676,7 @@ async fn ide_page() -> Html<&'static str> {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Munder Difflin IDE (Web)</title>
+  <title>Duman Office IDE (Web)</title>
   <style>
     html, body { margin: 0; height: 100dvh; background: #17171B; color: #DEDBD6; font-family: Inter, system-ui, sans-serif; font-size: 13px; display: grid; place-items: center; }
   </style>

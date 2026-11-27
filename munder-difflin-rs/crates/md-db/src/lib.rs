@@ -214,6 +214,11 @@ impl PersistStore {
         self.conn.execute("DELETE FROM command_history", [])?;
         Ok(())
     }
+
+    pub fn checkpoint_truncate(&self) -> Result<(), DbError> {
+        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
 }
 
 fn map_history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CommandHistoryEntry> {

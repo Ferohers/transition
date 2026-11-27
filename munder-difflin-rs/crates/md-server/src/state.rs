@@ -21,7 +21,7 @@ use md_pty::{
 use serde::Serialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -109,6 +109,7 @@ pub struct AppState {
     pub integrations_activity: Arc<Mutex<Vec<serde_json::Value>>>,
     pub hire_runner_ready: Arc<AtomicBool>,
     pub hire_inflight: Arc<Mutex<Option<HireInflight>>>,
+    pub reset_epoch: Arc<AtomicU64>,
     pub events_tx: broadcast::Sender<ServerEvent>,
 }
 

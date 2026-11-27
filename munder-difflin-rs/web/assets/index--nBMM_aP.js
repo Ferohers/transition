@@ -14070,14 +14070,17 @@ function withStandingContext(agent, text2, style2) {
   if (inferAgentProvider(agent.command, agent.provider) === "custom") return text2;
   return withResponseStyle(agent, withStandingGoal(agent, text2), style2);
 }
-const INITIAL_GOD_PROMPT = [
-  "You're online as Michael, the orchestrator of the hive. Get oriented, then start running the floor:",
-  "1. Read your memory.md and drain every message in your inbox.",
-  "2. Review board.md + tasks.json and the current roster of agents (active vs archived).",
-  "3. Check fleet health: read fleet.json in the hive root for every agent's live tokens, cost, status, breaker level, and inbox backlog (`claude agents` will NOT show your hive's agents). Flag anyone stalled, over-budget, or breaker-armed.",
-  "4. Skim COMMANDS.md (hive root) for the Claude Code commands you can use.",
-  "Then begin orchestrating: triage requests, delegate work to the team, and keep everyone unblocked. You are fully autonomous — there is no approval queue, so handle tool-permission prompts in this session yourself (the human can approve them remotely from their phone)."
-].join("\n");
+function initialGodPrompt(godName = DEFAULT_GOD_NAME) {
+  const who = (godName || "").trim() || DEFAULT_GOD_NAME;
+  return [
+    `You're online as ${who}, the orchestrator of the hive. Get oriented, then start running the floor:`,
+    "1. Read your memory.md and drain every message in your inbox.",
+    "2. Review board.md + tasks.json and the current roster of agents (active vs archived).",
+    "3. Check fleet health: read fleet.json in the hive root for every agent's live tokens, cost, status, breaker level, and inbox backlog (`claude agents` will NOT show your hive's agents). Flag anyone stalled, over-budget, or breaker-armed.",
+    "4. Skim COMMANDS.md (hive root) for the Claude Code commands you can use.",
+    "Then begin orchestrating: triage requests, delegate work to the team, and keep everyone unblocked. You are fully autonomous — there is no approval queue, so handle tool-permission prompts in this session yourself (the human can approve them remotely from their phone)."
+  ].join("\n");
+}
 async function submitToPty(ptyId, text2, provider, opts) {
   const res = await window.cth.submitToPty({ ptyId, text: text2, provider, ...opts, settleMs: opts.settleMs ?? 250 });
   if (!res?.ok || !res.result) throw Object.assign(new Error(res?.error ?? `pty submit failed: ${ptyId}`), { sent: res?.sent === true });
@@ -14374,16 +14377,17 @@ function useHive(config2) {
             await submitToPty(GOD_PTY, remoteCommand, godProvider, { agentId: GOD_ID$1, source: "remote-control", settleMs: REMOTE_CONTROL_SETTLE_MS }).catch(() => void 0);
           }
           if (!cancelled && !resumedGod) {
+            const initPrompt = initialGodPrompt(godName);
             if (res.seedPrompt) {
               const seedRes = await submitToPty(GOD_PTY, res.seedPrompt, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
               if (!cancelled && seedRes?.ok) {
                 useStore.getState().updateAgent(GOD_ID$1, { status: "working" });
-                useStore.getState().enqueueMessage(GOD_ID$1, INITIAL_GOD_PROMPT);
+                useStore.getState().enqueueMessage(GOD_ID$1, initPrompt);
               } else if (!cancelled) {
-                await submitToPty(GOD_PTY, INITIAL_GOD_PROMPT, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
+                await submitToPty(GOD_PTY, initPrompt, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
               }
             } else {
-              await submitToPty(GOD_PTY, INITIAL_GOD_PROMPT, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
+              await submitToPty(GOD_PTY, initPrompt, godProvider, { agentId: GOD_ID$1, source: "god-boot" });
             }
           }
         } catch {
@@ -104742,6 +104746,30 @@ function ProSidebar({
                   onToggle: () => setLocalOpen(!localOpen),
                   count: agents.length,
                   hot: agents.some((a) => NEEDS_YOU.has(a.status)),
+                  right: /* @__PURE__ */ jsxRuntimeExports.jsx(
+                    "button",
+                    {
+                      type: "button",
+                      "data-add-floor": true,
+                      onClick: () => window.dispatchEvent(new CustomEvent("cth:open-floor-picker")),
+                      title: t2("newFloor.title"),
+                      "aria-label": t2("newFloor.title"),
+                      style: {
+                        display: "inline-grid",
+                        placeItems: "center",
+                        width: 20,
+                        height: 20,
+                        padding: 0,
+                        border: "none",
+                        borderRadius: 5,
+                        background: "transparent",
+                        color: "var(--cth-ink-500)",
+                        cursor: "pointer",
+                        flexShrink: 0
+                      },
+                      children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "plus", size: 13 })
+                    }
+                  ),
                   data: { "data-office-heading": "local" }
                 }
               ),
@@ -128267,7 +128295,7 @@ function clearLocalState() {
   }
 }
 const DEV_BUILD = false;
-const NAV_SECTIONS = settingsNavFor(["General", "Theme", "Prerequisites", "Agents & Models", ...[], "Autonomy & Budgets", "Integrations", "Voice", "Dictation & Meetings", "Memory & Knowledge", "Developer"], DEV_BUILD);
+const NAV_SECTIONS = settingsNavFor(["General", "Theme", "Prerequisites", "Agents & Models", ...[], "Autonomy & Budgets", "Integrations", "Voice", "Dictation & Meetings", "Memory & Knowledge", "Backup Management", "Developer"], DEV_BUILD);
 const navSectionsFor = (chrome2) => NAV_SECTIONS.filter((s) => s !== "Integrations" || chrome2 === "modal");
 const NAV_SECTION_KEYS = {
   "General": "settings.nav.general",
@@ -128281,8 +128309,312 @@ const NAV_SECTION_KEYS = {
   "Voice": "settings.nav.voice",
   "Dictation & Meetings": "settings.nav.dictation",
   "Memory & Knowledge": "settings.nav.memoryKnowledge",
+  "Backup Management": "settings.nav.backupManagement",
   "Developer": "settings.nav.developer"
 };
+function formatBytesShort(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 1024) return `${bytes || 0} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+function BackupManagementSection({ chrome: chrome2 }) {
+  const { sectionHead: sectionHead2, panel, card: card2, warnTile, errorText, input: inputStyle2, statusDot } = settingsChrome(chrome2);
+  const [status, setStatus] = reactExports.useState(null);
+  const [loading, setLoading] = reactExports.useState(true);
+  const [busy, setBusy] = reactExports.useState("");
+  const [err, setErr] = reactExports.useState("");
+  const [note, setNote] = reactExports.useState("");
+  const [stopConfirm, setStopConfirm] = reactExports.useState(null);
+  const [restorePrompt, setRestorePrompt] = reactExports.useState(null);
+  const [deleteConfirm, setDeleteConfirm] = reactExports.useState(null);
+  const [dirDraft, setDirDraft] = reactExports.useState("");
+  const fileInputRef = reactExports.useRef(null);
+  const load = reactExports.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await window.cth.backupStatus?.();
+      if (res) {
+        setStatus(res);
+        setDirDraft(res.backupsDir || "");
+      }
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  reactExports.useEffect(() => {
+    void load();
+  }, [load]);
+  const applyBackupDir = async (nextPath) => {
+    setErr("");
+    setNote("");
+    setBusy("setdir");
+    try {
+      const res = await window.cth.backupSetDir?.(nextPath);
+      if (!res?.ok) {
+        setErr(res?.error || "Selected backup folder is not writable.");
+        return;
+      }
+      setStatus((prev) => prev ? {
+        ...prev,
+        backupsDir: res.backupsDir,
+        dirCheck: res.dirCheck,
+        backups: res.backups ?? prev.backups
+      } : prev);
+      setDirDraft(res.backupsDir || "");
+      setNote(`Backup folder verified & active: ${res.backupsDir}`);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onBrowseBackupDir = async () => {
+    const pick = await window.cth.chooseFolder?.();
+    if (!pick?.ok || !pick.path) return;
+    setDirDraft(pick.path);
+    await applyBackupDir(pick.path);
+  };
+  const onCreate = async (stopFirst = false) => {
+    setErr("");
+    setNote("");
+    setBusy("create");
+    try {
+      const res = await window.cth.backupCreate?.(stopFirst);
+      if (!res) {
+        setErr("Backup request failed.");
+        return;
+      }
+      if (res.needsStop) {
+        setStopConfirm({ runningCount: res.runningCount || 0, runningPtys: res.runningPtys || [] });
+        return;
+      }
+      if (!res.ok) {
+        setErr(res.error || "Failed to create backup.");
+        return;
+      }
+      setStopConfirm(null);
+      setNote(`Backup created: ${res.backup?.name || "ok"}${res.stoppedAgents ? ` (stopped ${res.stoppedAgents} active session(s))` : ""}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onStartRestore = async (name) => {
+    setErr("");
+    setNote("");
+    setBusy(`inspect:${name}`);
+    try {
+      const info = await window.cth.backupInspect?.(name);
+      if (!info?.ok) {
+        setErr(info?.error || "Failed to inspect backup archive.");
+        return;
+      }
+      setRestorePrompt({
+        name,
+        manifest: info.manifest || null,
+        targetHome: info.targetHome || "",
+        targetDirty: info.targetDirty || { dirty: false, entries: [], totalCount: 0 },
+        runningCount: info.runningCount || 0
+      });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onConfirmRestore = async () => {
+    if (!restorePrompt) return;
+    setErr("");
+    setNote("");
+    setBusy(`restore:${restorePrompt.name}`);
+    try {
+      const res = await window.cth.backupRestore?.(restorePrompt.name, true, restorePrompt.targetHome?.trim() || void 0);
+      if (!res?.ok) {
+        if (res?.needsClean) {
+          setRestorePrompt((prev) => prev ? { ...prev, targetDirty: res.targetDirty || prev.targetDirty, runningCount: res.runningCount ?? prev.runningCount } : prev);
+        } else {
+          setErr(res?.error || "Restore failed.");
+        }
+        return;
+      }
+      setNote("Restore complete — reloading Duman Office…");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onDelete = async (name) => {
+    setErr("");
+    setNote("");
+    setBusy(`delete:${name}`);
+    try {
+      const res = await window.cth.backupDelete?.(name);
+      if (!res?.ok) {
+        setErr(res?.error || "Delete failed.");
+        return;
+      }
+      setDeleteConfirm(null);
+      setNote(`Deleted ${name}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const onImportFile = async (ev) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = "";
+    if (!file) return;
+    setErr("");
+    setNote("");
+    setBusy("import");
+    try {
+      const res = await window.cth.backupImportFile?.(file);
+      if (!res?.ok) {
+        setErr(res?.error || "Import failed.");
+        return;
+      }
+      setNote(`Imported backup: ${res.backup?.name || file.name}`);
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const backups = status?.backups ?? [];
+  const runningCount = status?.runningCount ?? 0;
+  const dirCheck = status?.dirCheck;
+  const dirWritable = dirCheck ? !!dirCheck.writable : true;
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 14 }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: sectionHead2, children: "Backup Management" }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: panel, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 6 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12.5, fontWeight: 600, color: "var(--cth-ink-900)" }, children: "Backup Folder" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: dirWritable ? "var(--cth-ink-700)" : "var(--cth-status-blocked)" }, children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "aria-hidden": true, style: statusDot(dirWritable) }),
+              dirCheck ? dirWritable ? "Writable · ready" : dirCheck.error || "Not writable" : "Checking…"
+            ] })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("input", {
+              type: "text",
+              "aria-label": "Backup Folder",
+              value: dirDraft,
+              onChange: (e) => setDirDraft(e.target.value),
+              placeholder: status?.defaultBackupsDir || "~/backups",
+              style: { ...inputStyle2, flex: 1, minWidth: 220, fontFamily: "var(--cth-font-mono)", fontSize: 12 }
+            }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy, onClick: () => void onBrowseBackupDir(), children: "Choose…" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy || !dirDraft.trim(), onClick: () => void applyBackupDir(dirDraft.trim()), children: busy === "setdir" ? "Checking…" : "Check & Save" }),
+            dirCheck?.isCustom && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy, onClick: () => void applyBackupDir(null), children: "Reset Default" })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { height: 1, background: "var(--cth-ink-300)" } }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", gap: 8, minWidth: 0 }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "aria-hidden": true, style: statusDot(runningCount === 0) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 13, color: "var(--cth-ink-900)", fontWeight: 500 }, children: runningCount > 0 ? `${runningCount} active session(s) running` : "All agents & workers stopped" })
+          ] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("input", { ref: fileInputRef, type: "file", accept: ".tar.gz,.tgz,application/gzip", style: { display: "none" }, onChange: (e) => void onImportFile(e) }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy || !dirWritable, onClick: () => fileInputRef.current?.click(), children: busy === "import" ? "Importing…" : "Import .tar.gz" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy || loading, onClick: () => void load(), children: "Refresh" }),
+            /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "primary", size: "sm", disabled: !!busy || !dirWritable, onClick: () => void onCreate(false), children: busy === "create" ? "Creating…" : "Create Backup" })
+          ] })
+        ] }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, lineHeight: "17px", color: "var(--cth-ink-700)" }, children: "Warning: Taking a backup or restoring stops all running agents and background workers first so workspace files and SQLite state stay consistent." }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 3, fontSize: 11.5, lineHeight: "16px", color: "var(--cth-ink-500)" }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [/* @__PURE__ */ jsxRuntimeExports.jsx("strong", { style: { color: "var(--cth-ink-700)" }, children: "Included: " }), status?.includedSummary ?? "Config, SQLite database, knowledge base, templates/themes, roster, hive agents, memories, board, tasks, projects."] }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [/* @__PURE__ */ jsxRuntimeExports.jsx("strong", { style: { color: "var(--cth-ink-700)" }, children: "Excluded: " }), status?.excludedSummary ?? "Secret keys (broker-master.key, integration-secrets.json), live PTYs, git worktrees, runtime logs, bin scripts, fleet.json, auto roster-backups."] })
+        ] })
+      ] })
+    ] }),
+    stopConfirm && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { ...panel, borderColor: "var(--cth-status-blocked)" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 10, alignItems: "flex-start" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: warnTile, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "bell" }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 4 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--cth-ink-900)" }, children: "Stop running agents before taking backup?" }),
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, lineHeight: "17px", color: "var(--cth-ink-700)" }, children: `${stopConfirm.runningCount} active session(s) (${(stopConfirm.runningPtys || []).join(", ") || "workers"}) are still running. Stopping them prevents half-written board, task, or database files inside the backup.` })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy, onClick: () => setStopConfirm(null), children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "danger", size: "sm", disabled: !!busy, onClick: () => void onCreate(true), children: busy === "create" ? "Stopping & Backing Up…" : "Stop Systems & Create Backup" })
+      ] })
+    ] }),
+    restorePrompt && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { ...panel, borderColor: "var(--cth-status-blocked)" }, children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 10, alignItems: "flex-start" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: warnTile, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "bell" }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, display: "flex", flexDirection: "column", gap: 6 }, children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 13, fontWeight: 600, color: "var(--cth-ink-900)" }, children: `Restore ${restorePrompt.name}` }),
+          restorePrompt.runningCount > 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "var(--cth-status-blocked)" }, children: `${restorePrompt.runningCount} live system(s)/agent(s) will be stopped safely before restoring.` }),
+          restorePrompt.targetDirty?.dirty ? /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { fontSize: 12, lineHeight: "17px", color: "var(--cth-ink-700)" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsx("strong", { style: { color: "var(--cth-status-blocked)" }, children: "Target folder is dirty: " }),
+            `${restorePrompt.targetDirty.totalCount} leftover item(s) exist in ${restorePrompt.targetHome || "workspace"} (${restorePrompt.targetDirty.entries.slice(0, 8).join(", ")}${restorePrompt.targetDirty.totalCount > 8 ? ", …" : ""}). Leftover files from previous runs can break restored agents and must be removed cleanly before restore.`
+          ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "var(--cth-ink-700)" }, children: `Target workspace (${restorePrompt.targetHome || "default"}) is clean and ready.` }),
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("label", { style: { display: "flex", flexDirection: "column", gap: 4, fontSize: 11.5, color: "var(--cth-ink-700)" }, children: [
+            "Restore workspace folder",
+            /* @__PURE__ */ jsxRuntimeExports.jsx("input", {
+              type: "text",
+              value: restorePrompt.targetHome,
+              onChange: (e) => setRestorePrompt({ ...restorePrompt, targetHome: e.target.value }),
+              style: { ...inputStyle2, fontFamily: "var(--cth-font-mono)", fontSize: 12 }
+            })
+          ] })
+        ] })
+      ] }),
+      /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", justifyContent: "flex-end", gap: 8 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy, onClick: () => setRestorePrompt(null), children: "Cancel" }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "danger", size: "sm", disabled: !!busy, onClick: () => void onConfirmRestore(), children: busy.startsWith("restore:") ? "Stopping, Cleaning & Restoring…" : restorePrompt.targetDirty?.dirty ? "Stop Systems, Clean Folder & Restore" : "Stop Systems & Restore" })
+      ] })
+    ] }),
+    err && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: errorText, children: err }),
+    note && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, color: "var(--cth-mint)" }, children: note }),
+    /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { children: [
+      /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: sectionHead2, children: `Available Backups (${backups.length})` }),
+      loading && !status ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { fontSize: 12, color: "var(--cth-ink-500)" }, children: "Loading backups…" }) : backups.length === 0 ? /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { ...panel, fontSize: 12.5, color: "var(--cth-ink-500)" }, children: "No backups created yet. Click Create Backup above to save a compressed snapshot." }) : /* @__PURE__ */ jsxRuntimeExports.jsx("div", { style: { display: "flex", flexDirection: "column", gap: 8 }, children: backups.map((b) => {
+        const m = b.manifest;
+        const tsText = b.createdAtMs ? new Date(b.createdAtMs).toLocaleString() : "";
+        return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: card2(restorePrompt?.name === b.name), children: [
+          /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }, children: [
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: 1 }, children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12.5, fontWeight: 600, fontFamily: "var(--cth-font-mono)", color: "var(--cth-ink-900)", overflowWrap: "anywhere" }, children: b.name }),
+              /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { fontSize: 11.5, color: "var(--cth-ink-500)" }, children: [
+                tsText,
+                " · ",
+                formatBytesShort(b.sizeBytes),
+                m?.godName ? ` · Orchestrator: ${m.godName}` : "",
+                m?.harnessHome ? ` · ${m.harnessHome}` : ""
+              ] })
+            ] }),
+            /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { display: "flex", gap: 6, flexShrink: 0, alignItems: "center" }, children: [
+              /* @__PURE__ */ jsxRuntimeExports.jsx("a", {
+                href: window.cth.backupDownloadUrl?.(b.name),
+                download: b.name,
+                style: { textDecoration: "none" },
+                children: /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", children: "Download" })
+              }),
+              /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy, onClick: () => void onStartRestore(b.name), children: busy === `inspect:${b.name}` ? "Checking…" : "Restore" }),
+              deleteConfirm === b.name ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "danger", size: "sm", disabled: !!busy, onClick: () => void onDelete(b.name), children: busy === `delete:${b.name}` ? "Deleting…" : "Confirm" }),
+                /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { size: "sm", disabled: !!busy, onClick: () => setDeleteConfirm(null), children: "Cancel" })
+              ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "danger", size: "sm", disabled: !!busy, onClick: () => setDeleteConfirm(b.name), children: "Delete" })
+            ] })
+          ] })
+        ] }, b.name);
+      }) })
+    ] })
+  ] });
+}
 function SettingsModal({ config: config2, onClose, initialSection, chrome: chrome2 = "modal" }) {
   const skin = useAppSkin();
   const {
@@ -128762,7 +129094,7 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
               if (section !== activeSection) guardedLeave(() => setActiveSection(section));
             },
             style: navRow(active),
-            children: t2(NAV_SECTION_KEYS[section])
+            children: t2(NAV_SECTION_KEYS[section], section)
           },
           section
         );
@@ -129155,6 +129487,7 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
             ] })
           ] })
         ] }),
+        activeSection === "Backup Management" && /* @__PURE__ */ jsxRuntimeExports.jsx(BackupManagementSection, { chrome: chrome2 }),
         activeSection === "Integrations" && /* @__PURE__ */ jsxRuntimeExports.jsx(IntegrationsScreen, { config: config2, framed: "settings" }),
         activeSection === "Developer" && DEV_BUILD,
         activeSection === "Cloud Office" && /* @__PURE__ */ jsxRuntimeExports.jsx(CloudOfficeSizeSection, {}),
@@ -129217,7 +129550,7 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
       saveNote && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: saveBad ? "var(--cth-coral)" : "var(--cth-mint)" }, "data-save-note": saveBad ? "bad" : "ok", children: saveNote }),
       settingsPaused ? /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "var(--cth-ink-700)" }, "data-save-blocked": true, children: t2("integrity.saveBlocked") }) : dirty && !saveNote && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontSize: 12, color: "var(--cth-ink-500)" }, children: t2("settings.unsavedChanges") }),
       /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { onClick: requestClose, children: t2("settings.close") }),
-      activeSection !== "Integrations" && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "primary", onClick: () => void saveAll(), disabled: saveBusy || !dirty || settingsPaused, children: saveBusy ? t2("settings.saving") : t2("settings.save") })
+      activeSection !== "Integrations" && activeSection !== "Backup Management" && /* @__PURE__ */ jsxRuntimeExports.jsx(Btn, { kind: "primary", onClick: () => void saveAll(), disabled: saveBusy || !dirty || settingsPaused, children: saveBusy ? t2("settings.saving") : t2("settings.save") })
     ] })
   ] }) });
   if (chrome2 === "inline") {
@@ -147817,7 +148150,15 @@ function App() {
   }, [config2?.seasonalTheme, floorTheme]);
   reactExports.useEffect(() => window.cth.onCloseRequested((info) => setQuitWarn(info)), []);
   const [newFloorOpen, setNewFloorOpen] = reactExports.useState(false);
-  reactExports.useEffect(() => window.cth.onFloorPickerOpen(() => setNewFloorOpen(true)), []);
+  reactExports.useEffect(() => {
+    const offCth = window.cth.onFloorPickerOpen(() => setNewFloorOpen(true));
+    const onWin = () => setNewFloorOpen(true);
+    window.addEventListener("cth:open-floor-picker", onWin);
+    return () => {
+      offCth?.();
+      window.removeEventListener("cth:open-floor-picker", onWin);
+    };
+  }, []);
   useOfficePageChanged();
   const enqueuePendingHires = useStore((s) => s.enqueuePendingHires);
   const closeAddAgentReview = () => {

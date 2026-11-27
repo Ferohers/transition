@@ -913,16 +913,21 @@ fn worker_tokens_used(state: &AppState, worker_id: &str, cwd: &str) -> u64 {
     u.input_tokens + u.output_tokens + u.cache_write_tokens + u.cache_read_tokens
 }
 
-fn extract_final_response(state: &AppState, pty_id: &str) -> Value {
-    let tail = state.pty.tail(pty_id);
+fn is_tui_spinner_noise(line: &str) -> bool {
+    line.chars().any(|c| {
+        matches!(c, '⬝' | '■' | '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏')
+    })
+}
+
+fn clean_pty_tail_response(tail: &str) -> Value {
     if tail.trim().is_empty() {
         return Value::Null;
     }
-    let clean = strip_ansi(&tail);
+    let clean = strip_ansi(tail);
     let lines: Vec<&str> = clean
         .lines()
         .map(str::trim)
-        .filter(|l| !l.is_empty())
+        .filter(|l| !l.is_empty() && !is_tui_spinner_noise(l))
         .collect();
     if lines.is_empty() {
         return Value::Null;
@@ -931,6 +936,10 @@ fn extract_final_response(state: &AppState, pty_id: &str) -> Value {
     let joined = lines[start..].join("\n");
     let capped: String = joined.chars().take(1200).collect();
     Value::String(capped)
+}
+
+fn extract_final_response(state: &AppState, pty_id: &str) -> Value {
+    clean_pty_tail_response(&state.pty.tail(pty_id))
 }
 
 fn persist_workers_history(state: &AppState, history: &[Value]) {
@@ -972,9 +981,19 @@ fn worker_history_row(
     })
 }
 
-fn finish_worker_record(state: &AppState, w: WorkerRecord, result: &str, kill_pty: bool) {
+fn finish_worker_record(
+    state: &AppState,
+    w: WorkerRecord,
+    result: &str,
+    kill_pty: bool,
+    done_body: Option<&str>,
+) {
     let tokens = worker_tokens_used(state, &w.worker_id, &w.cwd);
-    let final_resp = extract_final_response(state, &w.pty_id);
+    let final_resp = done_body
+        .map(str::trim)
+        .filter(|b| !b.is_empty())
+        .map(|b| Value::String(b.chars().take(1200).collect()))
+        .unwrap_or_else(|| extract_final_response(state, &w.pty_id));
     if kill_pty {
         let _ = state.pty.kill(&w.pty_id);
     }
@@ -1121,7 +1140,7 @@ pub(crate) fn prune_exited_workers(state: &AppState) {
     };
     if !exited_records.is_empty() {
         for w in exited_records {
-            finish_worker_record(state, w, "exited", false);
+            finish_worker_record(state, w, "exited", false, None);
         }
         crate::hive_bootstrap::sync_fleet_json(state);
     }
@@ -1230,7 +1249,7 @@ async fn worker_stop(
     let Some(w) = worker else {
         return Json(serde_json::json!({ "ok": false, "error": "not found" }));
     };
-    finish_worker_record(&state, w, "stopped", true);
+    finish_worker_record(&state, w, "stopped", true, None);
     crate::hive_bootstrap::sync_fleet_json(&state);
     Json(serde_json::json!({ "ok": true }))
 }
@@ -2554,7 +2573,7 @@ pub(crate) fn process_outboxes_tick(state: &AppState) {
                     .map(|idx| workers.remove(idx))
             };
             if let Some(w) = done_worker {
-                finish_worker_record(state, w, "done", true);
+                finish_worker_record(state, w, "done", true, Some(body));
                 crate::hive_bootstrap::sync_fleet_json(state);
             }
         }
@@ -3319,4 +3338,19 @@ pub fn hive_router() -> Router<AppState> {
         .route("/api/v1/workers/{id}/stop", post(worker_stop))
         .route("/api/v1/hive/hire-runner-ready", post(hire_runner_ready))
         .route("/api/v1/hive/hire-done", post(hire_request_done))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clean_pty_tail_response_drops_tui_spinner_noise() {
+        let noisy = "\x1b[32m⬝⬝⬝⬝⬝■■■EINC. platfoslog\n⠋ Working...\nDeliverable written to strategy/platform-and-slogan.md\n";
+        assert_eq!(
+            clean_pty_tail_response(noisy),
+            Value::String("Deliverable written to strategy/platform-and-slogan.md".to_string())
+        );
+        assert_eq!(clean_pty_tail_response("⬝⬝⬝■■■ ⠏ spinner only"), Value::Null);
+    }
 }

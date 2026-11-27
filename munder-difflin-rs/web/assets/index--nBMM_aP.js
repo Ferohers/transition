@@ -874,7 +874,7 @@ function systemLanguageOf(wanted2, offered) {
   }
   return offered.includes("en") ? "en" : offered[0];
 }
-const ONBOARD_STEPS = 5;
+const ONBOARD_STEPS = 4;
 const OVERLAY_Z = 1500;
 const HERO_CSS = `.onboard-hero-title{letter-spacing:-.04em;text-wrap:balance}.onboard-hero-lead{text-wrap:pretty}html[dir="rtl"] .onboard-hero-title,html:is([lang|="ja"],[lang|="ko"],[lang|="zh"]) .onboard-hero-title{letter-spacing:0}`;
 function markedTitle(title, mark2) {
@@ -14972,6 +14972,8 @@ ${msg.context}` : text2;
     const offArchive = window.cth.onHiveAgentArchived?.((e) => {
       if (!e?.id) return;
       const id = e.id;
+      const ptyId = useStore.getState().agents.find((a) => a.id === id)?.ptyId ?? `pty-${id}`;
+      disposeTerminal(ptyId);
       useStore.getState().archiveAgent(id);
       delete nudged.current[id];
       delete lastCompactUsed.current[id];
@@ -87875,7 +87877,10 @@ const freeDoor = {
     if (!api2?.freeSignInPrepare) return { ok: false, detail: "This build cannot start the sign-in. Restart the app." };
     try {
       const r6 = await api2.freeSignInPrepare();
-      return { ok: true, url: r6.url, expiresAt: r6.expiresAt };
+      if (!r6 || r6.ok === false || typeof r6.url !== "string") {
+        return { ok: false, detail: r6?.detail ?? "Sign-in is disabled in local mode." };
+      }
+      return { ok: true, url: r6.url, expiresAt: r6.expiresAt ?? null };
     } catch (e) {
       return { ok: false, detail: e instanceof Error ? e.message : "The sign-in could not start." };
     }
@@ -87885,7 +87890,10 @@ const freeDoor = {
     if (!api2?.freeSignInBegin) return { ok: false, detail: "This build cannot start the sign-in. Restart the app." };
     try {
       const r6 = await api2.freeSignInBegin();
-      return { ok: true, url: r6.url, expiresAt: r6.expiresAt };
+      if (!r6 || r6.ok === false || typeof r6.url !== "string") {
+        return { ok: false, detail: r6?.detail ?? "Sign-in is disabled in local mode." };
+      }
+      return { ok: true, url: r6.url, expiresAt: r6.expiresAt ?? null };
     } catch (e) {
       return { ok: false, detail: e instanceof Error ? e.message : "The sign-in could not start." };
     }
@@ -87894,7 +87902,7 @@ const freeDoor = {
     const api2 = bridge$3();
     if (!api2?.freeSignInPaste) return { ok: false, detail: "This build cannot accept the code. Restart the app." };
     const r6 = await api2.freeSignInPaste(pasted);
-    return r6.ok ? { ok: true } : { ok: false, detail: r6.detail };
+    return r6?.ok ? { ok: true } : { ok: false, detail: r6?.detail ?? "Sign-in is disabled in local mode." };
   },
   cancel: () => {
     void bridge$3()?.freeSignInCancel?.();
@@ -88709,8 +88717,8 @@ function useJoinFlow(start2 = "choose") {
     setAgain(landedOnce.current);
     const r6 = await (openBrowser ? bridge2.signInBegin() : bridge2.signInPrepare());
     if (asks2.current !== mine) return;
-    if (!r6.ok) {
-      setError({ code: r6.error, detail: r6.detail, reason: r6.reason });
+    if (!r6 || !r6.ok) {
+      setError({ code: r6?.error ?? "unavailable", detail: r6?.detail ?? null, reason: r6?.reason ?? null });
       setLink(null);
       setBusy(false);
       return;
@@ -90600,13 +90608,13 @@ function HivePicker({ config: config2, onOpenCurrent }) {
   };
   const browse = async () => {
     setError(void 0);
-    const res = await window.cth.chooseFolder();
+    const res = await window.cth.chooseFolder({ mode: "floor" });
     if (res.ok) void openHive(res.path);
     else if (res.error !== "cancelled") setError(res.error);
   };
   const createNew = async () => {
     setError(void 0);
-    const res = await window.cth.chooseFolder();
+    const res = await window.cth.chooseFolder({ mode: "floor" });
     if (!res.ok) {
       if (res.error !== "cancelled") setError(res.error);
       return;
@@ -90781,7 +90789,7 @@ function NewFloorPicker({ config: config2, onClose }) {
   };
   const browse = async () => {
     setError(null);
-    const res = await window.cth.chooseFolder();
+    const res = await window.cth.chooseFolder({ mode: "floor" });
     if (res.ok) void open2(res.path);
     else if (res.error !== "cancelled") setError(res.error);
   };
@@ -90899,8 +90907,10 @@ function refusalText$1(t2, refusal2, lock, detail) {
       return t2("newFloor.errMkdir", { detail: detail ?? "" });
     case "spawn-failed":
       return t2("newFloor.errSpawn", { detail: detail ?? "" });
+    case "nested-floor":
+      return detail || "A floor folder cannot be inside another floor folder.";
     default:
-      return t2("newFloor.errInvalid");
+      return detail || t2("newFloor.errInvalid");
   }
 }
 function QuitWarningModal({ ptyCount, onCancel, onConfirm }) {
@@ -94073,7 +94083,7 @@ function WorkspaceStep({ step: step2, orgName, draft, onChange, error, onBack, o
   const ready2 = !problem && !!draft.readAs && found !== "file";
   const suggestion = despace(draft.name);
   const browse = async () => {
-    const res = await window.cth.chooseFolder();
+    const res = await window.cth.chooseFolder({ mode: "floor" });
     if (res.ok) onChange({ ...draft, ...splitPath(res.path) });
   };
   const pickAudience = (audience) => {
@@ -94084,6 +94094,7 @@ function WorkspaceStep({ step: step2, orgName, draft, onChange, error, onBack, o
     OnboardFrame,
     {
       step: step2,
+      language: step2 === 0,
       title: t2("pro.onboarding.workspace.title"),
       lead: t2("pro.onboarding.workspace.lead"),
       footer: /* @__PURE__ */ jsxRuntimeExports.jsx(
@@ -94147,7 +94158,7 @@ function ProOnboarding({ onComplete, entryOnly }) {
   const { t: t2 } = useTranslation();
   const [step2, setStep] = reactExports.useState(0);
   const [selectedTheme, setSelectedTheme] = reactExports.useState("office");
-  const [entry, setEntry] = reactExports.useState(null);
+  const [entry, setEntry] = reactExports.useState({ path: "solo", orgName: "" });
   const [draft, setDraft] = reactExports.useState(DEFAULT_DRAFT);
   const [error, setError] = reactExports.useState();
   const [busy, setBusy] = reactExports.useState(false);
@@ -94238,56 +94249,21 @@ function ProOnboarding({ onComplete, entryOnly }) {
     setBusy(false);
     onComplete?.(next);
   };
-  if (entryOnly) {
-    return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { position: "relative", width: "100%", height: "100%" }, children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx(LicenceEndedToast, {}),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(
-        EntryStep,
-        {
-          wall: true,
-          onJoined: () => {
-          },
-          onLicensed: () => {
-          }
-        }
-      ),
-      freeAdmits(free) && /* @__PURE__ */ jsxRuntimeExports.jsx(
-        "button",
-        {
-          className: "cth-titlebar-nodrag",
-          onClick: () => setAppSkin("office"),
-          style: {
-            position: "absolute",
-            top: 14,
-            left: 16,
-            zIndex: 2,
-            background: "none",
-            border: "none",
-            padding: 4,
-            cursor: "pointer",
-            fontSize: 12,
-            color: "var(--cth-ink-500)",
-            textDecoration: "underline",
-            textUnderlineOffset: 3
-          },
-          children: t2("pro.onboarding.entry.backToClassic")
-        }
-      )
-    ] });
-  }
-  if (step2 === 0 || !entry) {
+  if (entryOnly || step2 <= 0 || !entry) {
+    const activeEntry = entry ?? { path: "solo", orgName: "" };
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      EntryStep,
+      WorkspaceStep,
       {
         step: 0,
-        initialPath: entry?.path,
-        onPathChosen: setInPath,
-        onJoined: (r6) => {
-          setEntry({ path: "team", orgName: r6.org.name });
-          setStep(1);
+        orgName: activeEntry.orgName,
+        draft,
+        onChange: (next) => {
+          setDraft(next);
+          setError(void 0);
         },
-        onLicensed: () => {
-          setEntry({ path: "solo", orgName: "" });
+        error,
+        onContinue: () => {
+          setError(void 0);
           setStep(1);
         }
       }
@@ -94295,16 +94271,13 @@ function ProOnboarding({ onComplete, entryOnly }) {
   }
   if (step2 === 1) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      WorkspaceStep,
+      ThemeStep,
       {
         step: 1,
-        orgName: entry.orgName,
-        draft,
-        onChange: (next) => {
-          setDraft(next);
-          setError(void 0);
-        },
+        value: selectedTheme,
+        godName: resolvedGodName,
         error,
+        onChange: pickTheme,
         onBack: () => {
           setError(void 0);
           setStep(0);
@@ -94318,29 +94291,9 @@ function ProOnboarding({ onComplete, entryOnly }) {
   }
   if (step2 === 2) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx(
-      ThemeStep,
-      {
-        step: 2,
-        value: selectedTheme,
-        godName: resolvedGodName,
-        error,
-        onChange: pickTheme,
-        onBack: () => {
-          setError(void 0);
-          setStep(1);
-        },
-        onContinue: () => {
-          setError(void 0);
-          setStep(3);
-        }
-      }
-    );
-  }
-  if (step2 === 3) {
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(
       OrchestratorStep,
       {
-        step: 3,
+        step: 2,
         theme: selectedTheme,
         draft,
         onChange: (next) => {
@@ -94357,10 +94310,10 @@ function ProOnboarding({ onComplete, entryOnly }) {
         nameDraft,
         onNameDraft: setNameDraft,
         error,
-        onBack: () => setStep(2),
+        onBack: () => setStep(1),
         onContinue: () => {
           setError(void 0);
-          setStep(4);
+          setStep(3);
         }
       }
     );
@@ -94368,12 +94321,12 @@ function ProOnboarding({ onComplete, entryOnly }) {
   return /* @__PURE__ */ jsxRuntimeExports.jsx(
     TeamStep,
     {
-      step: 4,
+      step: 3,
       theme: selectedTheme,
       busy,
       error,
       godName: godName ?? resolvedGodName,
-      onBack: () => setStep(3),
+      onBack: () => setStep(2),
       onOpen: () => {
         void finish2();
       }
@@ -128371,7 +128324,7 @@ function BackupManagementSection({ chrome: chrome2 }) {
     }
   };
   const onBrowseBackupDir = async () => {
-    const pick = await window.cth.chooseFolder?.();
+    const pick = await window.cth.chooseFolder?.({ mode: "dir" });
     if (!pick?.ok || !pick.path) return;
     setDirDraft(pick.path);
     await applyBackupDir(pick.path);
@@ -128994,7 +128947,7 @@ function SettingsModal({ config: config2, onClose, initialSection, chrome: chrom
   };
   const pickNewHome = async () => {
     setChangeErr("");
-    const res = await window.cth.chooseFolder();
+    const res = await window.cth.chooseFolder({ mode: "floor" });
     if (!res.ok) return;
     setChangeMode("move");
     setFreshTheme("office");
@@ -129619,7 +129572,7 @@ function WorkspacePicker({ config: config2, onClose }) {
   };
   const browse = async () => {
     setError(void 0);
-    const res = await window.cth.chooseFolder();
+    const res = await window.cth.chooseFolder({ mode: "floor" });
     if (res.ok) void open2(res.path);
     else if (res.error !== "cancelled") setError(res.error);
   };
@@ -148106,6 +148059,11 @@ function App() {
         }
       }
       if (shouldAutoOpenHive(c)) setHiveOpened(true);
+      if (c.onboardingComplete && c.harnessHome && window.cth.floorProbe) {
+        void window.cth.floorProbe([c.harnessHome]).then((list2) => {
+          if (!cancelled && list2?.[0]?.state === "missing") setHiveOpened(false);
+        }).catch(() => void 0);
+      }
       useStore.getState().setHasGroqKey(!!c.groqApiKey);
       void refreshCanDictate();
       if (!applyOfficeFloorTheme()) useStore.getState().setOfficeTheme(floorOfficeTheme(c, c.harnessHome));
@@ -148284,10 +148242,6 @@ function App() {
   const classicPaid = skin !== "professional" && stillSolo && proGateAdmits(teamsMode, license);
   if ((!licenseKnown || !freeKnown) && (teamsMode === "solo" || teamsMode === "enrolling")) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx(BootHold, {});
-  }
-  if (config2.onboardingComplete && !soloAdmitted && !windowAdmitted && !freeAdmitted && !classicPaid && (teamsMode === "solo" || teamsMode === "enrolling")) {
-    if (freeAdmits(free)) return /* @__PURE__ */ jsxRuntimeExports.jsx(Paywall, { onFree: () => setAppSkin("office"), trigger: license ? "licence_expired" : "licence_missing" });
-    return /* @__PURE__ */ jsxRuntimeExports.jsx(ProOnboarding, { entryOnly: true });
   }
   if (!config2.onboardingComplete) {
     return /* @__PURE__ */ jsxRuntimeExports.jsx(ProOnboarding, { onComplete: (next) => {

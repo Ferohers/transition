@@ -588,10 +588,31 @@
     },
     ideOwnerOffice: () => Promise.resolve(null),
     ideCloseWithoutSaving: () => Promise.resolve({ ok: true }),
-    chooseFolder: async () => {
+    chooseFolder: async (opts) => {
+      const mode = opts?.mode || 'workspace';
       const data = await req('/api/v1/workspaces/list').catch(() => null);
-      const folders = Array.isArray(data?.folders) ? data.folders : [];
+      const folders = mode === 'workspace' && Array.isArray(data?.folders) ? data.folders : [];
       const home = data?.harnessHome || '~/HarnessAgents';
+      const parentOf = (p) => {
+        const clean = String(p || '').replace(/[\\/]+$/, '');
+        const idx = Math.max(clean.lastIndexOf('/'), clean.lastIndexOf('\\'));
+        return idx > 0 ? clean.slice(0, idx) : '~';
+      };
+      const sameOrInside = (candidate, parent) => {
+        const a = String(candidate || '').replace(/[\\/]+$/, '');
+        const b = String(parent || '').replace(/[\\/]+$/, '');
+        if (!a || !b) return false;
+        return a === b || a.startsWith(b + '/') || a.startsWith(b + '\\');
+      };
+      const resolveInputPath = (val) => {
+        if (mode === 'workspace') return val;
+        if (val.startsWith('/') || val.startsWith('~') || /^[A-Za-z]:[\\/]/.test(val)) return val;
+        if (mode === 'floor') {
+          const base = data?.harnessHome ? parentOf(data.harnessHome) : '~';
+          return `${base.replace(/[\\/]+$/, '')}/${val.replace(/^[\\/]+/, '')}`;
+        }
+        return `~/${val.replace(/^[\\/]+/, '')}`;
+      };
       return new Promise((resolve) => {
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(12,12,16,0.68);display:flex;align-items:center;justify-content:center;padding:16px;font-family:var(--cth-font-ui,system-ui,sans-serif);';
@@ -599,19 +620,31 @@
         card.style.cssText = 'width:min(520px,100%);background:var(--cth-paper-100,#f6f4ef);color:var(--cth-ink-900,#1d1b18);border:1px solid var(--cth-ink-300,#c8c2b6);border-radius:10px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,0.35);display:flex;flex-direction:column;gap:12px;';
 
         const title = document.createElement('div');
-        title.textContent = 'Select or Create Workspace Folder';
+        title.textContent = mode === 'floor'
+          ? 'Select or Create Floor Folder'
+          : mode === 'dir'
+            ? 'Select or Create Folder'
+            : 'Select or Create Workspace Folder';
         title.style.cssText = 'font-weight:600;font-size:14px;';
         card.appendChild(title);
 
         const hint = document.createElement('div');
-        hint.textContent = `Pick an existing folder, or type a new subfolder name (created inside ${home}):`;
+        hint.textContent = mode === 'floor'
+          ? `Enter a folder path or new floor name outside ${home} (e.g. ~/Floor2 or /path/to/floor2):`
+          : mode === 'dir'
+            ? 'Enter an existing writable folder path or a new folder path (e.g. ~/duman-backups):'
+            : `Pick an existing folder, or type a new subfolder name (created inside ${home}):`;
         hint.style.cssText = 'font-size:12px;opacity:0.78;line-height:1.4;';
         card.appendChild(hint);
 
         const input = document.createElement('input');
         input.type = 'text';
-        input.value = home;
-        input.placeholder = `${home}/projects/my-project or my-project`;
+        input.value = mode === 'workspace' ? home : (opts?.defaultPath || '');
+        input.placeholder = mode === 'floor'
+          ? `${parentOf(home)}/floor-2 or ~/Floor2`
+          : mode === 'dir'
+            ? '~/duman-backups or /path/to/backups'
+            : `${home}/projects/my-project or my-project`;
         input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:12px;';
         card.appendChild(input);
 
@@ -663,19 +696,31 @@
           resolve(res);
         };
         const submit = async () => {
-          const val = input.value.trim();
-          if (!val) {
+          const raw = input.value.trim();
+          if (!raw) {
             errEl.textContent = 'Enter a folder name or path.';
             errEl.style.display = 'block';
             return;
           }
+          const val = resolveInputPath(raw);
+          if (mode === 'floor' && data?.harnessHome && sameOrInside(val, data.harnessHome)) {
+            errEl.textContent = `Pick a separate folder outside Main Office (${data.harnessHome}), e.g. ${parentOf(data.harnessHome)}/Floor2.`;
+            errEl.style.display = 'block';
+            return;
+          }
           okBtn.disabled = true;
-          const ensured = await req('/api/v1/workspaces/ensure', {
+          const endpoint = mode === 'workspace' ? '/api/v1/workspaces/ensure' : '/api/v1/config/ensure-home';
+          const ensured = await req(endpoint, {
             method: 'POST',
             body: JSON.stringify({ path: val }),
           }).catch(() => null);
           okBtn.disabled = false;
           if (ensured?.ok && ensured.path) {
+            if (mode === 'floor' && data?.harnessHome && sameOrInside(ensured.path, data.harnessHome)) {
+              errEl.textContent = `Pick a separate folder outside Main Office (${data.harnessHome}), e.g. ${parentOf(data.harnessHome)}/Floor2.`;
+              errEl.style.display = 'block';
+              return;
+            }
             done({ ok: true, path: ensured.path });
           } else {
             errEl.textContent = ensured?.error || 'Could not resolve folder path.';
@@ -1019,12 +1064,19 @@
     teamsRoster: () => Promise.resolve({ ok: false, error: 'offline' }),
     hiveTakeDegraded: () => Promise.resolve([]),
     freeAccount: () => Promise.resolve(null),
+    freeSignInPrepare: () => Promise.resolve({ ok: true, skipped: true, url: '', expiresAt: null }),
+    freeSignInBegin: () => Promise.resolve({ ok: true, skipped: true, url: '', expiresAt: null }),
+    freeSignInPaste: () => Promise.resolve({ ok: false, detail: 'Sign-in is disabled in local mode.' }),
+    freeSignInCancel: () => Promise.resolve({ ok: true }),
+    freeRegister: () => Promise.resolve({ ok: true, licence: null }),
+    signInPrepare: () => Promise.resolve({ ok: true, skipped: true, url: '', expiresAt: null }),
+    signInBegin: () => Promise.resolve({ ok: true, skipped: true, url: '', expiresAt: null }),
     connectionsList: () => Promise.resolve([]),
     connectionsGrants: () => Promise.resolve([]),
     connectionsAllAgents: () => Promise.resolve({}),
     soloLicense: () => Promise.resolve({
       key: 'local-pro',
-      state: 'active',
+      state: 'healthy',
       renewsAt: null,
       deviceLabel: 'local-web',
       checkedAt: new Date().toISOString(),

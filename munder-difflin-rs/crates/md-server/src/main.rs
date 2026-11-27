@@ -309,9 +309,30 @@ async fn floor_switch(
     if expanded.as_os_str().is_empty() || expanded == std::path::Path::new("/") {
         return Json(serde_json::json!({ "ok": false, "refusal": "invalid" }));
     }
-    let same_data = expanded == state.data_dir;
+    let same_data = expanded == state.data_dir
+        || state.data_dir.starts_with(&expanded)
+        || expanded.starts_with(state.data_dir.join("backups"));
     if same_data {
         return Json(serde_json::json!({ "ok": false, "refusal": "same-data-dir" }));
+    }
+    let prev_path = state.harness_home();
+    let prev_home = prev_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    if prev_home.as_deref() == Some(expanded.to_string_lossy().as_ref()) {
+        return Json(serde_json::json!({ "ok": false, "refusal": "current" }));
+    }
+    if let Some(ref prev) = prev_path
+        && (expanded.starts_with(prev) || prev.starts_with(&expanded))
+    {
+        return Json(serde_json::json!({
+            "ok": false,
+            "refusal": "nested-floor",
+            "detail": format!(
+                "A floor folder cannot be inside another floor folder ({}). Pick a sibling folder such as ~/Floor2 instead.",
+                prev.display()
+            ),
+        }));
     }
     if let Err(err) = std::fs::create_dir_all(&expanded) {
         return Json(serde_json::json!({
@@ -321,10 +342,6 @@ async fn floor_switch(
         }));
     }
     let next_home = expanded.to_string_lossy().into_owned();
-    let prev_home = state.harness_home().map(|p| p.to_string_lossy().into_owned());
-    if prev_home.as_deref() == Some(next_home.as_str()) {
-        return Json(serde_json::json!({ "ok": false, "refusal": "current" }));
-    }
 
     // Stop active PTYs and reset per-floor runtime state cleanly before switching floors.
     state.pty.kill_all();
@@ -669,6 +686,7 @@ async fn pty_kill(
 ) -> Json<serde_json::Value> {
     match state.pty.kill(&req.id) {
         Ok(()) => {
+            state.pty.forget_pty(&req.id);
             state.submitter.forget_pty(&req.id);
             Json(serde_json::json!({ "ok": true }))
         }
@@ -4063,9 +4081,37 @@ mod tests {
         assert_eq!(good_dir_json["dirCheck"]["writable"], true);
         assert!(custom_dir.is_dir());
 
-        // Switching to a second floor creates the folder, records recentHives, and bumps resetEpoch.
+        // Nested floor inside current harnessHome is refused without creating the directory.
+        let nested_floor = home_dir.join("nested-floor");
+        let nested_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/floor/switch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "harnessHome": nested_floor.to_string_lossy() })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let nested_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(nested_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(nested_json["ok"], false);
+        assert_eq!(nested_json["refusal"], "nested-floor");
+        assert!(!nested_floor.exists());
+
+        // Switching to a second sibling floor creates the folder, records recentHives, and bumps resetEpoch.
         let floor2 = dir.join("floor-two");
         let switch_res = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -4094,6 +4140,33 @@ mod tests {
         assert!(cfg_after_switch
             .recent_hives
             .contains(&home_dir.to_string_lossy().to_string()));
+
+        // Deleting active floor2 on disk still allows switching cleanly back to home_dir.
+        std::fs::remove_dir_all(&floor2).unwrap();
+        let recover_res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/floor/switch")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "harnessHome": home_dir.to_string_lossy() }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let recover_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(recover_res.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(recover_json["ok"], true);
+        assert_eq!(
+            state.config.lock().unwrap().read().harness_home.as_deref(),
+            Some(home_dir.to_string_lossy().as_ref())
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

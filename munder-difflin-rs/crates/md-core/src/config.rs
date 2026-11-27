@@ -252,6 +252,11 @@ impl ConfigStore {
             return Err(CoreError::InvalidPath("empty path".to_string()));
         }
         let expanded = expand_tilde(raw_path);
+        if expanded.as_os_str().is_empty() || expanded == std::path::Path::new("/") {
+            return Err(CoreError::InvalidPath(
+                "cannot use filesystem root".to_string(),
+            ));
+        }
         fs::create_dir_all(&expanded)?;
         Ok(expanded)
     }

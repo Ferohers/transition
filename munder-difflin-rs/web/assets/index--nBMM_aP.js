@@ -86518,6 +86518,16 @@ function basename$2(path) {
 function uniqueId$1(name2) {
   return namedAgentId(name2, Date.now().toString(36));
 }
+function isInternalRepoPath(p, home) {
+  if (!p || !home) return false;
+  const norm = (s) => String(s).trim().replace(/[\\/]+$/, "");
+  const a = norm(p), b = norm(home);
+  if (!a || !b) return false;
+  return a === b || a === `${b}/hive` || a === `${b}/projects` || a === `${b}/hive/projects` || a.startsWith(`${b}/worktrees`) || a.startsWith(`${b}/roster-backups`) || a.startsWith(`${b}/.palace-stage`) || (a.startsWith(`${b}/hive/`) && !a.startsWith(`${b}/hive/projects/`));
+}
+function filterRealRepos(list, home) {
+  return (Array.isArray(list) ? list : []).filter((r) => !isInternalRepoPath(r, home));
+}
 function AddAgentModal({ onClose, config: config2, onConfigChange }) {
   const { t: tr2 } = useTranslation();
   const rtl = useRtl();
@@ -86551,8 +86561,9 @@ function AddAgentModal({ onClose, config: config2, onConfigChange }) {
   const [name2, setName] = reactExports.useState(pendingHire?.name ?? (packFloor ? "" : "Jim"));
   const [character, setCharacter] = reactExports.useState(knownCharacter2(pendingHire?.character));
   const [accent, setAccent] = reactExports.useState(knownAccent2(pendingHire?.accent));
-  const [cwd, setCwd] = reactExports.useState(config2.registeredRepos[0] ?? "");
-  const [repos, setRepos] = reactExports.useState(config2.registeredRepos);
+  const initialRepos = filterRealRepos(config2.registeredRepos, config2.harnessHome);
+  const [cwd, setCwd] = reactExports.useState(initialRepos[0] ?? "");
+  const [repos, setRepos] = reactExports.useState(initialRepos);
   const [provider, setProvider] = reactExports.useState(pendingHire?.provider ?? initialProvider);
   const [model, setModel] = reactExports.useState(
     pendingHire ? pendingHire.model : initialModel
@@ -86632,7 +86643,7 @@ function AddAgentModal({ onClose, config: config2, onConfigChange }) {
   };
   const registerProject = async (path) => {
     const p = path.trim();
-    if (!p) return;
+    if (!p || isInternalRepoPath(p, config2.harnessHome)) return;
     const next = [p, ...repos.filter((r6) => r6 !== p)];
     setRepos(next);
     setCwd(p);
@@ -86813,7 +86824,7 @@ function AddAgentModal({ onClose, config: config2, onConfigChange }) {
       recentTextTs: Date.now()
     };
     addAgent(agent);
-    if (projectCwd && repos[0] !== projectCwd) {
+    if (projectCwd && !isInternalRepoPath(projectCwd, config2.harnessHome) && repos[0] !== projectCwd) {
       const nextRepos = [projectCwd, ...repos.filter((r6) => r6 !== projectCwd && r6 !== a.cwd)];
       try {
         const updated = await window.cth.updateConfig({ registeredRepos: nextRepos });
@@ -105090,8 +105101,8 @@ function ProSidebar({
                       type: "button",
                       "data-add-floor": true,
                       onClick: () => window.dispatchEvent(new CustomEvent("cth:open-floor-picker")),
-                      title: t2("newFloor.addTooltip", "ADD A NEW FLOOR"),
-                      "aria-label": t2("newFloor.addTooltip", "ADD A NEW FLOOR"),
+                      title: t2("newFloor.addTooltip", "Click to add a new floor"),
+                      "aria-label": t2("newFloor.addTooltip", "Click to add a new floor"),
                       style: {
                         display: "inline-grid",
                         placeItems: "center",
@@ -131493,8 +131504,9 @@ function AgentSheet({ config: config2, agent, templateId, office: office2, editO
   }, [crew]);
   const [description, setDescription] = reactExports.useState(edit ? agent.description === PLACEHOLDER_ROLE$1 ? "" : agent.description : pendingHire?.description ?? "");
   const [goal, setGoal] = reactExports.useState(edit ? agent.goal ?? "" : pendingHire?.goal ?? "");
-  const [cwd, setCwd] = reactExports.useState(edit ? agent.cwd : office2 ? "" : config2.registeredRepos[0] ?? "");
-  const [repos, setRepos] = reactExports.useState(config2.registeredRepos);
+  const initialSheetRepos = filterRealRepos(config2.registeredRepos, config2.harnessHome);
+  const [cwd, setCwd] = reactExports.useState(edit ? agent.cwd : office2 ? "" : initialSheetRepos[0] ?? "");
+  const [repos, setRepos] = reactExports.useState(initialSheetRepos);
   const [isolation, setIsolation] = reactExports.useState(edit ? agent.worktreePath ? "worktree" : "direct" : pendingHire?.isolate ?? true ? "worktree" : "direct");
   const [resumeSessionId, setResumeSessionId] = reactExports.useState("");
   const [folderNote, setFolderNote] = reactExports.useState();
@@ -131596,7 +131608,7 @@ function AgentSheet({ config: config2, agent, templateId, office: office2, editO
   };
   const registerProject = async (path) => {
     const p = path.trim();
-    if (!p) return;
+    if (!p || isInternalRepoPath(p, config2.harnessHome)) return;
     const next = [p, ...repos.filter((r6) => r6 !== p)];
     setRepos(next);
     setCwd(p);
@@ -131779,7 +131791,7 @@ function AgentSheet({ config: config2, agent, templateId, office: office2, editO
     };
     addAgent(record2);
     const askedToInstall = fromFile.queuePicks(a.id);
-    if (projectCwd && repos[0] !== projectCwd) {
+    if (projectCwd && !isInternalRepoPath(projectCwd, config2.harnessHome) && repos[0] !== projectCwd) {
       const nextRepos = [projectCwd, ...repos.filter((r6) => r6 !== projectCwd && r6 !== a.cwd)];
       try {
         await window.cth.updateConfig({ registeredRepos: nextRepos });
@@ -139914,7 +139926,7 @@ function HomeInput({ agents, onTo, onSent }) {
         !godListed && orchRows.length === 0 && others.length === 0 && cloudRows2.length === 0 && /* @__PURE__ */ jsxRuntimeExports.jsx("p", { className: "small", style: { padding: "10px 6px", margin: 0 }, children: t2("pro.home.to.none") })
       ] })
     ] }) }),
-    receipt && /* @__PURE__ */ jsxRuntimeExports.jsx(ReceiptLine, { receipt, agents, name: receipt.to.kind === "cloud" ? cloudName(receipt.to) : orchestrator, asleep: asleepHere, onChange: setReceipt }, receipt.at),
+    receipt && /* @__PURE__ */ jsxRuntimeExports.jsx("div", { className: "rcptSlot", children: /* @__PURE__ */ jsxRuntimeExports.jsx(ReceiptLine, { receipt, agents, name: receipt.to.kind === "cloud" ? cloudName(receipt.to) : orchestrator, asleep: asleepHere, onChange: setReceipt }, receipt.at) }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "card", children: [
       to && /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "torow", children: [
         /* @__PURE__ */ jsxRuntimeExports.jsxs(
@@ -140879,8 +140891,10 @@ ${SIM_BTN_CSS}
 .cth-home .drawlist div{display:flex;gap:8px;align-items:center;border:1px solid var(--bd);border-radius:10px;padding:6px 8px;background:var(--r);min-width:0}
 .cth-home .drawlist span{min-width:0}
 .cth-home .drawlist small{display:block;color:var(--i5);font-size:11px;line-height:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.cth-home .inwrap{border-top:1px solid var(--bd);background:var(--g);padding:10px var(--inpad) 12px;position:relative;z-index:70}
-.cth-home .rcpt{display:flex;align-items:center;gap:8px;width:var(--in-w,90cqw);max-width:100%;margin:0 auto var(--rcpt-gap);box-sizing:border-box;height:var(--rcpt-h);padding:6px 8px;padding-inline-start:10px;background:var(--r);border:1px solid var(--bd);border-radius:10px;min-width:0}
+.cth-home .inwrap{border-top:1px solid var(--bd);background:var(--g);padding:10px var(--inpad) 12px;position:relative}
+.cth-home .rcptSlot{position:absolute;left:0;right:0;bottom:calc(100% + 10px);display:flex;justify-content:center;padding-inline:var(--inpad);pointer-events:none;z-index:50}
+.cth-home .rcpt{pointer-events:auto;display:flex;align-items:center;gap:8px;width:auto;max-width:min(640px,max(280px,calc(var(--in-w,90cqw) - 24px)),100%);box-sizing:border-box;min-height:40px;padding:6px 8px;padding-inline-start:10px;background:color-mix(in srgb,var(--p) 94%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--bd);border-radius:12px;box-shadow:0 8px 24px rgba(26,25,22,.16),0 2px 6px rgba(26,25,22,.08);min-width:0;animation:cth-home-rcpt-in .18s cubic-bezier(.2,0,0,1)}
+@keyframes cth-home-rcpt-in{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
 .cth-home .rcpt .txt{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--i7)}
 .cth-home .rcpt .why{min-width:0;flex:0 1 auto;max-width:50%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--i5)}
 .cth-home .card{width:var(--in-w,90cqw);max-width:100%;box-sizing:border-box;margin:0 auto;background:var(--p);border:1px solid var(--bd);border-radius:12px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
@@ -140909,7 +140923,7 @@ ${SIM_BTN_CSS}
 .cth-home .wave i{width:3px;background:var(--at);border-radius:2px;animation:cth-home-wv 1s infinite ease-in-out}
 .cth-home .wave i:nth-child(2){animation-delay:.12s}.cth-home .wave i:nth-child(3){animation-delay:.24s}.cth-home .wave i:nth-child(4){animation-delay:.36s}.cth-home .wave i:nth-child(5){animation-delay:.48s}
 @keyframes cth-home-wv{0%,100%{height:5px}50%{height:17px}}
-@media (prefers-reduced-motion:reduce){.cth-home .wave i{animation:none;height:9px}}
+@media (prefers-reduced-motion:reduce){.cth-home .wave i,.cth-home .rcpt{animation:none}.cth-home .wave i{height:9px}}
 .cth-home .ctl{display:flex;align-items:center;gap:6px;min-width:0}
 .cth-home .ctl .sp3{flex:1}
 .cth-home .ctl .deliv{color:var(--i5);font-size:12px;white-space:nowrap}
@@ -140917,7 +140931,7 @@ ${SIM_BTN_CSS}
 .cth-home .sendb:hover{background:var(--ah);border-color:var(--ah)}
 .cth-home .sendb[disabled]{opacity:.45;cursor:default}
 .cth-home .cloudline{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--as);border:1px solid var(--al);border-radius:8px;padding:5px 8px;color:var(--i9);font-size:12px}
-.cth-home .pickerSlot{position:absolute;left:0;right:0;bottom:calc(100% + 4px);width:var(--in-w,90cqw);max-width:calc(100% - 2 * var(--inpad));margin:auto;pointer-events:none}
+.cth-home .pickerSlot{position:absolute;left:0;right:0;bottom:calc(100% + 4px);width:var(--in-w,90cqw);max-width:calc(100% - 2 * var(--inpad));margin:auto;pointer-events:none;z-index:90}
 .cth-home .picker{position:relative;pointer-events:auto;width:330px;max-width:100%;max-height:min(430px,56vh);background:var(--p);border:1px solid var(--bd);border-radius:12px;box-shadow:var(--shadow);z-index:90;display:flex;flex-direction:column;overflow:hidden}
 .cth-home .picker input{border:0;border-bottom:1px solid var(--dv);background:none;padding:9px 12px;outline:none;width:100%}
 .cth-home .picker .lst{overflow:auto;padding:4px 6px 6px}
@@ -142246,7 +142260,7 @@ function useHomeBox(homeRef, stageRef, kind, theme2) {
     const px = (n) => `${n}px`;
     const topbarOwner = home.closest("[data-pro-main]");
     const set2 = () => {
-      const b = homeBoxOf({ homeW: home.clientWidth, stageH: stage2.clientHeight, receipt: !!home.querySelector("[data-home-receipt]"), kind, inner });
+      const b = homeBoxOf({ homeW: home.clientWidth, stageH: stage2.clientHeight, receipt: false, kind, inner });
       const st2 = home.style;
       st2.setProperty("--fb-x", px(b.x));
       st2.setProperty("--fb-y", px(b.y));

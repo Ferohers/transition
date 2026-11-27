@@ -603,23 +603,36 @@
       const data = await req('/api/v1/workspaces/list').catch(() => null);
       const folders = mode === 'workspace' && Array.isArray(data?.folders) ? data.folders : [];
       const home = data?.harnessHome || '~/HarnessAgents';
+      const suggestedRoot = data?.suggestedRoot || '~';
       const parentOf = (p) => {
         const clean = String(p || '').replace(/[\\/]+$/, '');
         const idx = Math.max(clean.lastIndexOf('/'), clean.lastIndexOf('\\'));
-        return idx > 0 ? clean.slice(0, idx) : '~';
+        return idx > 0 ? clean.slice(0, idx) : '/';
       };
+      const normPath = (p) => String(p || '').replace(/[\\/]+$/, '');
       const sameOrInside = (candidate, parent) => {
-        const a = String(candidate || '').replace(/[\\/]+$/, '');
-        const b = String(parent || '').replace(/[\\/]+$/, '');
+        const a = normPath(candidate);
+        const b = normPath(parent);
         if (!a || !b) return false;
         return a === b || a.startsWith(b + '/') || a.startsWith(b + '\\');
       };
+      const isAppDataWorkspace = (candidate) => {
+        const a = normPath(candidate);
+        const h = normPath(data?.harnessHome);
+        if (!a || !h) return false;
+        if (a === h || a === `${h}/hive` || a === `${h}/projects` || a === `${h}/hive/projects`) return true;
+        if (sameOrInside(a, `${h}/worktrees`) || sameOrInside(a, `${h}/roster-backups`) || sameOrInside(a, `${h}/.palace-stage`)) return true;
+        if (sameOrInside(a, `${h}/hive`) && !sameOrInside(a, `${h}/hive/projects`)) return true;
+        return false;
+      };
       const resolveInputPath = (val) => {
-        if (mode === 'workspace') return val;
         if (val.startsWith('/') || val.startsWith('~') || /^[A-Za-z]:[\\/]/.test(val)) return val;
+        if (mode === 'workspace') {
+          return `${normPath(home)}/hive/projects/${val.replace(/^[\\/]+/, '')}`;
+        }
         if (mode === 'floor') {
           const base = data?.harnessHome ? parentOf(data.harnessHome) : '~';
-          return `${base.replace(/[\\/]+$/, '')}/${val.replace(/^[\\/]+/, '')}`;
+          return `${normPath(base)}/${val.replace(/^[\\/]+/, '')}`;
         }
         return `~/${val.replace(/^[\\/]+/, '')}`;
       };
@@ -627,58 +640,64 @@
         const overlay = document.createElement('div');
         overlay.style.cssText = 'position:fixed;inset:0;z-index:999999;background:rgba(12,12,16,0.68);display:flex;align-items:center;justify-content:center;padding:16px;font-family:var(--cth-font-ui,system-ui,sans-serif);';
         const card = document.createElement('div');
-        card.style.cssText = 'width:min(520px,100%);background:var(--cth-paper-100,#f6f4ef);color:var(--cth-ink-900,#1d1b18);border:1px solid var(--cth-ink-300,#c8c2b6);border-radius:10px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,0.35);display:flex;flex-direction:column;gap:12px;';
+        card.style.cssText = 'width:min(560px,100%);background:var(--cth-paper-100,#f6f4ef);color:var(--cth-ink-900,#1d1b18);border:1px solid var(--cth-ink-300,#c8c2b6);border-radius:10px;padding:16px;box-shadow:0 20px 50px rgba(0,0,0,0.35);display:flex;flex-direction:column;gap:12px;';
 
+        const header = document.createElement('div');
+        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:8px;';
         const title = document.createElement('div');
         title.textContent = mode === 'floor'
           ? 'Select or Create Floor Folder'
           : mode === 'dir'
             ? 'Select or Create Folder'
-            : 'Select or Create Workspace Folder';
+            : 'Select or Create Project Folder';
         title.style.cssText = 'font-weight:600;font-size:14px;';
-        card.appendChild(title);
+        header.appendChild(title);
+
+        let viewMode = 'projects';
+        let browseDir = suggestedRoot;
+        const viewSwitch = document.createElement('div');
+        viewSwitch.style.cssText = 'display:inline-flex;gap:2px;padding:2px;border-radius:7px;border:1px solid var(--cth-ink-300,#c8c2b6);background:var(--cth-cream-200,#ece6d8);';
+        const mkTab = (id, label) => {
+          const b = document.createElement('button');
+          b.type = 'button';
+          b.textContent = label;
+          b.style.cssText = 'padding:3px 9px;border-radius:5px;border:none;font-size:11.5px;font-weight:500;cursor:pointer;';
+          b.onclick = () => {
+            viewMode = id;
+            renderView();
+          };
+          return b;
+        };
+        const projectsTab = mode === 'workspace' ? mkTab('projects', 'Projects') : null;
+        const browseTab = mkTab('browse', 'Browse folders');
+        if (projectsTab) viewSwitch.appendChild(projectsTab);
+        viewSwitch.appendChild(browseTab);
+        header.appendChild(viewSwitch);
+        card.appendChild(header);
 
         const hint = document.createElement('div');
         hint.textContent = mode === 'floor'
           ? `Enter a folder path or new floor name outside ${home} (e.g. ~/Floor2 or /path/to/floor2):`
           : mode === 'dir'
             ? 'Enter an existing writable folder path or a new folder path (e.g. ~/duman-backups):'
-            : `Pick an existing folder, or type a new subfolder name (created inside ${home}):`;
+            : 'Pick a detected project folder, browse your computer, or enter a path / new project name:';
         hint.style.cssText = 'font-size:12px;opacity:0.78;line-height:1.4;';
         card.appendChild(hint);
 
         const input = document.createElement('input');
         input.type = 'text';
-        input.value = mode === 'workspace' ? home : (opts?.defaultPath || '');
+        input.value = mode === 'workspace' ? (opts?.defaultPath || '') : (opts?.defaultPath || '');
         input.placeholder = mode === 'floor'
           ? `${parentOf(home)}/floor-2 or ~/Floor2`
           : mode === 'dir'
             ? '~/duman-backups or /path/to/backups'
-            : `${home}/projects/my-project or my-project`;
+            : `${suggestedRoot}/my-project or my-project`;
         input.style.cssText = 'width:100%;box-sizing:border-box;padding:8px 10px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:12px;';
         card.appendChild(input);
 
-        if (folders.length > 0) {
-          const listLabel = document.createElement('div');
-          listLabel.textContent = 'Available workspaces';
-          listLabel.style.cssText = 'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.65;';
-          card.appendChild(listLabel);
-
-          const list = document.createElement('div');
-          list.style.cssText = 'max-height:180px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;';
-          for (const f of folders) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.textContent = f;
-            btn.style.cssText = 'text-align:left;padding:6px 8px;border-radius:6px;border:1px solid var(--cth-ink-300,#d5cfc3);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:11.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
-            btn.onclick = () => {
-              input.value = f;
-              void submit();
-            };
-            list.appendChild(btn);
-          }
-          card.appendChild(list);
-        }
+        const listBox = document.createElement('div');
+        listBox.style.cssText = 'display:flex;flex-direction:column;gap:6px;';
+        card.appendChild(listBox);
 
         const errEl = document.createElement('div');
         errEl.style.cssText = 'font-size:12px;color:#b42318;display:none;';
@@ -706,15 +725,21 @@
           resolve(res);
         };
         const submit = async () => {
+          errEl.style.display = 'none';
           const raw = input.value.trim();
           if (!raw) {
-            errEl.textContent = 'Enter a folder name or path.';
+            errEl.textContent = 'Enter or select a folder path.';
             errEl.style.display = 'block';
             return;
           }
           const val = resolveInputPath(raw);
           if (mode === 'floor' && data?.harnessHome && sameOrInside(val, data.harnessHome)) {
             errEl.textContent = `Pick a separate folder outside Main Office (${data.harnessHome}), e.g. ${parentOf(data.harnessHome)}/Floor2.`;
+            errEl.style.display = 'block';
+            return;
+          }
+          if (mode === 'workspace' && isAppDataWorkspace(val)) {
+            errEl.textContent = `Pick a real project folder rather than the app's data folder (${home}).`;
             errEl.style.display = 'block';
             return;
           }
@@ -731,12 +756,139 @@
               errEl.style.display = 'block';
               return;
             }
+            if (mode === 'workspace' && isAppDataWorkspace(ensured.path)) {
+              errEl.textContent = `Pick a real project folder rather than the app's data folder (${home}).`;
+              errEl.style.display = 'block';
+              return;
+            }
             done({ ok: true, path: ensured.path });
           } else {
             errEl.textContent = ensured?.error || 'Could not resolve folder path.';
             errEl.style.display = 'block';
           }
         };
+
+        const renderProjects = () => {
+          const q = input.value.trim().toLowerCase();
+          const matched = folders.filter((f) => !q || f.toLowerCase().includes(q));
+          const listLabel = document.createElement('div');
+          listLabel.textContent = matched.length ? 'Detected project folders' : 'No matching detected projects — enter a full path or new project name above';
+          listLabel.style.cssText = 'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;opacity:0.65;';
+          listBox.appendChild(listLabel);
+          if (!matched.length) return;
+          const list = document.createElement('div');
+          list.style.cssText = 'max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;';
+          for (const f of matched) {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.textContent = f;
+            btn.style.cssText = 'text-align:left;padding:6px 8px;border-radius:6px;border:1px solid var(--cth-ink-300,#d5cfc3);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:11.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            btn.onclick = () => {
+              input.value = f;
+              void submit();
+            };
+            list.appendChild(btn);
+          }
+          listBox.appendChild(list);
+        };
+
+        let browseSeq = 0;
+        const renderBrowse = async () => {
+          const seq = ++browseSeq;
+          const loading = document.createElement('div');
+          loading.textContent = 'Reading folders…';
+          loading.style.cssText = 'font-size:12px;opacity:0.65;padding:6px 0;';
+          listBox.appendChild(loading);
+          const res = await req(`/api/v1/workspaces/browse?path=${encodeURIComponent(browseDir)}`).catch(() => null);
+          if (seq !== browseSeq || viewMode !== 'browse') return;
+          listBox.innerHTML = '';
+          if (!res?.ok) {
+            const msg = document.createElement('div');
+            msg.textContent = res?.error || 'Could not browse folder.';
+            msg.style.cssText = 'font-size:12px;opacity:0.7;';
+            listBox.appendChild(msg);
+            return;
+          }
+          const bar = document.createElement('div');
+          bar.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:11.5px;';
+          if (res.parent) {
+            const upBtn = document.createElement('button');
+            upBtn.type = 'button';
+            upBtn.textContent = '↑ Up';
+            upBtn.style.cssText = 'padding:3px 8px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:var(--cth-cream-100,#fff);color:inherit;cursor:pointer;font-size:11.5px;flex-shrink:0;';
+            upBtn.onclick = () => {
+              browseDir = res.parent;
+              void renderBrowse();
+            };
+            bar.appendChild(upBtn);
+          }
+          const curPath = document.createElement('span');
+          curPath.textContent = res.path;
+          curPath.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--cth-font-mono,monospace);opacity:0.8;';
+          bar.appendChild(curPath);
+          const pickCur = document.createElement('button');
+          pickCur.type = 'button';
+          pickCur.textContent = 'Select this';
+          pickCur.style.cssText = 'padding:3px 8px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:var(--cth-cream-200,#ece6d8);color:inherit;cursor:pointer;font-size:11.5px;font-weight:500;flex-shrink:0;';
+          pickCur.onclick = () => {
+            input.value = res.path;
+            void submit();
+          };
+          bar.appendChild(pickCur);
+          listBox.appendChild(bar);
+
+          const list = document.createElement('div');
+          list.style.cssText = 'max-height:200px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;';
+          for (const d of (res.dirs || [])) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:6px;';
+            const openBtn = document.createElement('button');
+            openBtn.type = 'button';
+            openBtn.textContent = d.isGit ? `${d.name}  (git)` : d.name;
+            openBtn.style.cssText = 'flex:1;min-width:0;text-align:left;padding:6px 8px;border-radius:6px;border:1px solid var(--cth-ink-300,#d5cfc3);background:var(--cth-cream-100,#fff);color:inherit;font-family:var(--cth-font-mono,monospace);font-size:11.5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
+            openBtn.onclick = () => {
+              browseDir = d.path;
+              input.value = d.path;
+              void renderBrowse();
+            };
+            const useBtn = document.createElement('button');
+            useBtn.type = 'button';
+            useBtn.textContent = 'Select';
+            useBtn.style.cssText = 'padding:5px 9px;border-radius:6px;border:1px solid var(--cth-ink-300,#c8c2b6);background:transparent;color:inherit;cursor:pointer;font-size:11.5px;flex-shrink:0;';
+            useBtn.onclick = () => {
+              input.value = d.path;
+              void submit();
+            };
+            row.appendChild(openBtn);
+            row.appendChild(useBtn);
+            list.appendChild(row);
+          }
+          if (!res.dirs?.length) {
+            const empty = document.createElement('div');
+            empty.textContent = 'No subfolders here.';
+            empty.style.cssText = 'font-size:12px;opacity:0.65;padding:4px 0;';
+            list.appendChild(empty);
+          }
+          listBox.appendChild(list);
+        };
+
+        const renderView = () => {
+          if (projectsTab) {
+            projectsTab.style.background = viewMode === 'projects' ? 'var(--cth-cream-50,#fff)' : 'transparent';
+            projectsTab.style.color = viewMode === 'projects' ? 'var(--cth-ink-900,#1d1b18)' : 'var(--cth-ink-500,#6b5878)';
+          }
+          browseTab.style.background = viewMode === 'browse' ? 'var(--cth-cream-50,#fff)' : 'transparent';
+          browseTab.style.color = viewMode === 'browse' ? 'var(--cth-ink-900,#1d1b18)' : 'var(--cth-ink-500,#6b5878)';
+          listBox.innerHTML = '';
+          if (viewMode === 'projects' && mode === 'workspace') renderProjects();
+          else void renderBrowse();
+        };
+
+        if (mode !== 'workspace') viewMode = 'browse';
+        input.addEventListener('input', () => {
+          if (viewMode === 'projects' && mode === 'workspace') renderView();
+        });
+        renderView();
         const onKey = (ev) => {
           if (ev.key === 'Escape') {
             ev.preventDefault();

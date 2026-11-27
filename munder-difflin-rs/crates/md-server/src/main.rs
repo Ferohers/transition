@@ -4532,4 +4532,145 @@ mod tests {
 
         std::fs::remove_dir_all(&root).ok();
     }
+
+    #[tokio::test]
+    async fn projects_and_workspaces_filter_harness_home_and_show_real_projects() {
+        let root = std::env::temp_dir().join(format!("md-proj-filter-{}", uuid::Uuid::new_v4()));
+        let data_dir = root.join("data");
+        let home_dir = root.join("HarnessAgents2");
+        let other_floor = root.join("HarnessAgents");
+        let real_repo_reg = root.join("my-real-app");
+        let real_repo_agent = root.join("agent-real-repo");
+        let hive_proj = home_dir.join("hive/projects/temp-proj");
+
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(home_dir.join("hive/agents/god")).unwrap();
+        std::fs::create_dir_all(home_dir.join("worktrees/wt-1")).unwrap();
+        std::fs::create_dir_all(&hive_proj).unwrap();
+        std::fs::create_dir_all(other_floor.join("hive")).unwrap();
+        std::fs::write(other_floor.join("roster.json"), r#"{"agents":[]}"#).unwrap();
+        std::fs::write(other_floor.join("hive/registry.json"), r#"{"agents":{}}"#).unwrap();
+        std::fs::create_dir_all(&real_repo_reg).unwrap();
+        std::fs::create_dir_all(&real_repo_agent).unwrap();
+        let _ = md_git::init_repo_sync(&real_repo_reg, Some("init"));
+        let _ = md_git::init_repo_sync(&real_repo_agent, Some("init"));
+
+        let state = test_state(&data_dir);
+        state
+            .config
+            .lock()
+            .unwrap()
+            .update(serde_json::json!({
+                "harnessHome": home_dir.to_string_lossy().into_owned(),
+                "registeredRepos": [
+                    home_dir.to_string_lossy().into_owned(),
+                    home_dir.join("hive").to_string_lossy().into_owned(),
+                    home_dir.join("worktrees/wt-1").to_string_lossy().into_owned(),
+                    other_floor.to_string_lossy().into_owned(),
+                    data_dir.to_string_lossy().into_owned(),
+                    real_repo_reg.to_string_lossy().into_owned(),
+                ]
+            }))
+            .unwrap();
+
+        // Also seed roster with god at harnessHome and an agent at real_repo_agent.
+        std::fs::write(
+            home_dir.join("roster.json"),
+            serde_json::json!({
+                "agents": [
+                    {
+                        "id": "god",
+                        "name": "Altan",
+                        "cwd": home_dir.to_string_lossy().into_owned()
+                    },
+                    {
+                        "id": "dev-1",
+                        "name": "Ada",
+                        "cwd": real_repo_agent.to_string_lossy().into_owned()
+                    }
+                ],
+                "archived": [],
+                "restorable": []
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let app = build_router(state);
+
+        // /api/v1/projects/list must exclude HarnessAgents2, HarnessAgents, hive, worktrees, data_dir,
+        // and include real_repo_reg, real_repo_agent, and hive/projects/temp-proj.
+        let proj_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/projects/list").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(proj_res.status(), StatusCode::OK);
+        let proj_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(proj_res.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        let names: Vec<&str> = proj_json["projects"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+        assert!(!names.contains(&"HarnessAgents2"), "unexpected HarnessAgents2 in {names:?}");
+        assert!(!names.contains(&"HarnessAgents"), "unexpected HarnessAgents in {names:?}");
+        assert!(!names.contains(&"hive"), "unexpected hive in {names:?}");
+        assert!(!names.contains(&"wt-1"), "unexpected wt-1 in {names:?}");
+        assert!(!names.contains(&"data"), "unexpected data_dir in {names:?}");
+        assert!(names.contains(&"my-real-app"), "missing my-real-app in {names:?}");
+        assert!(names.contains(&"agent-real-repo"), "missing agent-real-repo in {names:?}");
+        assert!(names.contains(&"temp-proj"), "missing temp-proj in {names:?}");
+
+        // /api/v1/workspaces/list must not include harnessHome or its internal subdirectories.
+        let ws_res = app
+            .clone()
+            .oneshot(Request::builder().uri("/api/v1/workspaces/list").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ws_res.status(), StatusCode::OK);
+        let ws_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(ws_res.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        let folders: Vec<&str> = ws_json["folders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        let home_str = home_dir.to_string_lossy().into_owned();
+        assert!(!folders.contains(&home_str.as_str()));
+        assert!(folders.iter().any(|f| f.ends_with("my-real-app")));
+
+        // /api/v1/workspaces/browse on `root` skips HarnessAgents2 & HarnessAgents, shows real repos.
+        let browse_uri = format!(
+            "/api/v1/workspaces/browse?path={}",
+            root.to_string_lossy().replace(' ', "%20")
+        );
+        let br_res = app
+            .oneshot(Request::builder().uri(&browse_uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(br_res.status(), StatusCode::OK);
+        let br_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(br_res.into_body(), usize::MAX).await.unwrap(),
+        )
+        .unwrap();
+        let dir_names: Vec<&str> = br_json["dirs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d["name"].as_str())
+            .collect();
+        assert!(!dir_names.contains(&"HarnessAgents2"));
+        assert!(!dir_names.contains(&"HarnessAgents"));
+        assert!(dir_names.contains(&"my-real-app"));
+        assert!(dir_names.contains(&"agent-real-repo"));
+
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

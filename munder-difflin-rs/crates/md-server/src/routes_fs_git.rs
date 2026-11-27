@@ -355,61 +355,185 @@ async fn fs_stat_abs(Json(req): Json<PathReq>) -> Json<Value> {
     }
 }
 
-async fn workspaces_list(State(state): State<AppState>) -> Json<Value> {
-    let mut cfg_store = state.config.lock().unwrap();
-    let cfg = cfg_store.read();
-    let home = cfg
-        .harness_home
-        .as_deref()
-        .map(md_core::config::expand_tilde)
-        .filter(|p| !p.as_os_str().is_empty());
-
-    let mut folders: Vec<String> = Vec::new();
-    let mut push_unique = |p: &Path| {
-        if p.is_dir() {
-            let s = p.to_string_lossy().into_owned();
-            if !folders.contains(&s) {
-                folders.push(s);
-            }
-        }
-    };
-
-    if let Some(ref h) = home {
-        push_unique(h);
-        for base in [h.clone(), h.join("projects"), h.join("hive").join("projects")] {
-            if let Ok(rd) = std::fs::read_dir(&base) {
-                let mut children: Vec<PathBuf> = rd
-                    .flatten()
-                    .map(|e| e.path())
-                    .filter(|p| {
-                        p.is_dir()
-                            && !p
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| n.starts_with('.'))
-                    })
-                    .collect();
-                children.sort();
-                for c in children {
-                    push_unique(&c);
-                }
-            }
-        }
+fn same_or_inside_path(candidate: &Path, root: &Path) -> bool {
+    if candidate == root || candidate.starts_with(root) {
+        return true;
     }
-    for r in &cfg.registered_repos {
-        push_unique(&md_core::config::expand_tilde(r));
+    if let (Ok(cc), Ok(cr)) = (std::fs::canonicalize(candidate), std::fs::canonicalize(root)) {
+        return cc == cr || cc.starts_with(&cr);
     }
-
-    Json(json!({
-        "ok": true,
-        "harnessHome": home.map(|p| p.to_string_lossy().into_owned()),
-        "folders": folders,
-    }))
+    false
 }
 
-pub(crate) fn build_projects_payload(state: &AppState) -> Value {
-    let mut cfg_store = state.config.lock().unwrap();
-    let cfg = cfg_store.read();
+/// Returns `true` when `path` is app-internal storage, a harness floor home
+/// (e.g. `~/HarnessAgents2`), or a non-project internal directory inside one.
+fn is_app_or_floor_dir(
+    path: &Path,
+    cfg: &md_core::config::HarnessConfig,
+    data_dir: &Path,
+) -> bool {
+    let canon_p = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let mut homes: Vec<PathBuf> = Vec::new();
+    if let Some(ref raw) = cfg.harness_home {
+        let p = md_core::config::expand_tilde(raw);
+        if !p.as_os_str().is_empty() {
+            homes.push(p);
+        }
+    }
+    for raw in &cfg.recent_hives {
+        let p = md_core::config::expand_tilde(raw);
+        if !p.as_os_str().is_empty() && !homes.contains(&p) {
+            homes.push(p);
+        }
+    }
+
+    for h in homes {
+        let canon_h = std::fs::canonicalize(&h).unwrap_or(h);
+        if canon_p == canon_h {
+            return true;
+        }
+        let hive_dir = canon_h.join("hive");
+        let projects_dir = canon_h.join("projects");
+        let hive_projects_dir = hive_dir.join("projects");
+        if canon_p == hive_dir || canon_p == projects_dir || canon_p == hive_projects_dir {
+            return true;
+        }
+        if same_or_inside_path(&canon_p, &canon_h.join("worktrees"))
+            || same_or_inside_path(&canon_p, &canon_h.join("roster-backups"))
+            || same_or_inside_path(&canon_p, &canon_h.join(".palace-stage"))
+        {
+            return true;
+        }
+        if md_hive::manager::in_hive_projects(&hive_dir, &canon_p)
+            || same_or_inside_path(&canon_p, &projects_dir)
+        {
+            return false;
+        }
+        if same_or_inside_path(&canon_p, &hive_dir) {
+            return true;
+        }
+    }
+
+    if same_or_inside_path(path, data_dir) {
+        return true;
+    }
+
+    // Heuristic catch for unlisted floor directories (e.g. other floors on disk) or agent dirs.
+    let hive_sub = path.join("hive");
+    if path.join("roster.json").is_file()
+        && (hive_sub.join("registry.json").is_file() || hive_sub.join("PROTOCOL.md").is_file())
+    {
+        return true;
+    }
+    if path.join("identity.md").is_file()
+        && path.join("inbox").is_dir()
+        && path.join("outbox").is_dir()
+    {
+        return true;
+    }
+    false
+}
+
+fn suggested_project_root() -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    for rel in ["Projects", "Developer", "Code", "Workspaces", "Documents", "Desktop"] {
+        let p = home.join(rel);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    Some(home)
+}
+
+fn discover_machine_projects(
+    cfg: &md_core::config::HarnessConfig,
+    data_dir: &Path,
+    push_unique: &mut impl FnMut(PathBuf),
+) {
+    let Some(user_home) = dirs::home_dir() else {
+        return;
+    };
+    const CODE_ROOTS: &[&str] = &[
+        "Projects",
+        "Developer",
+        "Code",
+        "Workspaces",
+        "Workspace",
+        "Repos",
+        "src",
+        "GitHub",
+        "Sites",
+    ];
+    let mut found = 0usize;
+    let max_discovered = 50usize;
+
+    for rel in CODE_ROOTS {
+        if found >= max_discovered {
+            break;
+        }
+        let root = user_home.join(rel);
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut children: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_dir()
+                    && !p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.') || n == "node_modules")
+                    && !is_app_or_floor_dir(p, cfg, data_dir)
+            })
+            .collect();
+        children.sort();
+        for c in children {
+            if found >= max_discovered {
+                break;
+            }
+            push_unique(c);
+            found += 1;
+        }
+    }
+
+    // In general user folders (Documents, Desktop, ~), only surface directories that are git repos.
+    for root in [user_home.join("Documents"), user_home.join("Desktop"), user_home.clone()] {
+        if found >= max_discovered {
+            break;
+        }
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        let mut children: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.is_dir()
+                    && p.join(".git").exists()
+                    && !p
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with('.') || n == "Library" || n == "Applications")
+                    && !is_app_or_floor_dir(p, cfg, data_dir)
+            })
+            .collect();
+        children.sort();
+        for c in children {
+            if found >= max_discovered {
+                break;
+            }
+            push_unique(c);
+            found += 1;
+        }
+    }
+}
+
+fn collect_real_project_paths(
+    state: &AppState,
+    include_machine_discovery: bool,
+) -> (Option<PathBuf>, Vec<PathBuf>) {
+    let cfg = state.config.lock().unwrap().read();
     let home = cfg
         .harness_home
         .as_deref()
@@ -418,7 +542,10 @@ pub(crate) fn build_projects_payload(state: &AppState) -> Value {
 
     let mut paths: Vec<PathBuf> = Vec::new();
     let mut push_unique = |p: PathBuf| {
-        if p.is_dir() && !paths.contains(&p) {
+        if p.is_dir()
+            && !is_app_or_floor_dir(&p, &cfg, &state.data_dir)
+            && !paths.contains(&p)
+        {
             paths.push(p);
         }
     };
@@ -428,6 +555,23 @@ pub(crate) fn build_projects_payload(state: &AppState) -> Value {
         let resolved = md_git::main_repo_sync(&exp).unwrap_or(exp);
         push_unique(resolved);
     }
+
+    if let Some(snap) = state.roster.lock().unwrap().read(home.as_deref()) {
+        for agent in snap.agents {
+            let raw = agent
+                .get("cwd")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            if raw.is_empty() {
+                continue;
+            }
+            let exp = md_core::config::expand_tilde(raw);
+            let resolved = md_git::main_repo_sync(&exp).unwrap_or(exp);
+            push_unique(resolved);
+        }
+    }
+
     if let Some(ref h) = home {
         for base in [h.join("projects"), h.join("hive").join("projects")] {
             if let Ok(rd) = std::fs::read_dir(&base) {
@@ -449,6 +593,111 @@ pub(crate) fn build_projects_payload(state: &AppState) -> Value {
             }
         }
     }
+
+    if include_machine_discovery {
+        discover_machine_projects(&cfg, &state.data_dir, &mut push_unique);
+    }
+
+    (home, paths)
+}
+
+async fn workspaces_list(State(state): State<AppState>) -> Json<Value> {
+    let (home, paths) = collect_real_project_paths(&state, true);
+    let folders: Vec<String> = paths
+        .into_iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+
+    Json(json!({
+        "ok": true,
+        "harnessHome": home.map(|p| p.to_string_lossy().into_owned()),
+        "suggestedRoot": suggested_project_root().map(|p| p.to_string_lossy().into_owned()),
+        "folders": folders,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BrowseQuery {
+    path: Option<String>,
+}
+
+async fn workspaces_browse(
+    State(state): State<AppState>,
+    Query(q): Query<BrowseQuery>,
+) -> Json<Value> {
+    let cfg = state.config.lock().unwrap().read();
+    let target = q
+        .path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(md_core::config::expand_tilde)
+        .or_else(suggested_project_root)
+        .unwrap_or_else(|| PathBuf::from("/"));
+
+    if !target.is_dir() {
+        return Json(json!({
+            "ok": false,
+            "error": format!("folder does not exist: {}", target.display()),
+            "path": target.to_string_lossy(),
+            "dirs": []
+        }));
+    }
+
+    let user_home = dirs::home_dir();
+    let at_user_home = user_home.as_ref().is_some_and(|uh| same_or_inside_path(&target, uh) && target == *uh);
+    let Ok(rd) = std::fs::read_dir(&target) else {
+        return Json(json!({
+            "ok": false,
+            "error": format!("cannot read folder: {}", target.display()),
+            "path": target.to_string_lossy(),
+            "dirs": []
+        }));
+    };
+
+    let mut entries: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            p.is_dir()
+                && !name.starts_with('.')
+                && !(at_user_home && matches!(name, "Library" | "Applications"))
+                && !is_app_or_floor_dir(p, &cfg, &state.data_dir)
+        })
+        .collect();
+    entries.sort();
+
+    let dirs: Vec<Value> = entries
+        .into_iter()
+        .take(200)
+        .map(|p| {
+            let name = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let is_git = p.join(".git").exists();
+            json!({
+                "name": name,
+                "path": p.to_string_lossy(),
+                "isGit": is_git,
+            })
+        })
+        .collect();
+
+    let parent = target.parent().map(|p| p.to_string_lossy().into_owned());
+    Json(json!({
+        "ok": true,
+        "path": target.to_string_lossy(),
+        "parent": parent,
+        "dirs": dirs,
+    }))
+}
+
+pub(crate) fn build_projects_payload(state: &AppState) -> Value {
+    let (_home, paths) = collect_real_project_paths(state, false);
 
     let projects: Vec<Value> = paths
         .into_iter()
@@ -1017,6 +1266,7 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/fs/trash", post(fs_trash))
         .route("/api/v1/fs/stat-abs", post(fs_stat_abs))
         .route("/api/v1/workspaces/list", get(workspaces_list))
+        .route("/api/v1/workspaces/browse", get(workspaces_browse))
         .route("/api/v1/workspaces/ensure", post(workspaces_ensure))
         .route("/api/v1/projects/list", get(projects_list))
         .route("/api/v1/fs/folder-state", post(fs_folder_state))

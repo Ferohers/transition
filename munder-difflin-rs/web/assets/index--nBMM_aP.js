@@ -14295,8 +14295,40 @@ function useHive(config2) {
         (l) => ({ answered: true, ids: l.map((p) => p.id) }),
         () => ({ answered: false, ids: [] })
       );
+      const reg = await window.cth.hiveRegistry().catch(() => null);
+      const godName = resolveGodName(reg?.agents?.[GOD_ID$1]?.name || config2.godName);
+      setGodName(godName);
+      const godProvider = config2.godProvider ?? "claude";
+      const godModel = config2.godModel;
+      const command2 = effectiveGodCommand(config2.godCommand, buildSpawnCommand(config2, godModel, godProvider), godProvider);
+      const godShell = {
+        id: GOD_ID$1,
+        name: godName,
+        character: "michael",
+        accent: "lemon",
+        description: "Runs the office, sorts requests, and asks you only about critical calls.",
+        project: "hive",
+        tmuxTarget: "",
+        cwd: config2.harnessHome,
+        status: "idle",
+        action: "",
+        progress: 0,
+        currentStation: "desk",
+        ptyId: GOD_PTY,
+        command: command2.trim(),
+        provider: godProvider,
+        spawnedProvider: godProvider,
+        model: godModel,
+        isGod: true,
+        recentTextTs: Date.now()
+      };
       if (godRunning(listing, GOD_PTY) === "yes") {
-        if (!cancelled) useStore.getState().setGodStatus("ready");
+        if (!cancelled) {
+          if (!useStore.getState().agents.some((a) => a.id === GOD_ID$1)) {
+            useStore.getState().addAgent(godShell, { keepSelection: useStore.getState().selectedId !== null });
+          }
+          useStore.getState().setGodStatus("ready");
+        }
         return;
       }
       if (await window.cth.devNoGod?.().catch(() => false)) {
@@ -14305,12 +14337,6 @@ function useHive(config2) {
       }
       if (cancelled || godSpawning.current) return;
       godSpawning.current = true;
-      const reg = await window.cth.hiveRegistry().catch(() => null);
-      const godName = resolveGodName(reg?.agents?.[GOD_ID$1]?.name || config2.godName);
-      setGodName(godName);
-      const godProvider = config2.godProvider ?? "claude";
-      const godModel = config2.godModel;
-      const command2 = effectiveGodCommand(config2.godCommand, buildSpawnCommand(config2, godModel, godProvider), godProvider);
       const [exe, ...args] = tokenizeCommand(command2.trim());
       const res = await window.cth.spawnPty({
         id: GOD_PTY,
@@ -14452,6 +14478,11 @@ function useHive(config2) {
         }
       } else if (e.event === "StopFailure") {
         noteTurnMark(e.agentId, { kind: "end", at: Date.now() });
+        if (!breakerArmed) updateAgent(e.agentId, {
+          status: "blocked",
+          action: e.message ? String(e.message).slice(0, 60) : "turn failed",
+          carrying: void 0
+        });
       } else if (e.event === "Notification" && !breakerArmed) {
         const msg = (e.message ?? "").toLowerCase();
         const idleWaiting = !msg || msg.includes("waiting for your input") || msg.includes("is idle") || msg.includes("waiting for input");
@@ -14686,6 +14717,17 @@ function useHive(config2) {
       const { messageQueues, removeQueuedMessage } = useStore.getState();
       const next = messageQueues[srcId]?.[0];
       if (!next || !target2?.ptyId) return { sent: false };
+      if (target2.sleeping) {
+        if (!target2.waking) {
+          useStore.getState().updateAgent(target2.id, { waking: true });
+          void window.cth?.wakeAgent?.(target2.id).then((r6) => {
+            if (!r6?.ok) useStore.getState().updateAgent(target2.id, { waking: false });
+          }).catch(() => {
+            useStore.getState().updateAgent(target2.id, { waking: false });
+          });
+        }
+        return { sent: false };
+      }
       if (next.editing) return { sent: false };
       const now2 = Date.now();
       const jump = next.now === true && canSendNowMidTurn(target2.status, inferAgentProvider(target2.command, target2.provider), openQuestions.isOpen(target2.id));
@@ -94186,26 +94228,38 @@ function RestoreStep({ onBack }) {
   const [busy, setBusy] = reactExports.useState("");
   const [selectedName, setSelectedName] = reactExports.useState("");
   const [inspectInfo, setInspectInfo] = reactExports.useState(null);
+  const [inspectedKey, setInspectedKey] = reactExports.useState("");
   const [targetHome, setTargetHome] = reactExports.useState("");
   const [error, setError] = reactExports.useState();
   const [notice, setNotice] = reactExports.useState();
   const fileRef = reactExports.useRef(null);
+  const lastInspectReqRef = reactExports.useRef("");
   const inspectArchive = reactExports.useCallback(async (name, overrideTarget) => {
     if (!name) return;
+    const reqTarget = overrideTarget === void 0 ? "" : overrideTarget.trim();
+    const initialKey = `${name}\0${reqTarget}`;
+    lastInspectReqRef.current = initialKey;
     setBusy((prev) => prev === "restore" ? prev : "inspect");
     setError(void 0);
     try {
-      const info = await window.cth.backupInspect?.(name, overrideTarget?.trim() || void 0);
+      const info = await window.cth.backupInspect?.(name, reqTarget || void 0);
       if (!info?.ok) {
         setInspectInfo(null);
+        setInspectedKey("");
         setError(info?.error || "Could not read backup archive.");
         return;
       }
+      const nextHome = overrideTarget === void 0 ? info.targetHome || info.manifest?.harnessHome || "~/HarnessAgents" : reqTarget;
+      const resolvedKey = `${name}\0${nextHome.trim()}`;
+      lastInspectReqRef.current = resolvedKey;
       setInspectInfo(info);
+      setInspectedKey(resolvedKey);
       if (overrideTarget === void 0) {
-        setTargetHome(info.targetHome || info.manifest?.harnessHome || "~/HarnessAgents");
+        setTargetHome(nextHome);
       }
     } catch (e) {
+      setInspectInfo(null);
+      setInspectedKey("");
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy((prev) => prev === "restore" ? prev : "");
@@ -94226,6 +94280,7 @@ function RestoreStep({ onBack }) {
         } else {
           setSelectedName("");
           setInspectInfo(null);
+          setInspectedKey("");
         }
       }
     } catch (e) {
@@ -94238,13 +94293,14 @@ function RestoreStep({ onBack }) {
     void loadBackups();
   }, [loadBackups]);
   reactExports.useEffect(() => {
-    if (!selectedName || !targetHome.trim()) return;
-    if (inspectInfo && (inspectInfo.targetHome || "") === targetHome.trim()) return;
+    const trimmed = targetHome.trim();
+    const key = `${selectedName}\0${trimmed}`;
+    if (!selectedName || !trimmed || lastInspectReqRef.current === key) return;
     const timer = setTimeout(() => {
-      void inspectArchive(selectedName, targetHome);
+      void inspectArchive(selectedName, trimmed);
     }, 280);
     return () => clearTimeout(timer);
-  }, [selectedName, targetHome, inspectInfo, inspectArchive]);
+  }, [selectedName, targetHome, inspectArchive]);
   const onSelectBackup = (name) => {
     setSelectedName(name);
     setNotice(void 0);
@@ -94326,6 +94382,8 @@ function RestoreStep({ onBack }) {
   const hasNoticeHighlight = !!dirty?.dirty || runningCount > 0;
   const dirtyPreview = dirty?.entries?.slice(0, 4).join(", ") + ((dirty?.totalCount ?? 0) > 4 ? `, +${dirty.totalCount - 4} more` : "");
   const isRestoring = busy === "restore";
+  const currentKey = `${selectedName}\0${targetHome.trim()}`;
+  const inspectSynced = !!inspectInfo && inspectedKey === currentKey;
   return /* @__PURE__ */ jsxRuntimeExports.jsx(
     OnboardFrame,
     {
@@ -94339,7 +94397,7 @@ function RestoreStep({ onBack }) {
             Btn,
             {
               kind: "primary",
-              disabled: !selectedName || !targetHome.trim() || !inspectInfo || !!busy,
+              disabled: !selectedName || !targetHome.trim() || !inspectSynced || !!busy,
               onClick: () => void onConfirmRestore(),
               children: isRestoring ? "Restoring & booting…" : "Restore & boot"
             }
@@ -94449,6 +94507,7 @@ function RestoreStep({ onBack }) {
           })
         ] }),
         notice && /* @__PURE__ */ jsxRuntimeExports.jsx(Note$7, { children: notice }),
+        !dirWritable && status?.dirCheck?.error && /* @__PURE__ */ jsxRuntimeExports.jsx(ErrorLine, { children: status.dirCheck.error }),
         error && /* @__PURE__ */ jsxRuntimeExports.jsx(ErrorLine, { children: error })
       ] })
     }
@@ -104878,6 +104937,8 @@ function ProSidebar({
         minHeight: 0,
         background: "var(--cth-paper-100)",
         borderRight: "1px solid var(--cth-ink-300)",
+        borderStartEndRadius: 14,
+        borderEndEndRadius: 14,
         fontFamily: "var(--cth-font-ui)",
         fontSize: 13,
         color: "var(--cth-ink-900)",
@@ -105136,7 +105197,7 @@ function ProSidebar({
             )) })
           ] })
         ] }),
-        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { ref: meRef, style: { position: "relative", padding: "4px 6px", borderTop: "1px solid var(--cth-ink-300)" }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { ref: meRef, style: { position: "relative", padding: "4px 6px 8px", borderTop: "1px solid var(--cth-ink-300)" }, children: [
           menu && /* @__PURE__ */ jsxRuntimeExports.jsxs(
             "div",
             {
@@ -144829,7 +144890,7 @@ function ProShell({
         return OFFICE_WINDOW.inOffice ? /* @__PURE__ */ jsxRuntimeExports.jsx(HomeScreen, { config: config2 }) : /* @__PURE__ */ jsxRuntimeExports.jsx(WorkbenchScreen, { onHome: goHome });
     }
   }
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, minHeight: 0, display: "flex", gap: 0, position: "relative" }, children: [
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { style: { flex: 1, minHeight: 0, display: "flex", gap: 0, position: "relative", background: "var(--cth-cream-50)" }, children: [
     recovering && /* @__PURE__ */ jsxRuntimeExports.jsx(ProBooting, { remaining, skippable, onSkip: skip }),
     screen !== "workbench" && /* @__PURE__ */ jsxRuntimeExports.jsx(
       ProSidebar,

@@ -119,13 +119,21 @@ impl HiveManager {
                 let is_god = obj.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false)
                     || id == "god";
                 if let Some(existing) = agents_map.get_mut(id).and_then(|v| v.as_object_mut()) {
-                    for k in ["name", "provider", "cwd", "isGod", "sleeping", "status", "onHold"] {
+                    // Preserve backend hook-driven `status` once present so lagged UI roster saves
+                    // cannot clobber `Stop` -> `idle` transitions back to `working`.
+                    for k in ["name", "provider", "cwd", "isGod", "sleeping", "onHold"] {
                         if let Some(v) = obj.get(k).cloned()
                             && existing.get(k) != Some(&v)
                         {
                             existing.insert(k.to_string(), v);
                             changed = true;
                         }
+                    }
+                    if !existing.contains_key("status")
+                        && let Some(v) = obj.get("status").cloned()
+                    {
+                        existing.insert("status".to_string(), v);
+                        changed = true;
                     }
                     if is_god {
                         let desc = obj.get("description").and_then(|v| v.as_str());
@@ -186,7 +194,9 @@ impl HiveManager {
             };
             let is_temp = obj.get("isTemp").and_then(|v| v.as_bool()).unwrap_or(false)
                 || id.starts_with("worker-");
-            if is_temp {
+            let is_god = obj.get("isGod").and_then(|v| v.as_bool()).unwrap_or(false)
+                || id == "god";
+            if is_temp || is_god {
                 continue;
             }
             if obj.get("archived").and_then(|v| v.as_bool()) != Some(true) {
@@ -1215,6 +1225,19 @@ mod tests {
         mgr.append_log_with_cap(&serde_json::json!({ "kind": "rot-2", "msg": "bbbb" }), 20);
         assert!(dir.join("hive/log.jsonl.1").exists());
         assert!(dir.join("hive/log.jsonl").exists());
+
+        // Regression: lagged UI roster sync must not clobber hook-driven status.
+        mgr.patch_agent_field("god", "status", Some(Value::String("idle".to_string())))
+            .unwrap();
+        let stale_roster = vec![serde_json::json!({
+            "id": "god",
+            "name": "Michael",
+            "isGod": true,
+            "provider": "opencode",
+            "status": "working"
+        })];
+        mgr.sync_roster(&stale_roster, &[]).unwrap();
+        assert_eq!(mgr.registry()["agents"]["god"]["status"], "idle");
 
         fs::remove_dir_all(&dir).ok();
     }

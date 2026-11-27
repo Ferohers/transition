@@ -37,11 +37,21 @@ pub struct HookEngine {
 
 pub fn normalize_hook_event(raw: &str) -> &str {
     match raw {
-        "BeforeAgent" => "UserPromptSubmit",
-        "BeforeTool" => "PreToolUse",
-        "AfterTool" => "PostToolUse",
-        "AfterAgent" => "Stop",
-        "PreCompress" => "PreCompact",
+        "BeforeAgent" | "user_prompt_submit" => "UserPromptSubmit",
+        "BeforeTool" | "pre_tool_use" => "PreToolUse",
+        "AfterTool" | "post_tool_use" | "PostInvocation" => "PostToolUse",
+        "post_tool_use_failure" => "PostToolUseFailure",
+        "permission_denied" => "PermissionDenied",
+        "AfterAgent" | "stop" => "Stop",
+        "stop_failure" => "StopFailure",
+        "session_start" | "sessionStart" => "SessionStart",
+        "session_end" | "sessionEnd" => "SessionEnd",
+        "notification" => "Notification",
+        "subagent_start" => "SubagentStart",
+        "subagent_stop" => "SubagentStop",
+        "PreCompress" | "pre_compact" => "PreCompact",
+        "post_compact" => "PostCompact",
+        "PreInvocation" => "UserPromptSubmit",
         other => other,
     }
 }
@@ -217,7 +227,15 @@ impl HookEngine {
         let breaker_update: Option<BreakerState> = {
             let mut br = self.breaker.lock().unwrap();
             match event {
-                "PostToolUse" => br.record_tool_use(agent_id, tool_name, tool_input, now),
+                "PostToolUse" => {
+                    br.clear_error_streak(agent_id);
+                    br.record_tool_use(agent_id, tool_name, tool_input, now)
+                }
+                "Stop" => {
+                    br.clear_error_streak(agent_id);
+                    None
+                }
+                "StopFailure" => br.record_error(agent_id, now),
                 "UserPromptSubmit" => {
                     br.record_user_prompt(agent_id, now);
                     None

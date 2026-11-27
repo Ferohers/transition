@@ -4338,7 +4338,7 @@ const useStore = create((set2, get) => ({
     const live = new Set(livePtyIds);
     const endedBy = new Map((ended ?? []).map((e) => [e.agentId, e]));
     const endedHere = (a) => !!a.ptyId && !live.has(a.ptyId) && !a.isGod && !a.isAssistant && endedBy.has(a.id);
-    const agents = s.agents.filter((a) => !a.ptyId || live.has(a.ptyId) || endedHere(a)).map((a) => {
+    const agents = s.agents.filter((a) => a.isGod || a.isAssistant || !a.ptyId || live.has(a.ptyId) || endedHere(a)).map((a) => {
       const e = endedHere(a) ? endedBy.get(a.id) : void 0;
       if (e) {
         if (a.exit) return a;

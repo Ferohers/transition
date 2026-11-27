@@ -83,11 +83,64 @@ struct HiveSendReq {
     from: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+struct HookQuery {
+    event: Option<String>,
+}
+
+fn normalize_hook_payload(payload: &mut Value, event_override: Option<&str>) {
+    let Some(obj) = payload.as_object_mut() else {
+        return;
+    };
+    if let Some(ev) = event_override.map(str::trim).filter(|s| !s.is_empty())
+        && !obj.contains_key("hook_event_name")
+    {
+        obj.insert("hook_event_name".to_string(), Value::String(ev.to_string()));
+    }
+    let key_aliases = [
+        ("hookEventName", "hook_event_name"),
+        ("toolName", "tool_name"),
+        ("toolInput", "tool_input"),
+        ("toolUseId", "tool_use_id"),
+        ("sessionId", "session_id"),
+        ("conversationId", "session_id"),
+        ("transcriptPath", "transcript_path"),
+        ("notificationType", "notification_type"),
+        ("stopHookActive", "stop_hook_active"),
+        ("modelName", "model"),
+    ];
+    for (camel, snake) in key_aliases {
+        if !obj.contains_key(snake)
+            && let Some(val) = obj.get(camel).cloned()
+        {
+            obj.insert(snake.to_string(), val);
+        }
+    }
+    if !obj.contains_key("tool_name")
+        && let Some(name) = obj
+            .get("toolCall")
+            .and_then(|tc| tc.get("name"))
+            .and_then(|v| v.as_str())
+    {
+        obj.insert("tool_name".to_string(), Value::String(name.to_string()));
+    }
+    if !obj.contains_key("tool_input")
+        && let Some(args) = obj.get("toolCall").and_then(|tc| tc.get("args")).cloned()
+    {
+        obj.insert("tool_input".to_string(), args);
+    }
+    if let Some(raw_ev) = obj.get("hook_event_name").and_then(|v| v.as_str()) {
+        let norm = md_hive::hooks::normalize_hook_event(raw_ev).to_string();
+        obj.insert("hook_event_name".to_string(), Value::String(norm));
+    }
+}
+
 async fn handle_hook(
     Path(agent_id): Path<String>,
+    Query(query): Query<HookQuery>,
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(payload): Json<Value>,
+    Json(mut payload): Json<Value>,
 ) -> Result<Json<Value>, StatusCode> {
     let auth = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -96,6 +149,7 @@ async fn handle_hook(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
+    normalize_hook_payload(&mut payload, query.event.as_deref());
     let eff_agent_id = payload
         .get("agent_id")
         .and_then(|v| v.as_str())
@@ -3361,5 +3415,28 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--model" || a.starts_with("--model=")));
         assert!(args.iter().any(|a| a == "--auto"));
         assert!(args.iter().any(|a| a == "--standalone"));
+    }
+
+    #[test]
+    fn normalize_hook_payload_handles_grok_and_query_override() {
+        let mut grok_payload = serde_json::json!({
+            "hookEventName": "pre_tool_use",
+            "toolName": "read_file",
+            "toolInput": { "path": "a.rs" },
+            "sessionId": "grok-sess-1"
+        });
+        normalize_hook_payload(&mut grok_payload, None);
+        assert_eq!(grok_payload["hook_event_name"], "PreToolUse");
+        assert_eq!(grok_payload["tool_name"], "read_file");
+        assert_eq!(grok_payload["session_id"], "grok-sess-1");
+
+        let mut agy_payload = serde_json::json!({
+            "conversationId": "conv-9",
+            "toolCall": { "name": "bash", "args": { "cmd": "ls" } }
+        });
+        normalize_hook_payload(&mut agy_payload, Some("PreToolUse"));
+        assert_eq!(agy_payload["hook_event_name"], "PreToolUse");
+        assert_eq!(agy_payload["tool_name"], "bash");
+        assert_eq!(agy_payload["session_id"], "conv-9");
     }
 }

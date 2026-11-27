@@ -722,7 +722,7 @@ export default {
         if !tui_path.exists() {
             let _ = atomic_write_string(
                 &tui_path,
-                "{\n  \"$schema\": \"https://opencode.ai/tui.json\",\n  \"theme\": \"system\"\n}\n",
+                "{\n  \"$schema\": \"https://opencode.ai/tui.json\",\n  \"theme\": \"system\",\n  \"tabs\": {\n    \"mode\": \"off\",\n    \"enabled\": false\n  }\n}\n",
             );
         }
     }
@@ -890,6 +890,97 @@ export default function (pi) {
         let _ = atomic_write_string(&pi_dir.join("extensions.json"), &text);
     }
     Some(pi_dir)
+}
+
+const GUARDED_CURL_HOOK: &str = "if [ -n \"$MD_HOOK_URL\" ] && [ -n \"$MD_HOOK_TOKEN\" ]; then curl -sS -m 5 -X POST \"$MD_HOOK_URL\" -H \"Authorization: Bearer $MD_HOOK_TOKEN\" -H \"Content-Type: application/json\" --data-binary @- || true; fi";
+
+fn command_references_stale_electron(s: &str) -> bool {
+    s.contains("munder-difflin/shared/bin") || s.contains("Munder Difflin.app")
+}
+
+pub fn install_grok_hooks() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let path = home.join(".grok/hooks/munder-hive.json");
+    let matched_entry = || {
+        json!([{
+            "matcher": ".*",
+            "hooks": [{ "type": "command", "command": GUARDED_CURL_HOOK }]
+        }])
+    };
+    let plain_entry = || {
+        json!([{
+            "hooks": [{ "type": "command", "command": GUARDED_CURL_HOOK }]
+        }])
+    };
+    let doc = json!({
+        "hooks": {
+            "PreToolUse": matched_entry(),
+            "PostToolUse": matched_entry(),
+            "PostToolUseFailure": matched_entry(),
+            "Stop": plain_entry(),
+            "StopFailure": plain_entry(),
+            "SubagentStop": matched_entry(),
+            "SessionStart": matched_entry(),
+            "UserPromptSubmit": plain_entry(),
+            "Notification": plain_entry(),
+            "PreCompact": matched_entry(),
+            "PostCompact": matched_entry(),
+        }
+    });
+    if let Ok(text) = serde_json::to_string_pretty(&doc)
+        && fs::read_to_string(&path).ok().as_deref() != Some(text.as_str())
+    {
+        let _ = atomic_write_string(&path, &text);
+    }
+}
+
+pub fn sanitize_stale_electron_hooks() {
+    let Some(home) = dirs::home_dir() else {
+        return;
+    };
+    let grok_path = home.join(".grok/hooks/munder-hive.json");
+    if let Ok(raw) = fs::read_to_string(&grok_path)
+        && command_references_stale_electron(&raw)
+    {
+        install_grok_hooks();
+    }
+
+    let agy_path = home.join(".gemini/config/hooks.json");
+    if let Ok(raw) = fs::read_to_string(&agy_path)
+        && command_references_stale_electron(&raw)
+        && let Ok(mut doc) = serde_json::from_str::<Value>(&raw)
+        && let Some(obj) = doc.as_object_mut()
+    {
+        let agy_hook_entry = |ev: &str, matcher: Option<&str>| -> Value {
+            let cmd = format!(
+                "if [ -n \"$MD_HOOK_URL\" ] && [ -n \"$MD_HOOK_TOKEN\" ]; then curl -sS -m 5 -X POST \"${{MD_HOOK_URL}}?event={ev}\" -H \"Authorization: Bearer $MD_HOOK_TOKEN\" -H \"Content-Type: application/json\" --data-binary @- >/dev/null || true; fi"
+            );
+            let mut m = Map::new();
+            if let Some(pat) = matcher {
+                m.insert("matcher".to_string(), json!(pat));
+            }
+            m.insert(
+                "hooks".to_string(),
+                json!([{ "type": "command", "command": cmd, "timeout": 30 }]),
+            );
+            Value::Object(m)
+        };
+        obj.insert(
+            "munder-hive".to_string(),
+            json!({
+                "PreToolUse": [agy_hook_entry("PreToolUse", Some("*"))],
+                "PostToolUse": [agy_hook_entry("PostToolUse", Some("*"))],
+                "PreInvocation": [agy_hook_entry("PreInvocation", None)],
+                "PostInvocation": [agy_hook_entry("PostInvocation", None)],
+                "Stop": [agy_hook_entry("Stop", None)],
+            }),
+        );
+        if let Ok(text) = serde_json::to_string_pretty(&doc) {
+            let _ = atomic_write_string(&agy_path, &text);
+        }
+    }
 }
 
 pub fn build_seed_prompt(
@@ -1168,6 +1259,12 @@ pub fn prepare_agent_spawn(
                     opts.env
                         .insert("OPENCODE_CONFIG_CONTENT".to_string(), content);
                 }
+                if !opts.env.contains_key("OPENCODE_CLI_CONFIG_CONTENT") {
+                    opts.env.insert(
+                        "OPENCODE_CLI_CONFIG_CONTENT".to_string(),
+                        r#"{"tabs":{"mode":"off","enabled":false}}"#.to_string(),
+                    );
+                }
             }
             "gemini" => {
                 if !opts.env.contains_key("GEMINI_CLI_SYSTEM_SETTINGS_PATH")
@@ -1188,6 +1285,12 @@ pub fn prepare_agent_spawn(
                         pi_dir.to_string_lossy().into_owned(),
                     );
                 }
+            }
+            "grok" => {
+                install_grok_hooks();
+            }
+            "antigravity" => {
+                sanitize_stale_electron_hooks();
             }
             _ => {}
         }

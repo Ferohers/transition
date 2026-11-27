@@ -1041,9 +1041,25 @@
     backupSetDir: (path) => req('/api/v1/backups/set-dir', { method: 'POST', body: JSON.stringify({ path: path ?? null }) }),
     backupCreate: (stopFirst = false) => req('/api/v1/backups/create', { method: 'POST', body: JSON.stringify({ stopFirst: !!stopFirst }) }),
     backupImportFile: async (file) => {
+      const maxRawBytes = 190 * 1024 * 1024;
+      if (file.size > maxRawBytes) {
+        return { ok: false, error: 'Archive exceeds 190 MB browser upload limit. Choose its backup folder instead.' };
+      }
       const buf = new Uint8Array(await file.arrayBuffer());
       const dataBase64 = arrayBufferToBase64(buf);
-      return req('/api/v1/backups/import', { method: 'POST', body: JSON.stringify({ name: file.name, dataBase64 }) });
+      const res = await fetch('/api/v1/backups/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: file.name, dataBase64 }),
+      });
+      if (!res.ok) {
+        if (res.status === 413) {
+          return { ok: false, error: 'Archive exceeds upload limit. Choose the folder containing this backup instead.' };
+        }
+        const txt = await res.text().catch(() => '');
+        return { ok: false, error: txt || `Import failed (HTTP ${res.status})` };
+      }
+      return res.json().catch(() => ({ ok: false, error: 'Invalid server response' }));
     },
     backupInspect: (name, targetHome) => req('/api/v1/backups/inspect', {
       method: 'POST',

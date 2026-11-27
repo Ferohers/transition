@@ -66,6 +66,15 @@ const HIVE_EXCLUDED_ROOT_ENTRIES: &[&str] = &[
     "log.jsonl.1",
 ];
 
+const HOME_EXCLUDED_ROOT_ENTRIES: &[&str] = &[
+    "worktrees",
+    "roster-backups",
+    ".DS_Store",
+    ".palace-stage",
+    "roster.json",
+    "hive",
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupManifest {
@@ -675,6 +684,30 @@ async fn backup_create(
             {
                 items.push("home/hive/".to_string());
             }
+            if let Ok(rd) = fs::read_dir(&home_path) {
+                for ent in rd.flatten() {
+                    let fname = ent.file_name();
+                    let name_str = fname.to_string_lossy();
+                    if HOME_EXCLUDED_ROOT_ENTRIES.contains(&name_str.as_ref()) {
+                        continue;
+                    }
+                    let src_path = ent.path();
+                    let dst_path = stage_home.join(&fname);
+                    let Ok(meta) = fs::symlink_metadata(&src_path) else {
+                        continue;
+                    };
+                    if meta.file_type().is_symlink() {
+                        continue;
+                    }
+                    if meta.is_dir() {
+                        if copy_dir_filtered(&src_path, &dst_path, &[], true).is_ok() {
+                            items.push(format!("home/{name_str}/"));
+                        }
+                    } else if meta.is_file() && fs::copy(&src_path, &dst_path).is_ok() {
+                        items.push(format!("home/{name_str}"));
+                    }
+                }
+            }
         }
     }
 
@@ -850,6 +883,208 @@ fn resolve_restore_target(
         .map(expand_tilde)
 }
 
+fn validate_restore_target(state: &AppState, target: &Path) -> Result<(), String> {
+    if target.as_os_str().is_empty() || target == Path::new("/") {
+        return Err("Choose a dedicated workspace folder, not filesystem root.".to_string());
+    }
+    if target
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Workspace path cannot contain '..' segments.".to_string());
+    }
+    let blocked_roots = [
+        "/Users",
+        "/home",
+        "/Applications",
+        "/System",
+        "/Library",
+        "/etc",
+        "/usr",
+        "/bin",
+        "/sbin",
+        "/var",
+        "/tmp",
+        "/private",
+        "/opt",
+    ];
+    if blocked_roots.iter().any(|r| target == Path::new(r)) {
+        return Err("Choose a dedicated workspace folder, not a system directory.".to_string());
+    }
+    if let Some(home) = dirs::home_dir()
+        && (target == home || home.starts_with(target))
+    {
+        return Err(
+            "Choose a workspace folder inside your home directory, not the home directory itself."
+                .to_string(),
+        );
+    }
+    if target == state.data_dir || state.data_dir.starts_with(target) {
+        return Err("Cannot restore over or above the app data directory.".to_string());
+    }
+    let bdir = backups_dir(state);
+    if target == bdir || bdir.starts_with(target) || target.starts_with(&bdir) {
+        return Err("Destination folder cannot overlap with the active backups directory.".to_string());
+    }
+    if let Ok(meta) = fs::symlink_metadata(target)
+        && !meta.is_dir()
+    {
+        return Err("Destination path exists and is not a directory.".to_string());
+    }
+    Ok(())
+}
+
+fn rewrite_path_in_value(val: &mut Value, old_prefixes: &[String], new_prefix: &str) {
+    match val {
+        Value::String(s) => {
+            for old in old_prefixes {
+                if old.is_empty() || old == new_prefix {
+                    continue;
+                }
+                if s == old {
+                    *s = new_prefix.to_string();
+                    break;
+                }
+                if let Some(rest) = s
+                    .strip_prefix(old)
+                    .filter(|r| r.starts_with('/') || r.starts_with('\\'))
+                {
+                    *s = format!("{new_prefix}{rest}");
+                    break;
+                }
+            }
+        }
+        Value::Array(arr) => {
+            for item in arr {
+                rewrite_path_in_value(item, old_prefixes, new_prefix);
+            }
+        }
+        Value::Object(map) => {
+            for (_, v) in map.iter_mut() {
+                rewrite_path_in_value(v, old_prefixes, new_prefix);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_ephemeral_temp_entry(val: &Value, home_dir: &Path) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    let id = obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let desc = obj.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    let is_temp = obj.get("isTemp").and_then(|v| v.as_bool()) == Some(true);
+    let in_worktrees = obj
+        .get("cwd")
+        .and_then(|v| v.as_str())
+        .map(|s| expand_tilde(s).starts_with(home_dir.join("worktrees")))
+        .unwrap_or(false);
+    id.starts_with("worker-") || is_temp || desc == "temp" || in_worktrees
+}
+
+fn reconcile_restored_workspace(home_dir: &Path) {
+    let roster_path = home_dir.join("roster.json");
+    if roster_path.is_file()
+        && let Ok(raw) = fs::read_to_string(&roster_path)
+        && let Ok(mut doc) = serde_json::from_str::<Value>(&raw)
+    {
+        let mut removed_ids = Vec::new();
+        for key in ["agents", "restorable"] {
+            if let Some(arr) = doc.get_mut(key).and_then(|v| v.as_array_mut()) {
+                arr.retain(|item| {
+                    if is_ephemeral_temp_entry(item, home_dir) {
+                        if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                            removed_ids.push(id.to_string());
+                        }
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+        if let Some(queues) = doc.get_mut("queues").and_then(|v| v.as_object_mut()) {
+            for id in &removed_ids {
+                queues.remove(id);
+            }
+        }
+        if let Some(arr) = doc.get("agents").and_then(|v| v.as_array()) {
+            let worktrees_dir = home_dir.join("worktrees");
+            for item in arr {
+                if item.get("archived").and_then(|v| v.as_bool()) == Some(true) {
+                    continue;
+                }
+                if let Some(cwd_str) = item.get("cwd").and_then(|v| v.as_str()) {
+                    let cwd_path = expand_tilde(cwd_str);
+                    if cwd_path.starts_with(home_dir)
+                        && !cwd_path.starts_with(&worktrees_dir)
+                        && !cwd_path.exists()
+                    {
+                        let _ = fs::create_dir_all(&cwd_path);
+                    }
+                }
+            }
+        }
+        if let Ok(out) = serde_json::to_string_pretty(&doc) {
+            let _ = fs::write(&roster_path, out);
+        }
+    }
+
+    let reg_path = home_dir.join("hive/registry.json");
+    if reg_path.is_file()
+        && let Ok(raw) = fs::read_to_string(&reg_path)
+        && let Ok(mut reg) = serde_json::from_str::<Value>(&raw)
+    {
+        if let Some(agents) = reg.get_mut("agents").and_then(|v| v.as_object_mut()) {
+            for (_id, info) in agents.iter_mut() {
+                if is_ephemeral_temp_entry(info, home_dir)
+                    && let Some(obj) = info.as_object_mut()
+                {
+                    obj.insert("archived".to_string(), Value::Bool(true));
+                    obj.insert("stopped".to_string(), Value::Bool(true));
+                }
+            }
+        }
+        if let Ok(out) = serde_json::to_string_pretty(&reg) {
+            let _ = fs::write(&reg_path, out);
+        }
+    }
+
+    let projects_dir = home_dir.join("hive/projects");
+    if projects_dir.is_dir()
+        && let Ok(rd) = fs::read_dir(&projects_dir)
+    {
+        for ent in rd.flatten() {
+            let proj = ent.path();
+            if proj.join(".git/worktrees").is_dir() {
+                let _ = Command::new("git")
+                    .arg("-C")
+                    .arg(&proj)
+                    .arg("worktree")
+                    .arg("prune")
+                    .output();
+            }
+        }
+    }
+}
+
+fn relocate_json_paths(path: &Path, old_prefixes: &[String], new_prefix: &str) {
+    if old_prefixes.is_empty() || !path.is_file() {
+        return;
+    }
+    let Ok(raw) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(mut doc) = serde_json::from_str::<Value>(&raw) else {
+        return;
+    };
+    rewrite_path_in_value(&mut doc, old_prefixes, new_prefix);
+    if let Ok(out) = serde_json::to_string_pretty(&doc) {
+        let _ = fs::write(path, out);
+    }
+}
+
 async fn backup_inspect(
     State(state): State<AppState>,
     Json(req): Json<InspectBackupReq>,
@@ -866,6 +1101,11 @@ async fn backup_inspect(
     }
     let manifest = read_manifest_from_archive(&archive);
     let target = resolve_restore_target(&state, req.target_home.as_deref(), manifest.as_ref());
+    if let Some(ref p) = target
+        && let Err(err) = validate_restore_target(&state, p)
+    {
+        return Json(serde_json::json!({ "ok": false, "error": err }));
+    }
     let target_dirty = target
         .as_deref()
         .map(inspect_dir_dirty)
@@ -905,9 +1145,9 @@ async fn backup_restore(
     let manifest = read_manifest_from_archive(&archive);
     let target = resolve_restore_target(&state, req.target_home.as_deref(), manifest.as_ref());
     if let Some(ref p) = target
-        && (p.as_os_str().is_empty() || p == Path::new("/"))
+        && let Err(err) = validate_restore_target(&state, p)
     {
-        return Json(serde_json::json!({ "ok": false, "error": "unsafe target workspace path" }));
+        return Json(serde_json::json!({ "ok": false, "error": err }));
     }
 
     let running_count = state
@@ -932,6 +1172,9 @@ async fn backup_restore(
             "targetDirty": target_dirty,
         }));
     }
+
+    // Capture local machine backupDir BEFORE overwriting data_dir/config.json so restores preserve local backup storage.
+    let preserved_backup_dir = backups_dir_with_flag(&state);
 
     // 1. Extract into verified temp staging directory before touching live disk state.
     let stage = std::env::temp_dir().join(format!("md-restore-stage-{}", uuid::Uuid::new_v4()));
@@ -1030,12 +1273,82 @@ async fn backup_restore(
             if hive_src.is_dir() {
                 let _ = copy_dir_filtered(&hive_src, &home_dir.join("hive"), &[], true);
             }
+            if let Ok(rd) = fs::read_dir(&stage_home) {
+                for ent in rd.flatten() {
+                    let fname = ent.file_name();
+                    let name_str = fname.to_string_lossy();
+                    if matches!(
+                        name_str.as_ref(),
+                        "roster.json" | "hive" | "worktrees" | "roster-backups" | ".DS_Store" | ".palace-stage"
+                    ) {
+                        continue;
+                    }
+                    let src_path = ent.path();
+                    let dst_path = home_dir.join(&fname);
+                    let Ok(meta) = fs::symlink_metadata(&src_path) else {
+                        continue;
+                    };
+                    if meta.file_type().is_symlink() {
+                        continue;
+                    }
+                    if meta.is_dir() {
+                        let _ = copy_dir_filtered(&src_path, &dst_path, &[], true);
+                    } else if meta.is_file() {
+                        let _ = fs::copy(&src_path, &dst_path);
+                    }
+                }
+            }
         }
+        let new_prefix = home_dir
+            .to_string_lossy()
+            .trim_end_matches(&['/', '\\'][..])
+            .to_string();
+        let mut old_prefixes = Vec::new();
+        if let Some(raw_old) = manifest
+            .as_ref()
+            .and_then(|m| m.harness_home.as_deref())
+            .map(|s| s.trim().trim_end_matches(&['/', '\\'][..]))
+            .filter(|s| !s.is_empty())
+        {
+            let expanded_old = expand_tilde(raw_old)
+                .to_string_lossy()
+                .trim_end_matches(&['/', '\\'][..])
+                .to_string();
+            if expanded_old != new_prefix && !expanded_old.is_empty() {
+                old_prefixes.push(expanded_old);
+            }
+            if raw_old != new_prefix && !old_prefixes.iter().any(|p| p == raw_old) {
+                old_prefixes.push(raw_old.to_string());
+            }
+        }
+        if !old_prefixes.is_empty() {
+            relocate_json_paths(&home_dir.join("roster.json"), &old_prefixes, &new_prefix);
+            relocate_json_paths(&home_dir.join("hive/registry.json"), &old_prefixes, &new_prefix);
+            relocate_json_paths(&state.data_dir.join("config.json"), &old_prefixes, &new_prefix);
+            let agents_dir = home_dir.join("hive/agents");
+            if let Ok(rd) = fs::read_dir(&agents_dir) {
+                for ent in rd.flatten() {
+                    let id_path = ent.path().join("identity.md");
+                    if id_path.is_file()
+                        && let Ok(mut text) = fs::read_to_string(&id_path)
+                    {
+                        let mut changed = false;
+                        for old in &old_prefixes {
+                            if !old.is_empty() && old != &new_prefix && text.contains(old.as_str()) {
+                                text = text.replace(old.as_str(), &new_prefix);
+                                changed = true;
+                            }
+                        }
+                        if changed {
+                            let _ = fs::write(&id_path, text);
+                        }
+                    }
+                }
+            }
+        }
+        reconcile_restored_workspace(home_dir);
     }
     let _ = fs::remove_dir_all(&stage);
-
-    // Preserve local machine backupDir if already configured so cross-OS restores keep local backup storage working.
-    let preserved_backup_dir = backups_dir_with_flag(&state);
 
     // 6. Reload all persisted stores & sync restored roster/fleet.
     let restored_cfg = {
@@ -1111,7 +1424,7 @@ pub fn backup_router() -> Router<AppState> {
         .route("/api/v1/backups/create", post(backup_create))
         .route(
             "/api/v1/backups/import",
-            post(backup_import).layer(DefaultBodyLimit::max(100 * 1024 * 1024)),
+            post(backup_import).layer(DefaultBodyLimit::max(256 * 1024 * 1024)),
         )
         .route("/api/v1/backups/inspect", post(backup_inspect))
         .route("/api/v1/backups/restore", post(backup_restore))

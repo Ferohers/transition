@@ -65,11 +65,10 @@ fn spawn_pty_event_forwarder(state: &AppState) {
     tokio::spawn(async move {
         loop {
             match rx.recv().await {
-                Ok(PtyEvent::Data { id, data }) => {
-                    let _ = events_tx.send(ServerEvent {
-                        channel: format!("pty:data:{id}"),
-                        payload: serde_json::json!(data),
-                    });
+                Ok(PtyEvent::Data { .. }) => {
+                    // Terminal chunks stream exclusively via dedicated `/ws/pty/{id}` sockets;
+                    // forwarding high-frequency TUI redraws into `events_tx` overflows `/ws/events`
+                    // and drops critical `hive:hookEvent` (`Stop`) updates.
                 }
                 Ok(PtyEvent::Exit {
                     id,
@@ -259,6 +258,13 @@ async fn reset_all(State(state): State<AppState>) -> Json<serde_json::Value> {
             let path = entry.path();
             if path.is_file() {
                 let _ = std::fs::remove_file(&path);
+            } else if path.is_dir()
+                && matches!(
+                    name_str.as_ref(),
+                    "knowledge" | "agent-templates" | "office-themes" | "code-themes"
+                )
+            {
+                let _ = std::fs::remove_dir_all(&path);
             }
         }
     }
@@ -1146,7 +1152,7 @@ async fn main() -> anyhow::Result<()> {
     let asked_compact = Arc::new(Mutex::new(AskedCompact::new()));
     let hook_token = uuid::Uuid::new_v4().to_string();
     let hooks = HookEngine::new(control.clone(), breaker.clone(), hook_token);
-    let (events_tx, _) = broadcast::channel(256);
+    let (events_tx, _) = broadcast::channel(1024);
     let workers = Arc::new(Mutex::new(Vec::new()));
     let ended_agents = Arc::new(Mutex::new(HashMap::new()));
     let secrets = md_integrations::secrets::SecretStore::open(&data_dir)
@@ -1200,6 +1206,7 @@ async fn main() -> anyhow::Result<()> {
         let init_cfg = state.config.lock().unwrap().read();
         state.sync_config_runtime(&init_cfg);
     }
+    crate::hive_bootstrap::sanitize_stale_electron_hooks();
     let boot_roster = state
         .harness_home()
         .and_then(|home_dir| state.roster.lock().unwrap().read(Some(&home_dir)));
@@ -3033,6 +3040,15 @@ mod tests {
         .unwrap();
         assert_eq!(oc_cfg["permission"]["question"], "deny");
         assert_eq!(oc_cfg["permission"]["*"], "allow");
+        let oc_cli_cfg: serde_json::Value = serde_json::from_str(
+            oc_opts
+                .env
+                .get("OPENCODE_CLI_CONFIG_CONTENT")
+                .expect("OPENCODE_CLI_CONFIG_CONTENT should be set"),
+        )
+        .unwrap();
+        assert_eq!(oc_cli_cfg["tabs"]["mode"], "off");
+        assert_eq!(oc_cli_cfg["tabs"]["enabled"], false);
         assert!(hive_root.join("agents/god/hive-plugin/package.json").is_file());
         assert!(hive_root.join("agents/god/hive-plugin/index.mjs").is_file());
         assert!(oc_opts.args.iter().any(|a| a == "--standalone"));
@@ -4188,12 +4204,37 @@ mod tests {
         let fresh_data = root.join("fresh-data");
         let fresh_target = root.join("fresh-target");
         std::fs::create_dir_all(src_home.join("hive/agents")).unwrap();
+        std::fs::create_dir_all(src_home.join("agent1/.crush")).unwrap();
+        std::fs::write(src_home.join("agent1/.crush/state.txt"), "kept").unwrap();
         std::fs::create_dir_all(&src_backups).unwrap();
         std::fs::create_dir_all(&fresh_data).unwrap();
         std::fs::create_dir_all(&fresh_target).unwrap();
         std::fs::write(
             src_home.join("roster.json"),
-            r#"{"agents":[],"archived":[]}"#,
+            serde_json::json!({
+                "agents": [{
+                    "id": "god",
+                    "name": "Dwight",
+                    "provider": "claude",
+                    "cwd": src_home.to_string_lossy(),
+                    "isGod": true
+                }, {
+                    "id": "account-exec",
+                    "name": "Account executive",
+                    "provider": "opencode",
+                    "cwd": src_home.join("agent1").to_string_lossy(),
+                    "isGod": false
+                }, {
+                    "id": "worker-temp-1",
+                    "name": "Temp worker",
+                    "description": "temp",
+                    "provider": "opencode",
+                    "cwd": src_home.join("worktrees/worker-temp-1").to_string_lossy(),
+                    "isGod": false
+                }],
+                "archived": []
+            })
+            .to_string(),
         )
         .unwrap();
         std::fs::write(src_home.join("hive/agents/altan.md"), "# Altan\n").unwrap();
@@ -4294,6 +4335,39 @@ mod tests {
         assert_eq!(inspect_json["targetDirty"]["dirty"], true);
         assert_eq!(inspect_json["manifest"]["godName"], "Dwight");
 
+        // Unsafe target paths (root, traversal, backups dir overlap) are rejected before restore.
+        for bad_target in [
+            "/",
+            "/tmp/../escape",
+            fresh_data.join("backups").to_string_lossy().as_ref(),
+        ] {
+            let bad_res = fresh_app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/v1/backups/inspect")
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({
+                                "name": imported_name,
+                                "targetHome": bad_target,
+                            })
+                            .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let bad_json: serde_json::Value = serde_json::from_slice(
+                &axum::body::to_bytes(bad_res.into_body(), usize::MAX)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(bad_json["ok"], false, "expected unsafe rejection for {bad_target}");
+        }
+
         // Guard rejects without cleanDirty, then succeeds cleanly when cleanDirty=true.
         let guard_res = fresh_app
             .clone()
@@ -4352,6 +4426,20 @@ mod tests {
         assert!(!fresh_target.join("leftover.txt").exists());
         assert!(fresh_target.join("roster.json").is_file());
         assert!(fresh_target.join("hive/agents/altan.md").is_file());
+        assert!(fresh_target.join("agent1/.crush/state.txt").is_file());
+        let relocated_roster: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(fresh_target.join("roster.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            relocated_roster["agents"][0]["cwd"],
+            fresh_target.to_string_lossy().as_ref()
+        );
+        assert_eq!(relocated_roster["agents"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            relocated_roster["agents"][1]["cwd"],
+            fresh_target.join("agent1").to_string_lossy().as_ref()
+        );
 
         // Reloaded /api/v1/config boots straight past onboarding with restored state.
         let cfg_res = fresh_app
@@ -4373,6 +4461,7 @@ mod tests {
         assert_eq!(cfg_json["onboardingComplete"], true);
         assert_eq!(cfg_json["godName"], "Dwight");
         assert_eq!(cfg_json["harnessHome"], fresh_target.to_string_lossy().as_ref());
+        assert!(cfg_json["backupDir"].is_null());
 
         let hive_res = fresh_app
             .oneshot(

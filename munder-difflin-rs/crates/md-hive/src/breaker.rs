@@ -271,6 +271,12 @@ impl CircuitBreaker {
         None
     }
 
+    pub fn clear_error_streak(&mut self, agent_id: &str) {
+        if let Some(s) = self.agents.get_mut(agent_id) {
+            s.error_count = 0;
+        }
+    }
+
     pub fn record_error(&mut self, agent_id: &str, now: u64) -> Option<BreakerState> {
         if !self.config.enabled {
             return None;

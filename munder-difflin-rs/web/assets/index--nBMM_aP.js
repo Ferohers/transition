@@ -140035,6 +140035,9 @@ function CloudFace({ section, agentId }) {
   const a = section?.agents.find((x) => agentId ? x.id === agentId : x.isGod);
   return /* @__PURE__ */ jsxRuntimeExports.jsx(SpritePortrait, { character: a ? characterFor(a) : DEFAULT_CHARACTER, size: 20, agent: cloudLookSubject(a ?? { id: "god", isGod: true }) });
 }
+const RECEIPT_AUTOHIDE_MS = 7e3;
+const RECEIPT_EXIT_MS = 150;
+const RECEIPT_AUTO_STATES = /* @__PURE__ */ new Set(["done", "replied", "cloud"]);
 function ReceiptLine({ receipt: r6, agents, name: name2, asleep, onChange }) {
   const { t: t2 } = useTranslation();
   const nav2 = usePaneNav();
@@ -140064,6 +140067,25 @@ function ReceiptLine({ receipt: r6, agents, name: name2, asleep, onChange }) {
   const releaseQueued = useStore((s) => s.releaseQueuedMessage);
   const busy = isBusy(agent?.status);
   const [quiet, setQuiet] = reactExports.useState(false);
+  const [hovered, setHovered] = reactExports.useState(false);
+  const [leaving, setLeaving] = reactExports.useState(false);
+  const dismissSmooth = reactExports.useCallback(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      onChange(null);
+      return;
+    }
+    setLeaving(true);
+  }, [onChange]);
+  reactExports.useEffect(() => {
+    if (!leaving) return void 0;
+    const timer2 = setTimeout(() => onChange(null), RECEIPT_EXIT_MS);
+    return () => clearTimeout(timer2);
+  }, [leaving, onChange]);
+  reactExports.useEffect(() => {
+    if (!RECEIPT_AUTO_STATES.has(r6.state) || hovered || leaving) return void 0;
+    const timer2 = setTimeout(dismissSmooth, RECEIPT_AUTOHIDE_MS);
+    return () => clearTimeout(timer2);
+  }, [r6.state, hovered, leaving, dismissSmooth]);
   reactExports.useEffect(() => {
     if (r6.state !== "working" || busy) {
       setQuiet(false);
@@ -140080,21 +140102,33 @@ function ReceiptLine({ receipt: r6, agents, name: name2, asleep, onChange }) {
     if (agent) nav2.go(`agent:${agent.id}`);
     else if (r6.to.kind === "cloud") openInOffice(r6.to.officeId, r6.to.agentId ? `agent:${r6.to.agentId}` : "agents");
   };
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { className: "rcpt", "aria-live": "polite", "data-home-receipt": r6.state, children: [
-    agent && (r6.state === "sent" || r6.state === "has" || r6.state === "working" || r6.state === "done") && (settled === "delivered" || settled === "sent" && !isSteer(r6.queueId ?? "")) && /* @__PURE__ */ jsxRuntimeExports.jsx(AnswerWatch, { agentId: agent.id, status: agent.status, window: answerWindow, onAnswer: setAnswered }),
-    agent ? /* @__PURE__ */ jsxRuntimeExports.jsx(SpritePortrait, { character: agent.character, size: 20, agent }) : /* @__PURE__ */ jsxRuntimeExports.jsx(CloudFace, { section: cloudTo2 && clouds.find((s) => s.officeId === cloudTo2.officeId), agentId: cloudTo2?.agentId }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: RECEIPT_TONE[r6.state], children: t2(`pro.home.rcpt.${r6.state}`, { name: who }) }),
-    r6.state === "replied" && agent ? /* @__PURE__ */ jsxRuntimeExports.jsx(ReplyText, { agentId: agent.id, window: answerWindow }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "txt", dir: "auto", children: previewLine(r6.text) }),
-    r6.state === "queued" && (asleep || asking2 || behind || draft) && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "why", dir: "auto", children: t2(asleep ? "pro.home.rcpt.asleep" : asking2 ? "pro.home.rcpt.question" : behind ? "pro.home.rcpt.behind" : "pro.home.rcpt.draft", { name: who }) }),
-    r6.state === "queued" && agent && r6.queueId ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "lnk", onClick: () => releaseQueued(agent.id, r6.queueId, true), children: t2("pro.home.rcpt.sendNow") }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "lnk", onClick: () => {
-        removeQueued(agent.id, r6.queueId);
-        onChange(null);
-      }, children: t2("pro.home.rcpt.remove") })
-    ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "lnk", onClick: open2, children: t2("pro.home.rcpt.open", { name: who }) }),
-    /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "ib", "aria-label": t2("pro.home.rcpt.dismiss"), onClick: () => onChange(null), children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "close", size: 12 }) })
-  ] });
+  const clickable = r6.state !== "queued";
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("div", {
+    className: `rcpt${clickable ? " clickable" : ""}${leaving ? " leaving" : ""}`,
+    "aria-live": "polite",
+    "data-home-receipt": r6.state,
+    onMouseEnter: () => setHovered(true),
+    onMouseLeave: () => setHovered(false),
+    onClick: (e) => {
+      if (!clickable || e.target instanceof Element && e.target.closest("button")) return;
+      open2();
+    },
+    children: [
+      agent && (r6.state === "sent" || r6.state === "has" || r6.state === "working" || r6.state === "done") && (settled === "delivered" || settled === "sent" && !isSteer(r6.queueId ?? "")) && /* @__PURE__ */ jsxRuntimeExports.jsx(AnswerWatch, { agentId: agent.id, status: agent.status, window: answerWindow, onAnswer: setAnswered }),
+      agent ? /* @__PURE__ */ jsxRuntimeExports.jsx(SpritePortrait, { character: agent.character, size: 20, agent }) : /* @__PURE__ */ jsxRuntimeExports.jsx(CloudFace, { section: cloudTo2 && clouds.find((s) => s.officeId === cloudTo2.officeId), agentId: cloudTo2?.agentId }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: RECEIPT_TONE[r6.state], children: t2(`pro.home.rcpt.${r6.state}`, { name: who }) }),
+      r6.state === "replied" && agent ? /* @__PURE__ */ jsxRuntimeExports.jsx(ReplyText, { agentId: agent.id, window: answerWindow }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "txt", dir: "auto", children: previewLine(r6.text) }),
+      r6.state === "queued" && (asleep || asking2 || behind || draft) && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "why", dir: "auto", children: t2(asleep ? "pro.home.rcpt.asleep" : asking2 ? "pro.home.rcpt.question" : behind ? "pro.home.rcpt.behind" : "pro.home.rcpt.draft", { name: who }) }),
+      r6.state === "queued" && agent && r6.queueId ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "lnk", onClick: () => releaseQueued(agent.id, r6.queueId, true), children: t2("pro.home.rcpt.sendNow") }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "lnk", onClick: () => {
+          removeQueued(agent.id, r6.queueId);
+          onChange(null);
+        }, children: t2("pro.home.rcpt.remove") })
+      ] }) : /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "lnk", onClick: open2, children: t2("pro.home.rcpt.open", { name: who }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx("button", { type: "button", className: "ib", "aria-label": t2("pro.home.rcpt.dismiss"), onClick: dismissSmooth, children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "close", size: 12 }) })
+    ]
+  });
 }
 const inWindow$1 = (at2, w2) => w2.span === void 0 ? at2 >= w2.since : w2.span !== null && inSpan(at2, w2.span);
 function newestAnswer(agentId, messages, said2, w2) {
@@ -140892,8 +140926,11 @@ ${SIM_BTN_CSS}
 .cth-home .drawlist span{min-width:0}
 .cth-home .drawlist small{display:block;color:var(--i5);font-size:11px;line-height:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .cth-home .inwrap{border-top:1px solid var(--bd);background:var(--g);padding:10px var(--inpad) 12px;position:relative}
-.cth-home .rcptSlot{position:absolute;left:0;right:0;bottom:calc(100% + 10px);display:flex;justify-content:center;padding-inline:var(--inpad);pointer-events:none;z-index:50}
-.cth-home .rcpt{pointer-events:auto;display:flex;align-items:center;gap:8px;width:auto;max-width:min(640px,max(280px,calc(var(--in-w,90cqw) - 24px)),100%);box-sizing:border-box;min-height:40px;padding:6px 8px;padding-inline-start:10px;background:color-mix(in srgb,var(--p) 94%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--bd);border-radius:12px;box-shadow:0 8px 24px rgba(26,25,22,.16),0 2px 6px rgba(26,25,22,.08);min-width:0;animation:cth-home-rcpt-in .18s cubic-bezier(.2,0,0,1)}
+.cth-home .rcptSlot{position:absolute;left:0;right:0;bottom:calc(100% + 6px);display:flex;justify-content:center;padding-inline:var(--inpad);pointer-events:none;z-index:50}
+.cth-home .rcpt{pointer-events:auto;display:flex;align-items:center;gap:8px;width:auto;max-width:min(640px,max(280px,calc(var(--in-w,90cqw) - 24px)),100%);box-sizing:border-box;min-height:36px;padding:4px 8px;padding-inline-start:9px;background:color-mix(in srgb,var(--p) 94%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--bd);border-radius:10px;box-shadow:0 8px 24px rgba(26,25,22,.16),0 2px 6px rgba(26,25,22,.08);min-width:0;animation:cth-home-rcpt-in .18s cubic-bezier(.2,0,0,1);transition:opacity .15s cubic-bezier(.2,0,0,1),transform .15s cubic-bezier(.2,0,0,1),border-color .15s ease}
+.cth-home .rcpt.clickable{cursor:pointer}
+.cth-home .rcpt.clickable:hover{border-color:var(--i5)}
+.cth-home .rcpt.leaving{opacity:0;transform:translateY(4px) scale(.985);pointer-events:none}
 @keyframes cth-home-rcpt-in{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
 .cth-home .rcpt .txt{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--i7)}
 .cth-home .rcpt .why{min-width:0;flex:0 1 auto;max-width:50%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--i5)}
@@ -140923,7 +140960,7 @@ ${SIM_BTN_CSS}
 .cth-home .wave i{width:3px;background:var(--at);border-radius:2px;animation:cth-home-wv 1s infinite ease-in-out}
 .cth-home .wave i:nth-child(2){animation-delay:.12s}.cth-home .wave i:nth-child(3){animation-delay:.24s}.cth-home .wave i:nth-child(4){animation-delay:.36s}.cth-home .wave i:nth-child(5){animation-delay:.48s}
 @keyframes cth-home-wv{0%,100%{height:5px}50%{height:17px}}
-@media (prefers-reduced-motion:reduce){.cth-home .wave i,.cth-home .rcpt{animation:none}.cth-home .wave i{height:9px}}
+@media (prefers-reduced-motion:reduce){.cth-home .wave i,.cth-home .rcpt,.cth-home .rcpt.leaving{animation:none;transition:none}.cth-home .wave i{height:9px}}
 .cth-home .ctl{display:flex;align-items:center;gap:6px;min-width:0}
 .cth-home .ctl .sp3{flex:1}
 .cth-home .ctl .deliv{color:var(--i5);font-size:12px;white-space:nowrap}

@@ -315,6 +315,88 @@
   }
 
   const ideChannel = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('cth-ide') : null;
+  const IDE_STATE_KEY = 'cth.ide.state';
+  const IDE_ALIVE_KEY = 'cth.ide.aliveAt';
+  const isIdeWindowPage = (() => {
+    try {
+      const p = window.location.pathname || '';
+      return p.endsWith('/ide.html') || p === '/ide';
+    } catch {
+      return false;
+    }
+  })();
+  let detachedIdeWin = null;
+  let closingViaAttach = false;
+
+  function readIdeStoredState() {
+    try {
+      const raw = window.localStorage.getItem(IDE_STATE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeIdeStoredState(next) {
+    try {
+      window.localStorage.setItem(IDE_STATE_KEY, JSON.stringify(next));
+    } catch {}
+  }
+
+  function isDetachedIdeAlive() {
+    if (detachedIdeWin && !detachedIdeWin.closed) return true;
+    try {
+      const st = readIdeStoredState();
+      if (!st?.detached) return false;
+      const aliveAt = Number(window.localStorage.getItem(IDE_ALIVE_KEY) || 0);
+      return aliveAt > 0 && Date.now() - aliveAt < 10000;
+    } catch {
+      return false;
+    }
+  }
+
+  if (ideChannel) {
+    ideChannel.onmessage = (ev) => {
+      const msg = ev?.data;
+      if (!msg || typeof msg !== 'object') return;
+      if (msg.type === 'ide:open') {
+        if (isIdeWindowPage) emitLocal('ide:open', msg.req || {});
+      } else if (msg.type === 'ide:agents') {
+        if (isIdeWindowPage && Array.isArray(msg.list)) emitLocal('ide:agents', msg.list);
+      } else if (msg.type === 'ide:attached') {
+        if (!isIdeWindowPage) emitLocal('ide:attached', msg.handoff || null);
+      } else if (msg.type === 'ide:attachedAck') {
+        if (isIdeWindowPage) {
+          closingViaAttach = true;
+          try { window.close(); } catch {}
+        }
+      } else if (msg.type === 'ide:collect') {
+        if (isIdeWindowPage) emitLocal('ide:collect', null);
+      } else if (msg.type === 'ide:closed') {
+        if (!isIdeWindowPage) {
+          detachedIdeWin = null;
+          writeIdeStoredState({ detached: false, handoff: null, at: Date.now() });
+          emitLocal('ide:attached', null);
+        }
+      }
+    };
+  }
+
+  if (isIdeWindowPage) {
+    const touchAlive = () => {
+      try { window.localStorage.setItem(IDE_ALIVE_KEY, String(Date.now())); } catch {}
+    };
+    touchAlive();
+    setInterval(touchAlive, 2000);
+    window.addEventListener('pagehide', () => {
+      if (closingViaAttach) return;
+      try {
+        window.localStorage.removeItem(IDE_ALIVE_KEY);
+        writeIdeStoredState({ detached: false, handoff: null, at: Date.now() });
+        ideChannel?.postMessage({ type: 'ide:closed' });
+      } catch {}
+    });
+  }
 
   function arrayBufferToBase64(bytes) {
     const arr = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes || 0);
@@ -341,36 +423,67 @@
     }, 200);
   }
 
-  function pickLocalFiles({ accept = '*/*', multiple = false, readAs = 'text' } = {}) {
+  function pickLocalFiles({ accept = '*/*', multiple = false, directory = false, readAs = 'text' } = {}) {
     return new Promise((resolve) => {
       const input = document.createElement('input');
       input.type = 'file';
-      input.accept = accept;
+      if (accept && accept !== '*/*') input.accept = accept;
       input.multiple = !!multiple;
-      input.style.display = 'none';
+      if (directory) {
+        input.webkitdirectory = true;
+        input.setAttribute('webkitdirectory', '');
+      }
+      input.style.position = 'fixed';
+      input.style.left = '-9999px';
+      input.style.top = '0';
+      input.style.width = '1px';
+      input.style.height = '1px';
+      input.style.opacity = '0';
       let settled = false;
+      let changeStarted = false;
+      let focusTimer = null;
       const finish = (val) => {
         if (settled) return;
         settled = true;
+        if (focusTimer) {
+          clearTimeout(focusTimer);
+          focusTimer = null;
+        }
         window.removeEventListener('focus', onFocus);
         input.remove();
         resolve(val);
       };
-      const onFocus = () => setTimeout(() => finish(null), 500);
+      const onFocus = () => {
+        if (changeStarted) return;
+        if (focusTimer) clearTimeout(focusTimer);
+        focusTimer = setTimeout(() => {
+          if (!changeStarted) finish(null);
+        }, 1000);
+      };
       input.addEventListener('cancel', () => finish(null));
       input.addEventListener('change', async () => {
-        const list = Array.from(input.files || []);
-        if (!list.length) return finish(null);
-        const out = [];
-        for (const f of list) {
-          if (readAs === 'text') {
-            out.push({ name: f.name, size: f.size, text: await f.text() });
-          } else {
-            const buf = new Uint8Array(await f.arrayBuffer());
-            out.push({ name: f.name, size: f.size, base64: arrayBufferToBase64(buf) });
-          }
+        changeStarted = true;
+        if (focusTimer) {
+          clearTimeout(focusTimer);
+          focusTimer = null;
         }
-        finish(out);
+        try {
+          const list = Array.from(input.files || []);
+          if (!list.length) return finish(null);
+          const out = [];
+          for (const f of list) {
+            const name = f.webkitRelativePath || f.name;
+            if (readAs === 'text') {
+              out.push({ name, size: f.size, text: await f.text() });
+            } else {
+              const buf = new Uint8Array(await f.arrayBuffer());
+              out.push({ name, size: f.size, base64: arrayBufferToBase64(buf) });
+            }
+          }
+          finish(out);
+        } catch {
+          finish(null);
+        }
       });
       window.addEventListener('focus', onFocus, { once: true });
       document.body.appendChild(input);
@@ -385,7 +498,11 @@
         method: 'POST',
         body: JSON.stringify({ name, base64, scope }),
       });
-      return res || { ok: false, error: 'upload failed' };
+      if (!res?.ok || !res.path) return res || { ok: false, error: 'upload failed' };
+      return {
+        ...res,
+        file: { path: res.path, name: name || res.name || 'attachment' },
+      };
     } catch (e) {
       return { ok: false, error: String(e) };
     }
@@ -587,12 +704,16 @@
     statAbs: (path) => req('/api/v1/fs/stat-abs', { method: 'POST', body: JSON.stringify({ path }) }),
     ideDirty: (unsaved, openFiles) => req('/api/v1/ide/dirty', { method: 'POST', body: JSON.stringify({ unsaved: unsaved || 0, openFiles: Array.isArray(openFiles) ? openFiles : [] }) }),
     ideHandoff: async () => {
+      const stored = readIdeStoredState();
       const [ide, roster] = await Promise.all([
-        req('/api/v1/ide/state').catch(() => null),
+        stored?.handoff ? Promise.resolve(null) : req('/api/v1/ide/state').catch(() => null),
         req('/api/v1/roster').catch(() => null),
       ]);
-      const openFiles = Array.isArray(ide?.openFiles) ? ide.openFiles : [];
-      const handoff = openFiles.length > 0 ? { path: openFiles[0] } : null;
+      let handoff = stored?.handoff || null;
+      if (!handoff) {
+        const openFiles = Array.isArray(ide?.openFiles) ? ide.openFiles : [];
+        handoff = openFiles.length > 0 ? { path: openFiles[0] } : null;
+      }
       const agents = Array.isArray(roster?.agents) ? roster.agents : [];
       return { handoff, agents };
     },
@@ -1130,6 +1251,7 @@
       }
       return { ok: added > 0, results, added, docs, errors };
     },
+    pathForFile: () => '',
     saveDroppedFile: (name, bytes) => uploadRawBytes(name || 'drop.bin', bytes, 'drops'),
     saveClipboardImage: async () => {
       try {
@@ -1149,20 +1271,34 @@
         return { ok: false, error: String(e?.message || e) };
       }
     },
-    attachFiles: async () => {
-      const picked = await pickLocalFiles({ accept: '*/*', multiple: true, readAs: 'base64' });
+    attachFiles: async (want) => {
+      const picked = await pickLocalFiles({
+        accept: '*/*',
+        multiple: true,
+        directory: want === 'folders',
+        readAs: 'base64',
+      });
       if (!picked || !picked.length) return { ok: false, files: [] };
       const files = [];
+      let lastError = '';
       for (const f of picked) {
         const res = await req('/api/v1/fs/upload', {
           method: 'POST',
           body: JSON.stringify({ name: f.name, base64: f.base64, scope: 'attachments' }),
-        }).catch(() => null);
-        if (res?.ok && res.path) files.push(res.path);
+        }).catch((e) => ({ ok: false, error: String(e?.message || e) }));
+        if (res?.ok && res.path) {
+          files.push({ path: res.path, name: f.name || res.name || 'attachment' });
+        } else if (res?.error) {
+          lastError = res.error;
+        }
       }
-      return { ok: files.length > 0, files };
+      return {
+        ok: files.length > 0,
+        files,
+        ...(files.length === 0 && lastError ? { error: lastError } : {}),
+      };
     },
-    attachToOffice: async () => baseApi.attachFiles(),
+    attachToOffice: async (files) => (Array.isArray(files) ? { ok: true, files } : baseApi.attachFiles()),
     importHireFiles: async () => baseApi.attachFiles(),
     hireRunnerReady: () => req('/api/v1/hive/hire-runner-ready', { method: 'POST' }).then((r) => r || { ok: false }),
     onHireRequest: (fn) => addListener('hire:request', fn),
@@ -1395,29 +1531,63 @@
     voiceTerminal: (ptyId, _rows, lines = 40) => req('/api/v1/pty/screen-lines', { method: 'POST', body: JSON.stringify({ ptyId, lines }) }).then((r) => r || { ok: false, lines: [] }),
     ideAttach: (handoff) => {
       try {
-        window.localStorage.setItem('cth.ide.attached', JSON.stringify({ attached: true, handoff: handoff || null, at: Date.now() }));
-        ideChannel?.postMessage({ type: 'attach', handoff: handoff || null });
+        closingViaAttach = true;
+        window.localStorage.removeItem(IDE_ALIVE_KEY);
+        writeIdeStoredState({ detached: false, handoff: handoff || null, at: Date.now() });
+        ideChannel?.postMessage({ type: 'ide:attached', handoff: handoff || null });
       } catch {}
       return Promise.resolve({ ok: true, attached: true });
     },
     ideDetach: (handoff) => {
       try {
-        window.localStorage.setItem('cth.ide.attached', JSON.stringify({ attached: false, handoff: handoff || null, at: Date.now() }));
-        ideChannel?.postMessage({ type: 'detach', handoff: handoff || null });
-        window.open('/ide', 'cth-ide');
-      } catch {}
-      return Promise.resolve({ ok: true, attached: false });
+        writeIdeStoredState({ detached: true, handoff: handoff || null, at: Date.now() });
+        const win = window.open('/ide.html', 'cth-ide');
+        if (!win) {
+          writeIdeStoredState({ detached: false, handoff: null, at: Date.now() });
+          return Promise.resolve({ ok: false, reason: 'blocked' });
+        }
+        detachedIdeWin = win;
+        try { win.focus(); } catch {}
+        ideChannel?.postMessage({ type: 'ide:detach', handoff: handoff || null });
+        return Promise.resolve({ ok: true, detached: true });
+      } catch {
+        return Promise.resolve({ ok: false, reason: 'open-failed' });
+      }
     },
     ideWindowState: () => {
-      try {
-        const raw = window.localStorage.getItem('cth.ide.attached');
-        if (raw) return Promise.resolve(JSON.parse(raw));
-      } catch {}
-      return Promise.resolve({ attached: false, open: false });
+      const st = readIdeStoredState();
+      const alive = !!st?.detached && isDetachedIdeAlive();
+      if (st?.detached && !alive) {
+        writeIdeStoredState({ detached: false, handoff: null, at: Date.now() });
+      }
+      return Promise.resolve({ detached: alive, open: alive });
     },
-    ideRecall: () => Promise.resolve({ ok: true }),
-    ideAttachedAck: () => Promise.resolve({ ok: true }),
-    ideAgents: () => req('/api/v1/roster').then((r) => (Array.isArray(r?.agents) ? r.agents : [])),
+    ideOpenIn: (reqData) => {
+      if (!isDetachedIdeAlive()) {
+        writeIdeStoredState({ detached: false, handoff: null, at: Date.now() });
+        return Promise.resolve({ ok: false });
+      }
+      try {
+        ideChannel?.postMessage({ type: 'ide:open', req: reqData || {} });
+        detachedIdeWin?.focus?.();
+      } catch {}
+      return Promise.resolve({ ok: true });
+    },
+    ideRecall: () => {
+      try { ideChannel?.postMessage({ type: 'ide:collect' }); } catch {}
+      return Promise.resolve({ ok: true });
+    },
+    ideAttachedAck: () => {
+      try { ideChannel?.postMessage({ type: 'ide:attachedAck' }); } catch {}
+      return Promise.resolve({ ok: true });
+    },
+    ideAgents: (list) => {
+      if (Array.isArray(list)) {
+        try { ideChannel?.postMessage({ type: 'ide:agents', list }); } catch {}
+        return Promise.resolve(list);
+      }
+      return req('/api/v1/roster').then((r) => (Array.isArray(r?.agents) ? r.agents : []));
+    },
     heroPayload: () => Promise.resolve({ hero: null }),
     getWindowVisibility: () => Promise.resolve(!document.hidden),
     tourBoot: () => Promise.resolve({ seen: true, step: null }),

@@ -102164,12 +102164,12 @@ function OfficeProjectsSlot({ office: office2, current: current2, onSelect, onAd
     ] })
   ] });
 }
-function Live({ n, word }) {
+function Live({ n, word, style: extraStyle }) {
   if (!n) return null;
-  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--cth-ink-500)", whiteSpace: "nowrap" }, children: [
-    /* @__PURE__ */ jsxRuntimeExports.jsx("i", { style: { width: 6, height: 6, borderRadius: "50%", background: "var(--cth-status-working)", display: "inline-block" } }),
+  return /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "var(--cth-font-ui)", fontSize: 11.5, fontWeight: 400, fontVariantNumeric: "tabular-nums", lineHeight: 1, color: "var(--cth-ink-500)", whiteSpace: "nowrap", ...extraStyle }, children: [
+    /* @__PURE__ */ jsxRuntimeExports.jsx("i", { style: { width: 6, height: 6, borderRadius: "50%", background: "var(--cth-status-working)", display: "inline-block", flexShrink: 0 } }),
     /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { children: [
-      /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { fontFamily: "var(--cth-font-figures)" }, children: n }),
+      n,
       " ",
       word
     ] })
@@ -104841,8 +104841,8 @@ function ProSidebar({
       active: isOn("agents"),
       collapsed: collapsed2,
       onClick: () => onSelect("agents"),
-      trailing: /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
-        !onOffice && /* @__PURE__ */ jsxRuntimeExports.jsx(Live, { n: live2, word: t2("pro.live") }),
+      trailing: /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { display: "inline-flex", alignItems: "center", minWidth: 74, justifyContent: "flex-start" }, children: !onOffice && /* @__PURE__ */ jsxRuntimeExports.jsx(Live, { n: live2, word: t2("pro.live"), style: { marginInlineStart: 0 } }) }),
         /* @__PURE__ */ jsxRuntimeExports.jsx(
           "span",
           {
@@ -104863,7 +104863,7 @@ function ProSidebar({
                 setAgentsOpen(!agentsOpen);
               }
             },
-            style: { display: "inline-grid", placeItems: "center", width: 18, height: 18, borderRadius: 5, color: "var(--cth-ink-500)", marginInlineStart: 4, transform: agentsOpen ? "rotate(90deg)" : "none", transition: "transform 120ms" },
+            style: { display: "inline-grid", placeItems: "center", width: 18, height: 18, borderRadius: 5, color: "var(--cth-ink-500)", flexShrink: 0, transform: agentsOpen ? "rotate(90deg)" : "none", transition: "transform 120ms" },
             children: /* @__PURE__ */ jsxRuntimeExports.jsx(ProIcon, { name: "chevronRight", size: 11 })
           }
         )
@@ -104879,7 +104879,10 @@ function ProSidebar({
       active: isOn("temps"),
       collapsed: collapsed2,
       onClick: () => onSelect("temps"),
-      trailing: /* @__PURE__ */ jsxRuntimeExports.jsx(Live, { n: running, word: t2("pro.running") })
+      trailing: running > 0 ? /* @__PURE__ */ jsxRuntimeExports.jsxs("span", { style: { marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0 }, children: [
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { style: { display: "inline-flex", alignItems: "center", minWidth: 74, justifyContent: "flex-start" }, children: /* @__PURE__ */ jsxRuntimeExports.jsx(Live, { n: running, word: t2("pro.running"), style: { marginInlineStart: 0 } }) }),
+        /* @__PURE__ */ jsxRuntimeExports.jsx("span", { "aria-hidden": true, style: { width: 18, height: 18, flexShrink: 0 } })
+      ] }) : null
     }
   );
   const localList = /* @__PURE__ */ jsxRuntimeExports.jsxs("div", { "data-agent-list": true, style: { display: "flex", flexDirection: "column", gap: 1, paddingTop: 2, paddingBottom: 4, paddingInlineStart: 10 }, children: [
@@ -139693,7 +139696,7 @@ function HomeAlreadyPaid() {
 const INPUT_MIN_H = 58;
 const INPUT_MAX_H = 160;
 const ATTACH_TITLE = { any: "pro.agents.attachAny", files: "pro.agents.attach", folders: "pro.agents.attachFolder" };
-const RECEIPT_TONE = { queued: "accent", sent: "outline", failed: "bad", has: "outline", working: "think", done: "outline", replied: "ok", steered: "outline", cloud: "outline" };
+const RECEIPT_TONE = { queued: "accent", sent: "outline", failed: "bad", has: "outline", working: "think", done: "ok", replied: "ok", steered: "outline", cloud: "outline" };
 const withFiles = (text2, files) => files.length ? (text2.trim() ? `${text2}
 
 Attached files:
@@ -140116,7 +140119,15 @@ function ReceiptLine({ receipt: r6, agents, name: name2, asleep, onChange }) {
     children: [
       agent && (r6.state === "sent" || r6.state === "has" || r6.state === "working" || r6.state === "done") && (settled === "delivered" || settled === "sent" && !isSteer(r6.queueId ?? "")) && /* @__PURE__ */ jsxRuntimeExports.jsx(AnswerWatch, { agentId: agent.id, status: agent.status, window: answerWindow, onAnswer: setAnswered }),
       agent ? /* @__PURE__ */ jsxRuntimeExports.jsx(SpritePortrait, { character: agent.character, size: 20, agent }) : /* @__PURE__ */ jsxRuntimeExports.jsx(CloudFace, { section: cloudTo2 && clouds.find((s) => s.officeId === cloudTo2.officeId), agentId: cloudTo2?.agentId }),
-      /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, { tone: RECEIPT_TONE[r6.state], children: t2(`pro.home.rcpt.${r6.state}`, { name: who }) }),
+      /* @__PURE__ */ jsxRuntimeExports.jsx(Chip$2, {
+        tone: RECEIPT_TONE[r6.state],
+        style: r6.state === "done" || r6.state === "replied" ? {
+          background: "var(--cth-mint-light)",
+          color: "color-mix(in srgb, var(--cth-status-success) 45%, var(--cth-ink-900))",
+          border: "1px solid color-mix(in srgb, var(--cth-status-success) 38%, transparent)"
+        } : void 0,
+        children: t2(`pro.home.rcpt.${r6.state}`, { name: who })
+      }),
       r6.state === "replied" && agent ? /* @__PURE__ */ jsxRuntimeExports.jsx(ReplyText, { agentId: agent.id, window: answerWindow }) : /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "txt", dir: "auto", children: previewLine(r6.text) }),
       r6.state === "queued" && (asleep || asking2 || behind || draft) && /* @__PURE__ */ jsxRuntimeExports.jsx("span", { className: "why", dir: "auto", children: t2(asleep ? "pro.home.rcpt.asleep" : asking2 ? "pro.home.rcpt.question" : behind ? "pro.home.rcpt.behind" : "pro.home.rcpt.draft", { name: who }) }),
       r6.state === "queued" && agent && r6.queueId ? /* @__PURE__ */ jsxRuntimeExports.jsxs(jsxRuntimeExports.Fragment, { children: [
@@ -140927,9 +140938,10 @@ ${SIM_BTN_CSS}
 .cth-home .drawlist small{display:block;color:var(--i5);font-size:11px;line-height:14px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .cth-home .inwrap{border-top:1px solid var(--bd);background:var(--g);padding:10px var(--inpad) 12px;position:relative}
 .cth-home .rcptSlot{position:absolute;left:0;right:0;bottom:calc(100% + 6px);display:flex;justify-content:center;padding-inline:var(--inpad);pointer-events:none;z-index:50}
-.cth-home .rcpt{pointer-events:auto;display:flex;align-items:center;gap:8px;width:auto;max-width:min(640px,max(280px,calc(var(--in-w,90cqw) - 24px)),100%);box-sizing:border-box;min-height:36px;padding:4px 8px;padding-inline-start:9px;background:color-mix(in srgb,var(--p) 94%,transparent);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border:1px solid var(--bd);border-radius:10px;box-shadow:0 8px 24px rgba(26,25,22,.16),0 2px 6px rgba(26,25,22,.08);min-width:0;animation:cth-home-rcpt-in .18s cubic-bezier(.2,0,0,1);transition:opacity .15s cubic-bezier(.2,0,0,1),transform .15s cubic-bezier(.2,0,0,1),border-color .15s ease}
+.cth-home .rcpt{pointer-events:auto;display:flex;align-items:center;gap:8px;width:auto;max-width:min(640px,max(280px,calc(var(--in-w,90cqw) - 24px)),100%);box-sizing:border-box;min-height:36px;padding:4px 8px;padding-inline-start:9px;background:var(--p);border:1px solid var(--bd);border-radius:10px;box-shadow:0 8px 24px rgba(26,25,22,.16),0 2px 6px rgba(26,25,22,.08);min-width:0;animation:cth-home-rcpt-in .18s cubic-bezier(.2,0,0,1);transition:opacity .15s cubic-bezier(.2,0,0,1),transform .15s cubic-bezier(.2,0,0,1),border-color .15s ease,box-shadow .15s ease}
 .cth-home .rcpt.clickable{cursor:pointer}
-.cth-home .rcpt.clickable:hover{border-color:var(--i5)}
+.cth-home .rcpt.clickable:hover{transform:translateY(-1px);border-color:var(--i5);box-shadow:0 10px 28px rgba(26,25,22,.20),0 2px 8px rgba(26,25,22,.10)}
+.cth-home .rcpt.clickable:hover .lnk{text-decoration:underline}
 .cth-home .rcpt.leaving{opacity:0;transform:translateY(4px) scale(.985);pointer-events:none}
 @keyframes cth-home-rcpt-in{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:translateY(0) scale(1)}}
 .cth-home .rcpt .txt{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--i7)}

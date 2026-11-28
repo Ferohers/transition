@@ -1132,6 +1132,7 @@ pub fn build_router(state: AppState) -> Router {
     let assets_dir = web_root().join("assets");
     Router::new()
         .route("/", get(index_html))
+        .route("/ide", get(ide_html))
         .route("/ide.html", get(ide_html))
         .route("/cth-web.js", get(cth_web_js))
         .route("/static/styles.css", get(assets_styles))
@@ -2379,6 +2380,35 @@ mod tests {
                 .unwrap();
         assert_eq!(up_json["ok"], true);
         let uploaded_path = up_json["path"].as_str().unwrap().to_string();
+
+        // Large attachment (> 2 MB default Axum limit, e.g. photo upload) succeeds via /api/v1/fs/upload.
+        let large_bytes = vec![0xABu8; 2_500_000];
+        let large_b64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &large_bytes);
+        let large_body = serde_json::json!({
+            "name": "photo.jpg",
+            "base64": large_b64,
+            "scope": "attachments"
+        })
+        .to_string();
+        let large_up_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/v1/fs/upload")
+                    .header("content-type", "application/json")
+                    .body(Body::from(large_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(large_up_res.status(), StatusCode::OK);
+        let large_up_json: serde_json::Value =
+            serde_json::from_slice(&axum::body::to_bytes(large_up_res.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(large_up_json["ok"], true);
+        assert_eq!(large_up_json["bytes"], 2_500_000);
 
         let raw_ok = app
             .clone()

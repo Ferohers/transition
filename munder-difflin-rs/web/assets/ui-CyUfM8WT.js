@@ -1928,7 +1928,7 @@ function windowKindOf(href) {
   } catch {
     path = href.split(/[?#]/)[0] ?? "";
   }
-  return path.endsWith(`/${IDE_PAGE}`) || path === IDE_PAGE ? "ide" : "app";
+  return path.endsWith(`/${IDE_PAGE}`) || path === IDE_PAGE || path === "/ide" ? "ide" : "app";
 }
 const WORKING_STATES = /* @__PURE__ */ new Set(["thinking", "working", "compacting", "looping"]);
 const str = (v) => typeof v === "string";

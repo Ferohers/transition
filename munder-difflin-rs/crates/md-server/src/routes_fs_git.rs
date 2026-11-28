@@ -2,9 +2,9 @@ use crate::state::{AppState, IdeState};
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Query, State},
+    extract::{DefaultBodyLimit, Query, State},
     http::{HeaderValue, StatusCode, header},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use base64::Engine;
@@ -918,25 +918,6 @@ async fn tools_status(State(state): State<AppState>) -> Json<Value> {
     Json(Value::Array(rows))
 }
 
-async fn ide_page() -> Html<&'static str> {
-    Html(
-        r#"<!doctype html>
-<html lang="en" data-cth-theme="dark" data-cth-skin="professional">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Duman Office IDE (Web)</title>
-  <style>
-    html, body { margin: 0; height: 100dvh; background: #17171B; color: #DEDBD6; font-family: Inter, system-ui, sans-serif; font-size: 13px; display: grid; place-items: center; }
-  </style>
-</head>
-<body>
-  <div id="ide-root">Web IDE Route (/ide) — BroadcastChannel + WS Buffer Sync Ready</div>
-</body>
-</html>"#,
-    )
-}
-
 async fn ide_state(State(state): State<AppState>) -> Json<IdeState> {
     Json(state.ide.lock().unwrap().clone())
 }
@@ -1251,7 +1232,6 @@ async fn github_issues(
 
 pub fn fs_git_router() -> Router<AppState> {
     Router::new()
-        .route("/ide", get(ide_page))
         .route("/api/v1/ide/state", get(ide_state))
         .route("/api/v1/ide/dirty", post(ide_dirty))
         .route("/api/v1/ide/open", post(ide_open))
@@ -1270,7 +1250,10 @@ pub fn fs_git_router() -> Router<AppState> {
         .route("/api/v1/workspaces/ensure", post(workspaces_ensure))
         .route("/api/v1/projects/list", get(projects_list))
         .route("/api/v1/fs/folder-state", post(fs_folder_state))
-        .route("/api/v1/fs/upload", post(fs_upload))
+        .route(
+            "/api/v1/fs/upload",
+            post(fs_upload).layer(DefaultBodyLimit::max(36 * 1024 * 1024)),
+        )
         .route("/api/v1/fs/raw", get(fs_raw))
         .route("/api/v1/tools/status", get(tools_status))
         .route("/api/v1/github/issues", get(github_issues))
